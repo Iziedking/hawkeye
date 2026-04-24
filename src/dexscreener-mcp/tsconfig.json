@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "../../../dist/tools/dexscreener-mcp",
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "types": ["node"],
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["./**/*.ts"]
+}
