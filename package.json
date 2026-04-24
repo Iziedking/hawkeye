@@ -1,0 +1,28 @@
+{
+  "name": "hawkeye-build",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^25.6.0",
+    "@types/turndown": "^5.0.6",
+    "grammy": "^1.42.0",
+    "tsx": "^4.21.0",
+    "turndown": "^7.2.4",
+    "typescript": "^6.0.3",
+    "zod": "^4.3.6"
+  },
+  "dependencies": {
+    "@0gfoundation/0g-ts-sdk": "^1.2.2",
+    "@0glabs/0g-serving-broker": "^0.7.5",
+    "ethers": "^6.16.0"
+  }
+}

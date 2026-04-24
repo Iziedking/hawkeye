@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Temporary probe / debug scripts used during verification gates
+.tmp-*
+
+# Private keys and binaries
+*.pem
+src/integrations/gensyn/axl-src/node.exe
+src/integrations/gensyn/axl-src/node
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Lead dev only — not pushed to hackathon repo
+.claude/
+CLAUDE.md
+learning_/
