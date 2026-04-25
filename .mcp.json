@@ -2,7 +2,12 @@
   "mcpServers": {
     "openclaw-docs": {
       "command": "cmd",
-      "args": ["/c", "npx", "tsx", "src/tools/openclaw-docs-mcp/index.ts"]
+      "args": [
+        "/c",
+        "npx",
+        "tsx",
+        "src/tools/openclaw-docs-mcp/index.ts"
+      ]
     },
     "coingecko": {
       "command": "cmd",
@@ -16,15 +21,29 @@
     },
     "dexscreener": {
       "command": "cmd",
-      "args": ["/c", "npx", "tsx", "src/tools/dexscreener-mcp/index.ts"]
+      "args": [
+        "/c",
+        "npx",
+        "tsx",
+        "src/tools/dexscreener-mcp/index.ts"
+      ]
     },
     "goplus": {
       "command": "cmd",
-      "args": ["/c", "node", "src/tools/goplus-mcp-launcher.mjs"]
+      "args": [
+        "/c",
+        "node",
+        "src/tools/goplus-mcp-launcher.mjs"
+      ]
     },
     "gensyn-axl": {
       "command": "cmd",
-      "args": ["/c", "npx", "tsx", "src/tools/gensyn-axl-mcp/index.ts"]
+      "args": [
+        "/c",
+        "npx",
+        "tsx",
+        "src/tools/gensyn-axl-mcp/index.ts"
+      ]
     }
   }
 }
