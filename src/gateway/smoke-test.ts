@@ -2,7 +2,7 @@
 
 import process from "node:process";
 import { OpenClawAdapter, decodeChatEvent } from "./openclaw-adapter";
-import { parseIntent } from "./intent-parser";
+import { parseIntent } from "./intent-parser.legacy";
 
 
 type Listener<E> = (ev: E) => void;
