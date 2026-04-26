@@ -13,8 +13,8 @@ cp .env.example .env.local   # fill in your keys
 ```
 src/
   shared/           types, event bus, env loader
-  agents/           one file per agent, talks only via event bus
-  gateway/          OpenClaw adapter, intent parser, bus wiring
+  agents/           one folder per agent, talks only via event bus
+  gateway/          OpenClaw adapter, LLM router, bus wiring
   integrations/     sponsor SDK wrappers (0g/, gensyn/, keeperhub/)
   tools/            MCP servers
 ```
@@ -24,41 +24,53 @@ src/
 All agents talk through a typed event bus. No agent imports another directly. You listen for events, do your work, and emit the result.
 
 ```
-User message -> Gateway -> Intent Parser -> TRADE_REQUEST
-                                               |
-                              +----------------+----------------+
-                              |                                 |
-                        Safety Agent                      Quote Agent
-                              |                                 |
-                        SAFETY_RESULT                     QUOTE_RESULT
-                              |                                 |
-                              +----------------+----------------+
-                                               |
-                                        Strategy Agent
-                                               |
-                                        EXECUTE_TRADE
-                                               |
-                                       Execution Agent
-                                               |
-                                       TRADE_EXECUTED
-                                               |
-                                       Monitor Agent
+User message -> Gateway -> LLM Router
+                              |
+              +---------------+---------------+------------------+
+              |               |               |                  |
+        DEGEN_SNIPE/     RESEARCH_TOKEN   GENERAL_QUERY      BRIDGE/PORTFOLIO/
+        TRADE                |            UNKNOWN             COPY_TRADE/etc.
+              |               |               |                  |
+        TRADE_REQUEST    RESEARCH_REQUEST  2nd LLM call     "coming soon"
+              |                            (conversational)    + bus event
+              |
+    +---------+---------+
+    |                   |
+Safety Agent       Quote Agent
+    |                   |
+SAFETY_RESULT      QUOTE_RESULT
+    |                   |
+    +---------+---------+
+              |
+       Strategy Agent
+              |
+       EXECUTE_TRADE
+              |
+      Execution Agent
+              |
+      TRADE_EXECUTED
+              |
+      Monitor Agent
 ```
 
 ### Events
 
 | Event | Emitter | Listener |
 |-------|---------|----------|
-| TRADE_REQUEST | Gateway | Safety, Quote |
-| SAFETY_RESULT | Safety | Strategy |
+| TRADE_REQUEST | Gateway (DEGEN_SNIPE/TRADE) | Safety, Quote |
+| SAFETY_RESULT | Safety | Strategy, Gateway |
 | QUOTE_RESULT | Quote | Strategy |
 | STRATEGY_DECISION | Strategy | Gateway |
 | EXECUTE_TRADE | Strategy | Execution |
 | TRADE_EXECUTED | Execution | Monitor, Gateway |
 | EXECUTE_SELL | Monitor | Execution |
 | ALPHA_FOUND | Research | Gateway |
-| COPY_TRADE_REQUEST | Copy Trade | Safety pipeline |
+| COPY_TRADE_REQUEST | Gateway (COPY_TRADE) / Copy Trade Agent | Safety pipeline |
 | POSITION_UPDATE | Monitor | Gateway |
+| RESEARCH_REQUEST | Gateway (RESEARCH_TOKEN) | Research Agent |
+| RESEARCH_RESULT | Research Agent | Gateway |
+| GENERAL_QUERY_REQUEST | Gateway (GENERAL_QUERY) | (future agents) |
+| GENERAL_QUERY_RESULT | Gateway (inline 0G call) | (future agents) |
 
 ### Writing an Agent
 
@@ -74,7 +86,7 @@ export function startSafetyAgent() {
 }
 ```
 
-Import types from `src/shared/types.ts`. Talk only through the bus. Keep each agent in a single file.
+Import types from `src/shared/types.ts`. Talk only through the bus. Each agent gets its own folder under `src/agents/`.
 
 ## MCP Tools
 
@@ -115,6 +127,7 @@ Run smoke tests:
 
 ```bash
 npx tsx src/gateway/smoke-test.ts
+npx tsx src/gateway/llm-router.smoke-test.ts
 npx tsx src/gateway/intent-parser.smoke-test.ts
 npx tsx src/tools/dexscreener-mcp/smoke-test.ts
 npx tsx src/tools/gensyn-axl-mcp/smoke-test.ts
@@ -124,7 +137,7 @@ npx tsx src/tools/gensyn-axl-mcp/smoke-test.ts
 
 Read these before writing any code. They were figured out the hard way.
 
-- Intent Parser never calls DexScreener or GoPlus. It returns `chain: "evm" | "solana"` only. Sub-chain resolution is the Quote and Safety Agent's job.
+- LLM Router never calls DexScreener or GoPlus. It returns `chain: "evm" | "solana"` only. Sub-chain resolution is the Quote and Safety Agent's job.
 - Always resolve chains through DexScreener first. Never hardcode chain IDs.
 - Amounts are always `{ value, unit }`, never bare numbers. `0.5 ETH` is `{ value: 0.5, unit: "NATIVE" }`.
 - DexScreener search only works with a single word. Strip extra tokens client-side.
