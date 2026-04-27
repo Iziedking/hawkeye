@@ -44,13 +44,6 @@
         "tsx",
         "src/tools/gensyn-axl-mcp/index.ts"
       ]
-
-      "args": [
-        "/c",
-        "npx",
-        "tsx",
-        "src/tools/gensyn-axl-mcp/index.ts"
-      ]
     },
     "keeperhub": {
       "command": "cmd",
