@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "outDir": "../../../dist/integrations/0g",
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "types": ["node"],
+    "lib": ["ES2023"]
+  },
+  "include": ["./**/*.ts", "../../shared/**/*.ts"]
+}

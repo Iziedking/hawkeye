@@ -11,7 +11,8 @@ The core infrastructure is live. Event bus, intent parser, gateway, 0G integrati
 | Event Bus | `src/shared/event-bus.ts` |
 | Shared types | `src/shared/types.ts` |
 | Env loader | `src/shared/env.ts` |
-| Intent Parser | `src/gateway/intent-parser.ts` |
+| LLM Router | `src/gateway/llm-router.ts` |
+| Intent Parser (legacy) | `src/gateway/intent-parser.legacy.ts` |
 | OpenClaw Adapter | `src/gateway/openclaw-adapter.ts` |
 | Gateway wiring | `src/gateway/index.ts` |
 | 0G Compute client | `src/integrations/0g/compute.ts` |
@@ -25,8 +26,9 @@ The core infrastructure is live. Event bus, intent parser, gateway, 0G integrati
 
 I own `src/shared/`, `src/gateway/`, and `src/integrations/`. My remaining work:
 
-- [ ] Strategy Agent (`src/agents/strategy.ts`) — takes SAFETY_RESULT and QUOTE_RESULT, applies trading mode logic, emits EXECUTE_TRADE or asks the user to confirm
-- [ ] Main startup (`src/index.ts`) — boots every agent and connects the bus
+- [x] Strategy Agent (`src/agents/strategy/`) — takes SAFETY_RESULT and QUOTE_RESULT, applies trading mode logic, emits EXECUTE_TRADE or asks the user to confirm
+- [x] Main startup (`src/index.ts`) — boots every agent and connects the bus
+- [x] LLM-first router (`src/gateway/llm-router.ts`) — replaces regex intent parser with 0G Compute classification into 10 intent categories
 - [ ] Gensyn AXL bus swap (`src/shared/axl-bus.ts`) — replace the local EventEmitter with P2P transport
 - [ ] 0G Chain mainnet contract deploy (required for submission)
 
@@ -98,10 +100,11 @@ You can start now. All the event types you need are defined in `src/shared/types
 
 ## How it all connects
 
-When someone pastes a contract address, this happens:
+Every user message hits the LLM Router, which classifies it into one of 10 intent categories. The router has a degen shortcut: bare contract addresses (with or without "ape"/"buy") skip the LLM entirely for sub-millisecond speed.
 
+**Degen snipe / Trade flow** (bare CA or explicit trade):
 ```
-0ms    Intent parsed, TRADE_REQUEST emitted
+0ms    LLM Router -> DEGEN_SNIPE/TRADE -> TRADE_REQUEST emitted
 0ms    Safety Agent starts checking the token
 0ms    Quote Agent starts fetching prices
 ~1.5s  SAFETY_RESULT comes back
@@ -114,6 +117,26 @@ When someone pastes a contract address, this happens:
 ~5.1s  User gets a message with entry price and tx hash
 ```
 
+**Research flow** (CA + question like "is this safe?"):
+```
+~2s    LLM Router -> RESEARCH_TOKEN -> RESEARCH_REQUEST emitted
+       Research Agent runs DexScreener + GoPlus + safety scan
+       User gets a summary with safety score, liquidity, and price data
+```
+
+**Conversational flow** (general questions, market queries, unknown):
+```
+~2s    LLM Router -> GENERAL_QUERY/UNKNOWN
+       Second 0G Compute call with conversational prompt
+       User gets an intelligent crypto-native response
+```
+
+**Coming soon flows** (bridge, portfolio, copy trade, wallet research):
+```
+       LLM Router classifies correctly, emits the right bus event
+       User gets an honest "coming soon" reply with guidance
+```
+
 ## Branch rules
 
 Work on feature branches named `feat/<your-name>-<what>`. For example `feat/sunday-quote-agent` or `feat/samuel-safety-agent`. Push your branch, open a PR into main. I'll review it.
@@ -124,7 +147,7 @@ Do not push directly to main. Smoke tests must pass before I merge.
 
 | Sponsor | What we use it for | Status |
 |---------|-------------------|--------|
-| 0G Compute | LLM inference in the intent parser | Live on Galileo testnet |
+| 0G Compute | LLM-first router (intent classification) + conversational responses | Live on Galileo testnet |
 | 0G Storage | On-chain audit trail for every parsed intent | Live on Galileo testnet |
 | 0G Chain | Mainnet contract (required for submission) | Not deployed yet |
 | Gensyn AXL | P2P bus transport between agents | Node built, MCP wired |

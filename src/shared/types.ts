@@ -175,6 +175,94 @@ export type AlphaFoundPayload = {
 };
 
 
+export type IntentCategory =
+  | "DEGEN_SNIPE"
+  | "TRADE"
+  | "RESEARCH_TOKEN"
+  | "RESEARCH_WALLET"
+  | "COPY_TRADE"
+  | "BRIDGE"
+  | "PORTFOLIO"
+  | "SETTINGS"
+  | "GENERAL_QUERY"
+  | "UNKNOWN";
+
+export type ResearchRequest = {
+  requestId: string;
+  userId: string;
+  channel: MessageChannel;
+  address: string | null;
+  tokenName: string | null;
+  chain: ChainClass | null;
+  question: string;
+  rawText: string;
+  createdAt: number;
+};
+
+export type ResearchResult = {
+  requestId: string;
+  address: string;
+  chain: ChainClass;
+  summary: string;
+  safetyScore: number | null;
+  priceUsd: number | null;
+  liquidityUsd: number | null;
+  flags: SafetyFlag[];
+  completedAt: number;
+};
+
+export type GeneralQueryRequest = {
+  requestId: string;
+  userId: string;
+  channel: MessageChannel;
+  query: string;
+  rawText: string;
+  createdAt: number;
+};
+
+export type GeneralQueryResult = {
+  requestId: string;
+  response: string;
+  sources: string[];
+  completedAt: number;
+};
+
+export type BridgeRequest = {
+  requestId: string;
+  userId: string;
+  channel: MessageChannel;
+  amount: TradeAmount;
+  fromChain: string | null;
+  toChain: string;
+  asset: string | null;
+  rawText: string;
+  createdAt: number;
+};
+
+export type SettingsUpdate = {
+  userId: string;
+  setting: string;
+  value: string;
+  updatedAt: number;
+};
+
+export type PortfolioRequest = {
+  requestId: string;
+  userId: string;
+  channel: MessageChannel;
+  query: string;
+  rawText: string;
+  createdAt: number;
+};
+
+export type PortfolioResult = {
+  requestId: string;
+  positions: Position[];
+  totalValueUsd: number;
+  totalPnlPct: number;
+  completedAt: number;
+};
+
 export type UserSettings = {
   userId: string;
   mode: TradingMode;
@@ -193,11 +281,16 @@ export const EVENT_NAMES = {
   SAFETY_RESULT: "SAFETY_RESULT",
   QUOTE_RESULT: "QUOTE_RESULT",
   STRATEGY_DECISION: "STRATEGY_DECISION",
+  EXECUTE_TRADE: "EXECUTE_TRADE",
   TRADE_EXECUTED: "TRADE_EXECUTED",
   EXECUTE_SELL: "EXECUTE_SELL",
   ALPHA_FOUND: "ALPHA_FOUND",
   COPY_TRADE_REQUEST: "COPY_TRADE_REQUEST",
   POSITION_UPDATE: "POSITION_UPDATE",
+  RESEARCH_REQUEST: "RESEARCH_REQUEST",
+  RESEARCH_RESULT: "RESEARCH_RESULT",
+  GENERAL_QUERY_REQUEST: "GENERAL_QUERY_REQUEST",
+  GENERAL_QUERY_RESULT: "GENERAL_QUERY_RESULT",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -207,9 +300,14 @@ export type BusEvents = {
   SAFETY_RESULT: SafetyReport;
   QUOTE_RESULT: Quote;
   STRATEGY_DECISION: StrategyDecision;
+  EXECUTE_TRADE: Position;
   TRADE_EXECUTED: TradeExecutedPayload;
   EXECUTE_SELL: ExecuteSellPayload;
   ALPHA_FOUND: AlphaFoundPayload;
   COPY_TRADE_REQUEST: TradeIntent;
   POSITION_UPDATE: PositionUpdate;
+  RESEARCH_REQUEST: ResearchRequest;
+  RESEARCH_RESULT: ResearchResult;
+  GENERAL_QUERY_REQUEST: GeneralQueryRequest;
+  GENERAL_QUERY_RESULT: GeneralQueryResult;
 };

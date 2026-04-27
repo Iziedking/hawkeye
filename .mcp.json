@@ -44,6 +44,23 @@
         "tsx",
         "src/tools/gensyn-axl-mcp/index.ts"
       ]
+
+      "args": [
+        "/c",
+        "npx",
+        "tsx",
+        "src/tools/gensyn-axl-mcp/index.ts"
+      ]
+    },
+    "keeperhub": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "mcp-remote@latest",
+        "https://app.keeperhub.com/mcp"
+      ]
     }
   }
 }

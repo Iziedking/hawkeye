@@ -1,7 +1,7 @@
 // Intent parser smoke test. Covers regex + LLM fallback without hitting 0G.
 
 import process from "node:process";
-import { parseIntent } from "./intent-parser";
+import { parseIntent } from "./intent-parser.legacy";
 import type {
   OgComputeClient,
   OgInferenceRequest,

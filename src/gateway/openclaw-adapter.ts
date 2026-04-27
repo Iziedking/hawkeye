@@ -279,7 +279,7 @@ export class OpenClawAdapter {
       minProtocol: 3,
       maxProtocol: 3,
       client: {
-        id: "openclaw-client",
+        id: "gateway-client",
         displayName: "HAWKEYE",
         version: "0.1.0",
         platform: process.platform,
