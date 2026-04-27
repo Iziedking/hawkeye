@@ -53,7 +53,7 @@ bus.on("TRADE_REQUEST", async (intent) => {
 
 MCPs you'll use: dexscreener, coingecko, keeperhub, and the Uniswap skills.
 
-### Samuel Chukwu (Safety and Data)
+### Samuel Chuku (Safety and Data)
 
 You own `src/agents/safety.ts` and `src/agents/research.ts`.
 
