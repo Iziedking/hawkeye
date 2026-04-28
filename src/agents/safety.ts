@@ -44,22 +44,29 @@ function setCache(address: string, data: Omit<SafetyReport, "intentId">): void {
 //
 // To add a new chain: look up its EIP-155 chain ID at chainlist.org and add it here.
 const CHAIN_NUMERIC_ID: Record<string, number> = {
-  ethereum:  1,
-  bsc:       56,
-  polygon:   137,
-  arbitrum:  42161,
-  base:      8453,
-  optimism:  10,
-  avalanche: 43114,
-  fantom:    250,
-  cronos:    25,
-  zksync:    324,
-  linea:     59144,
-  blast:     81457,
-  scroll:    534352,
-  mantle:    5000,
-  celo:      42220,
-  ronin:     2020,
+  ethereum:   1,
+  bsc:        56,
+  polygon:    137,
+  arbitrum:   42161,
+  base:       8453,
+  optimism:   10,
+  avalanche:  43114,
+  fantom:     250,
+  cronos:     25,
+  zksync:     324,
+  linea:      59144,
+  blast:      81457,
+  scroll:     534352,
+  mantle:     5000,
+  celo:       42220,
+  ronin:      2020,
+  unichain:   130,    // Uniswap L2, mainnet 2025
+  gnosis:     100,    // Gnosis Chain (formerly xDAI)
+  berachain:  80094,  // Berachain mainnet, launched 2025
+  hyperevm:   999,    // HyperEVM — Hyperliquid's EVM layer (verify at chainlist.org)
+  monad:      41454,  // Monad mainnet (verify chain ID at chainlist.org if GoPlus rejects)
+  mode:       34443,
+  worldchain: 480,
 };
 
 // ─── DexScreener chain resolution ─────────────────────────────────────────────
