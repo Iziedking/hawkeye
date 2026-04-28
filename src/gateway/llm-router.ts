@@ -45,7 +45,7 @@ export type RouterDeps = {
   log?: (msg: string, err?: unknown) => void;
 };
 
-const DEFAULT_LLM_TIMEOUT_MS = 8_000;
+const DEFAULT_LLM_TIMEOUT_MS = 25_000;
 
 export async function routeMessage(
   input: RouterInput,
