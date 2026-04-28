@@ -103,9 +103,19 @@ export async function startGateway(): Promise<GatewayHandle> {
       .catch((err) => console.error("[gateway] reply on SAFETY failed:", err));
   };
 
+  const onResearchResult = (res: import("../shared/types").ResearchResult): void => {
+    const pending = replyByRequestId.get(res.requestId);
+    if (!pending) return;
+    replyByRequestId.delete(res.requestId);
+    void adapter
+      .sendReply(pending.msg, res.summary)
+      .catch((err) => console.error("[gateway] reply on RESEARCH_RESULT failed:", err));
+  };
+
   bus.on("TRADE_EXECUTED", onExecuted);
   bus.on("STRATEGY_DECISION", onStrategy);
   bus.on("SAFETY_RESULT", onSafety);
+  bus.on("RESEARCH_RESULT", onResearchResult);
 
   await adapter.connect();
 
@@ -115,6 +125,7 @@ export async function startGateway(): Promise<GatewayHandle> {
       bus.off("TRADE_EXECUTED", onExecuted);
       bus.off("STRATEGY_DECISION", onStrategy);
       bus.off("SAFETY_RESULT", onSafety);
+      bus.off("RESEARCH_RESULT", onResearchResult);
       adapter.close();
     },
   };
@@ -145,7 +156,7 @@ async function handleInbound(
       return handleTradeIntent(result, msg, adapter, storage, replyByRequestId);
 
     case "RESEARCH_TOKEN":
-      return handleResearchToken(result, msg, adapter);
+      return handleResearchToken(result, msg, adapter, replyByRequestId);
 
     case "RESEARCH_WALLET":
       return handleResearchWallet(result, msg, adapter);
@@ -240,6 +251,7 @@ function handleResearchToken(
   result: RouterResult,
   msg: InboundMessage,
   adapter: OpenClawAdapter,
+  replyByRequestId: Map<string, PendingReply>,
 ): void {
   const d = result.data;
   const address = typeof d["address"] === "string" ? d["address"] : null;
@@ -247,6 +259,8 @@ function handleResearchToken(
   const chain = d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
 
   const requestId = randomUUID();
+  replyByRequestId.set(requestId, { msg, rootHash: null });
+
   bus.emit("RESEARCH_REQUEST", {
     requestId,
     userId: result.userId,
