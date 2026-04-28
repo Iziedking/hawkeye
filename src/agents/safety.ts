@@ -271,13 +271,23 @@ async function checkRugCheck(
 // ─── Scoring ──────────────────────────────────────────────────────────────────
 // Start at 100 and deduct per flag. Clamp to [0, 100].
 //
-// Strategy Agent thresholds (from types.ts):
-//   >= 70  → trade proceeds
-//   50–69  → Strategy asks user to confirm before executing
-//   < 50   → rejected
+// Intended Strategy Agent thresholds — maps score to StrategyDecision.decision:
+//   score >= 70  → "EXECUTE"           : trade proceeds normally
+//   score 50–69  → "AWAIT_USER_CONFIRM": pause and ask the user to confirm
+//   score < 50   → "AWAIT_USER_CONFIRM": dangerous — do NOT emit "REJECT".
+//                  The Strategy Agent must display every entry in SafetyReport.flags[]
+//                  plainly to the user (e.g. "⚠️ HONEYPOT detected, HIGH_TAX detected")
+//                  and ask whether they still want to proceed. Silently hard-blocking
+//                  a trade the user explicitly requested is not acceptable — they have
+//                  the right to override with full knowledge of the risk.
 //
-// Weights are conservative: a false positive costs a missed trade,
-// a false negative costs real money. We bias toward over-blocking.
+// NOTE FOR ISRAEL (strategy.ts): treat score < 50 as AWAIT_USER_CONFIRM, not REJECT.
+// The flags that explain the danger are already in SafetyReport.flags[] — include
+// every one of them verbatim in the confirmation message so the user can see exactly
+// what they are accepting before they say yes.
+//
+// Weights are conservative: a false positive costs a missed trade, a false negative
+// costs real money. We bias toward warning loudly rather than silently blocking.
 const FLAG_DEDUCTIONS: Record<SafetyFlag, number> = {
   HONEYPOT:           100, // automatic zero — never trade a honeypot
   KNOWN_RUGGER:        50,
@@ -370,7 +380,12 @@ async function scanToken(
  * Listens for TRADE_REQUEST and COPY_TRADE_REQUEST (both flow into the
  * safety pipeline per CONTRIBUTING.md). Emits SAFETY_RESULT when done.
  *
- * Strategy Agent uses: score >= 70 → proceed, 50-69 → confirm, < 50 → reject.
+ * Strategy Agent contract (see StrategyDecision in types.ts):
+ *   score >= 70  → EXECUTE
+ *   score 50–69  → AWAIT_USER_CONFIRM
+ *   score < 50   → AWAIT_USER_CONFIRM — show all SafetyReport.flags[] plainly to the
+ *                  user and let them decide. Never hard-reject a user-initiated trade.
+ *
  * Results are cached per token address for 5 minutes.
  */
 export function startSafetyAgent(): void {
