@@ -189,6 +189,41 @@ bus.on("SAFETY_RESULT", (report: SafetyReport) => {
   );
 });
 
+// Handle quote failures — the critical path that was causing the bot to hang
+bus.on("QUOTE_FAILED", (failure: { intentId: string; address: string; reason: string }) => {
+  const chatId = pendingReplies.get(failure.intentId);
+  if (!chatId) return;
+
+  console.log(
+    `[TelegramBot] QUOTE_FAILED for ${failure.intentId} — ${failure.reason}`,
+  );
+
+  // Check if safety already arrived — show whatever we have
+  const safetyKey = `safety-${failure.intentId}`;
+  const safety = safetyCache.get(safetyKey);
+
+  let msg =
+    `⚠️ *Quote Unavailable*\n\n` +
+    `Token: \`${failure.address}\`\n` +
+    `Reason: ${failure.reason}\n`;
+
+  if (safety) {
+    msg +=
+      `\n🛡️ *Safety Scan:* ${safety.score}/100\n` +
+      `${safety.flags.length > 0 ? `Flags: ${safety.flags.join(", ")}\n` : "✅ No critical flags\n"}`;
+    safetyCache.delete(safetyKey);
+  }
+
+  msg += `\n_Try pasting a different contract address, or check the token on DexScreener first._`;
+
+  void bot.api
+    .sendMessage(chatId, msg, { parse_mode: "Markdown" })
+    .catch(console.error);
+
+  pendingReplies.delete(failure.intentId);
+  quoteCache.delete(`quote-${failure.intentId}`);
+});
+
 // ---------------------------------------------------------------------------
 // Conversational system prompt
 // ---------------------------------------------------------------------------
@@ -490,6 +525,24 @@ async function handleTradeFromTelegram(
   };
 
   bus.emit("TRADE_REQUEST", intent);
+
+  // Safety net: if nothing responds within 20s, tell the user
+  setTimeout(() => {
+    if (pendingReplies.has(intentId)) {
+      pendingReplies.delete(intentId);
+      quoteCache.delete(`quote-${intentId}`);
+      safetyCache.delete(`safety-${intentId}`);
+      void bot.api
+        .sendMessage(
+          chatId,
+          `⏰ *Request timed out*\n\nToken: \`${address}\`\n` +
+            `The quote and safety agents didn't respond in time.\n\n` +
+            `_Please try again or check the contract address._`,
+          { parse_mode: "Markdown" },
+        )
+        .catch(console.error);
+    }
+  }, 20_000);
 }
 
 async function handleResearchFromTelegram(

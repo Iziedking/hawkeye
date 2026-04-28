@@ -171,6 +171,11 @@ export function startQuoteAgent(): void {
         console.warn(
           `[QuoteAgent] No DexScreener pairs found for ${intent.address} — cannot quote`,
         );
+        bus.emit("QUOTE_FAILED", {
+          intentId: intent.intentId,
+          address: intent.address,
+          reason: "No trading pairs found on any DEX. The token may be too new, unlisted, or on an unsupported chain.",
+        });
         return;
       }
 
@@ -233,6 +238,11 @@ export function startQuoteAgent(): void {
         `[QuoteAgent] Unhandled error for intentId=${intent.intentId}:`,
         err,
       );
+      bus.emit("QUOTE_FAILED", {
+        intentId: intent.intentId,
+        address: intent.address,
+        reason: "Internal error while fetching quote. Please try again.",
+      });
     }
   });
 
