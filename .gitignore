@@ -28,3 +28,6 @@ Thumbs.db
 .claude/
 CLAUDE.md
 learning_/
+
+# Local contributor plans — stay on each dev's machine only
+.samuel-plan.md

@@ -6,7 +6,7 @@
     "verbatimModuleSyntax": false,
     "esModuleInterop": true,
     "types": ["node"],
-    "lib": ["ES2023"]
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["./**/*.ts", "../shared/**/*.ts"]
 }
