@@ -6,52 +6,52 @@
 //
 // Job 2 — Research request handler (event-driven):
 //   Gateway emits RESEARCH_REQUEST when a user asks about a token.
-//   Agent pulls full data from all sources, synthesises a verdict via 0G Compute,
-//   emits RESEARCH_RESULT.
+//   Agent pulls full data from all sources, synthesises a verdict via the injected LLM
+//   (or OgComputeClient fallback), emits RESEARCH_RESULT.
 //
 // Source stack:
 //   Security   : GoPlus (EVM), Honeypot.is (EVM), RugCheck (Solana)
 //   Market     : DexScreener, CoinGecko, Birdeye (Solana)
-//   Holders    : Etherscan (EVM), Solscan (Solana), Arkham (entity labels, both)
-//   Sentiment  : Alternative.me Fear & Greed Index (market-wide, free)
-//   Trend      : GDELT (250k+ global news sources, no key), RSS feeds (CoinDesk/CoinTelegraph/
-//                Decrypt/Reuters/BBC — direct from source, no key), Stocktwits (trading community),
-//                Farcaster/Neynar (Web3-native community), Alternative.me (market fear/greed)
-//                Brave Search reserved for RESEARCH_REQUEST only (user-initiated, 2k/mo free tier)
-//   Synthesis  : 0G Compute (OgComputeClient via HAWKEYE_EVM_PRIVATE_KEY)
+//   Holders    : Etherscan (EVM), Solscan (Solana)
+//   Sentiment  : Alternative.me Fear & Greed Index
+//   Trend      : GDELT (250k+ global news, no key), RSS feeds, Stocktwits,
+//                Reddit (23 subreddits — crypto + news/world), Tavily
+//   Synthesis  : Injected LlmClient (Israel's FallbackLlmClient) → OgComputeClient fallback
 
-import { bus } from "../shared/event-bus";
-import type { AlphaFoundPayload, ResearchRequest, ResearchResult, ChainId, SafetyFlag } from "../shared/types";
-import { OgComputeClient } from "../integrations/0g/compute";
+import { bus } from "../../shared/event-bus";
+import type {
+  AlphaFoundPayload, ResearchRequest, ResearchResult,
+  ChainId, SafetyFlag, LlmClient,
+} from "../../shared/types";
+import { OgComputeClient } from "../../integrations/0g/compute";
 import {
   getLatestTokenProfiles,
   getLatestBoosts,
   getPairsByToken,
   searchPairs,
   isValidChain,
-} from "../tools/dexscreener-mcp/client";
-import type { DexPair, DexScreenerChain } from "../tools/dexscreener-mcp/client";
+} from "../../tools/dexscreener-mcp/client";
+import type { DexPair, DexScreenerChain } from "../../tools/dexscreener-mcp/client";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
-// Tickers that are industry-standard acronyms (EVM = Ethereum Virtual Machine,
-// NFT = non-fungible token, etc.). These generate structural false positives in
-// every RSS/Reddit/news search by design — skip trend signal for them entirely.
-// They can still pass via the fundamentals override in processCandidate.
+// Tickers that are industry-standard acronyms (EVM, NFT, DAO, etc.).
+// These generate structural false positives in every RSS/Reddit/news search by
+// design — skip trend signal for them entirely. They can still pass via the
+// fundamentals override if metrics are strong enough.
 const INDUSTRY_TERM_TICKERS = new Set([
   "EVM", "NFT", "DAO", "TVL", "DEX", "CEX", "APY", "APR",
   "L1", "L2", "TPS", "MEV", "RPC", "ABI", "ERC", "BEP", "SPL",
   "DeFi", "DEFI", "AMM", "LP", "VC",
 ]);
 
-const POLL_INTERVAL_MS  = 30_000; // discovery loop cadence
-const MIN_LIQUIDITY_USD = 50_000; // below this, a single trade moves price significantly — not viable
-const MIN_VOLUME_24H    = 120_000; // below this, likely wash trading or a dead market
-const MIN_VOL_LIQ_RATIO = 2;      // vol24h/liquidity — ensures real activity relative to pool size
-const ALPHA_THRESHOLD   = 65;     // minimum opportunityScore to emit ALPHA_FOUND
+const POLL_INTERVAL_MS  = 30_000;
+const MIN_LIQUIDITY_USD = 50_000;
+const MIN_VOLUME_24H    = 120_000;
+const MIN_VOL_LIQ_RATIO = 2;
+const ALPHA_THRESHOLD   = 65;
 
 // ─── Seen token registry ───────────────────────────────────────────────────────
-// Keeps track of every token the polling loop has already evaluated so we never
-// re-process the same address across cycles.
+// Prevents re-processing the same address across polling cycles.
 // Key: "${chainId}:${address.toLowerCase()}"
 const seenTokens = new Set<string>();
 
@@ -61,9 +61,8 @@ function detectChainClass(address: string): "evm" | "solana" {
 }
 
 // ─── Security scanning ────────────────────────────────────────────────────────
-// Intentionally duplicated from safety.ts — agents don't import each other.
-// GoPlus + Honeypot.is for EVM, RugCheck for Solana. Same scoring as safety.ts
-// so ALPHA_FOUND safetyScore and SAFETY_RESULT score are always comparable.
+// Intentionally duplicated from safety/index.ts — agents don't import each other.
+// Same scoring so ALPHA_FOUND safetyScore and SAFETY_RESULT score are always comparable.
 
 const CHAIN_NUMERIC_ID: Record<string, number> = {
   ethereum: 1,   bsc: 56,       polygon: 137,  arbitrum: 42161,
@@ -96,7 +95,6 @@ async function runSecurityScan(
   if (chainClass === "evm") {
     const numericId = CHAIN_NUMERIC_ID[chainId] ?? 1;
 
-    // GoPlus + Honeypot.is in parallel — independent simulations catch different cases.
     const [goplusResp, honeypotResp] = await Promise.allSettled([
       fetch(
         `https://api.gopluslabs.io/api/v1/token_security/${numericId}` +
@@ -126,7 +124,12 @@ async function runSecurityScan(
         flags.push("UNVERIFIED_CONTRACT"); ok = false;
       }
     } else {
-      flags.push("UNVERIFIED_CONTRACT"); ok = false;
+      // Log GoPlus 429 explicitly — rate limit is a known failure mode under load.
+      if (goplusResp.status === "fulfilled" && goplusResp.value.status === 429) {
+        console.warn(`[research] GoPlus rate limited (429) chain=${numericId} — failing open`);
+      } else {
+        flags.push("UNVERIFIED_CONTRACT"); ok = false;
+      }
     }
 
     if (honeypotResp.status === "fulfilled" && honeypotResp.value.ok) {
@@ -135,7 +138,6 @@ async function runSecurityScan(
     }
 
   } else {
-    // Solana — RugCheck replaces both EVM scanners.
     try {
       const resp = await fetch(
         `https://api.rugcheck.xyz/v1/tokens/${address}/report`,
@@ -168,14 +170,13 @@ async function runSecurityScan(
 }
 
 // ─── Holder and age intelligence ──────────────────────────────────────────────
-// EVM  → Etherscan: first tx timestamp for age, tokenholderlist + tokensupply for concentration.
+// EVM  → Etherscan: first tx timestamp for age, tokenholderlist for concentration.
 // Solana → Solscan: tokenCreatedAt for age, holders endpoint for concentration.
-// Arkham entity labels skipped until API key is approved — slot is reserved here.
 
 type AgeAndHolders = {
-  ageHours:      number | null; // null = could not determine (don't drop, just skip age check)
-  top3Pct:       number | null; // null = could not determine (don't drop, just skip concentration check)
-  holderCount:   number | null;
+  ageHours:    number | null;
+  top3Pct:     number | null;
+  holderCount: number | null;
 };
 
 async function checkAgeAndHolders(
@@ -183,9 +184,7 @@ async function checkAgeAndHolders(
   chainClass: "evm" | "solana",
   chainId: string,
 ): Promise<AgeAndHolders> {
-  if (chainClass === "evm") {
-    return checkEtherscan(address, chainId);
-  }
+  if (chainClass === "evm") return checkEtherscan(address, chainId);
   return checkSolscan(address);
 }
 
@@ -196,15 +195,12 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
   const base = "https://api.etherscan.io/api";
 
   try {
-    // Age: pull the first transaction ever sent to/from this contract.
-    // The earliest tx timestamp is the contract deployment time.
     const [ageResp, holdersResp, supplyResp] = await Promise.all([
       fetch(`${base}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
       fetch(`${base}?module=token&action=tokenholderlist&contractaddress=${address}&page=1&offset=10&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
       fetch(`${base}?module=stats&action=tokensupply&contractaddress=${address}&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
     ]);
 
-    // Age calculation
     let ageHours: number | null = null;
     if (ageResp.ok) {
       const body = await ageResp.json() as { result?: Array<{ timeStamp?: string }> };
@@ -212,7 +208,6 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
       if (ts > 0) ageHours = (Date.now() / 1000 - ts) / 3600;
     }
 
-    // Holder concentration — top 3 holders as % of total supply
     let top3Pct: number | null = null;
     let holderCount: number | null = null;
     if (holdersResp.ok && supplyResp.ok) {
@@ -231,7 +226,6 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
 
     return { ageHours, top3Pct, holderCount };
   } catch {
-    // Etherscan unavailable — fail open (don't drop the token on a network error)
     return { ageHours: null, top3Pct: null, holderCount: null };
   }
 }
@@ -241,11 +235,10 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
 
   try {
     const [metaResp, holdersResp] = await Promise.all([
-      fetch(`${base}/token/meta?tokenAddress=${address}`,                           { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}/token/holders?tokenAddress=${address}&limit=10&offset=0`,      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}/token/meta?tokenAddress=${address}`,                          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}/token/holders?tokenAddress=${address}&limit=10&offset=0`,     { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
     ]);
 
-    // Age
     let ageHours: number | null = null;
     if (metaResp.ok) {
       const body = await metaResp.json() as { tokenInfo?: { tokenCreatedAt?: number } };
@@ -253,7 +246,6 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
       if (createdAt) ageHours = (Date.now() / 1000 - createdAt) / 3600;
     }
 
-    // Holder concentration
     let top3Pct: number | null = null;
     let holderCount: number | null = null;
     if (holdersResp.ok) {
@@ -268,7 +260,6 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
         const totalInList = amounts.reduce((a, b) => a + b, 0);
         if (totalInList > 0) {
           const top3 = amounts.slice(0, 3).reduce((a, b) => a + b, 0);
-          // Use list total as proxy for supply — conservative estimate
           top3Pct = (top3 / totalInList) * 100;
         }
       }
@@ -281,16 +272,11 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
 }
 
 // ─── GDELT rate-limit gate ────────────────────────────────────────────────────
-// GDELT returns 429 when multiple processCandidate() calls fire in parallel and
-// all hit GDELT simultaneously. One slot per 2 seconds keeps us safely within
-// their undocumented rate limit. JS is single-threaded so the read+write is atomic.
+// GDELT 429s under parallel processCandidate() load. One slot per polling cycle.
 let gdeltLastCallAt = 0;
-const GDELT_COOLDOWN_MS = 30_000; // one slot per full polling cycle — prevents burst 429s
+const GDELT_COOLDOWN_MS = 30_000;
 
-// ─── Fear & Greed Index (cached) ──────────────────────────────────────────────
-// Alternative.me publishes a market-wide sentiment index every 24h. We cache it
-// for 15 minutes so the polling loop never hammers the endpoint. Extreme greed
-// bumps the narrative multiplier; extreme fear cuts it.
+// ─── Fear & Greed Index (cached 15 min) ──────────────────────────────────────
 let fearGreedCache: { value: number; expiresAt: number } | null = null;
 
 async function getFearGreedIndex(): Promise<number> {
@@ -306,19 +292,12 @@ async function getFearGreedIndex(): Promise<number> {
       return value;
     }
   } catch { /* fall through */ }
-  return 50; // neutral when unreachable
+  return 50;
 }
 
 // ─── Trend signal source checks ────────────────────────────────────────────────
-// Each returns true if it found any mention of the ticker in the source.
-// All fail open — a network error returns false so we never drop a token
-// just because a trend source went down.
 
-// GDELT 2.0 — 250k+ global news sources, updated every 15 minutes, no key needed.
-// Tries each term in parallel and returns true on the first hit.
-// timespan=6h catches tokens trending over hours, not just the last 15 minutes.
 async function checkGdelt(terms: string[]): Promise<boolean> {
-  // One GDELT slot per 2 seconds across all concurrent processCandidate() calls.
   const now = Date.now();
   if (now - gdeltLastCallAt < GDELT_COOLDOWN_MS) return false;
   gdeltLastCallAt = now;
@@ -349,10 +328,6 @@ async function checkGdelt(terms: string[]): Promise<boolean> {
   return results.some((r) => r.status === "fulfilled" && r.value);
 }
 
-// Eight curated RSS feeds: CoinDesk, CoinTelegraph, Decrypt, The Defiant,
-// CoinJournal, The Block, Reuters business, BBC business. Fetched in parallel;
-// a simple case-insensitive substring scan checks for any search term.
-// No XML parser needed — the ticker appears in title/description as plain text.
 const RSS_FEEDS = [
   "https://www.coindesk.com/arc/outboundfeeds/rss/",
   "https://cointelegraph.com/rss",
@@ -381,8 +356,6 @@ async function checkRssFeeds(terms: string[]): Promise<boolean> {
   return false;
 }
 
-// Stocktwits — real-time trading community discussion, public API, no key needed.
-// Tries each term so TRUMP28 also checks TRUMP, etc.
 async function checkStocktwits(terms: string[]): Promise<boolean> {
   const results = await Promise.allSettled(
     terms.map(async (term) => {
@@ -402,14 +375,10 @@ async function checkStocktwits(terms: string[]): Promise<boolean> {
   return results.some((r) => r.status === "fulfilled" && r.value);
 }
 
-
 // ─── Reddit multi-subreddit signal ────────────────────────────────────────────
-// Searches 23 subreddits in one request (Reddit's + path syntax).
-// Split into two groups so the intent is clear: crypto-native discussion vs.
-// real-world narrative (e.g. a "World Cup" token benefits when r/soccer is
-// buzzing about the actual World Cup — the narrative drives token demand).
-// Each subreddit that has ≥1 qualifying post (within 48h, ups ≥ 3) adds one
-// entry to sources[], so Reddit can contribute multiple signal points.
+// 23 subreddits in one logical pass: 11 crypto-native + 12 news/world.
+// News subs catch real-world narratives driving token demand (World Cup, elections, etc.)
+// Each subreddit with a qualifying post adds one signal point independently.
 const REDDIT_CRYPTO_SUBS = [
   "CryptoCurrency", "CryptoMoonShots", "DeFi", "SatoshiStreetBets",
   "CryptoMarkets", "memecoin", "solana", "ethereum", "BSCMoonShots",
@@ -428,7 +397,6 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
   const nowSec      = Date.now() / 1000;
   const cutoff48h   = nowSec - 48 * 3600;
 
-  // Shared fetch + filter logic — closure over seenPostIds and matchedSubs.
   async function processUrl(url: string, minUps: number, label: string): Promise<void> {
     try {
       const resp = await fetch(url, {
@@ -460,10 +428,8 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
   const newsPath   = REDDIT_NEWS_SUBS.join("+");
   const requests: Promise<void>[] = [];
 
-  // Crypto subreddits — full text search, low upvote bar.
-  // Short tickers (≤4 chars) are common words — only search dollar-prefix so
-  // "BULL" doesn't match every post body that says "bullish" or "bull run".
-  // Longer tickers try both bare and dollar-prefix since ambiguity is low.
+  // Short tickers (≤4 chars) are common words — only search dollar-prefix to avoid
+  // "BULL" matching every "bullish" or "bull run" post.
   const cryptoQueries = ticker.length <= 4 ? [`$${ticker}`] : [ticker, `$${ticker}`];
   for (const q of cryptoQueries) {
     requests.push(processUrl(
@@ -472,11 +438,8 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
     ));
   }
 
-  // News subreddits — title-only quoted phrase search, higher upvote bar.
-  // Uses the full token name (e.g. "World Cup") not the ticker, so only posts whose
-  // headline explicitly references the theme will count. Guards:
-  //   • name ≥ 5 chars — prevents single-letter or generic 3-letter names matching noise
-  //   • name ≠ ticker  — avoids running a redundant search already covered by crypto subs
+  // News subs — title-only quoted token name, higher upvote bar.
+  // Guard: name ≥5 chars and name ≠ ticker (no redundant search).
   const namePhrase = tokenName.trim();
   if (namePhrase.length >= 5 && namePhrase.toLowerCase() !== ticker.toLowerCase()) {
     requests.push(processUrl(
@@ -489,10 +452,8 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
   return [...matchedSubs];
 }
 
-// Tavily — deep search fallback. Called only on PARTIAL signal (exactly 1 free
-// source fires) in the polling loop. Always called in RESEARCH_REQUEST (Commit 5).
-// Requires TAVILY_API_KEY.
-// days=3 for polling loop (fresh signal only), days=7 for RESEARCH_REQUEST (more context).
+// Tavily — deep search. Polling loop uses days=3 (fresh signal only).
+// RESEARCH_REQUEST uses days=7 (more historical context).
 async function checkTavily(ticker: string, days = 3): Promise<boolean> {
   const key = process.env["TAVILY_API_KEY"];
   if (!key) return false;
@@ -519,15 +480,11 @@ async function checkTavily(ticker: string, days = 3): Promise<boolean> {
 
 // ─── Trend signal aggregator ───────────────────────────────────────────────────
 type TrendSignal = {
-  mentionCount: number; // sources that returned a positive hit
-  sources: string[];    // names of those sources (for the ALPHA_FOUND reason string)
-  fearGreed: number;    // 0–100 market-wide index from Alternative.me
+  mentionCount: number;
+  sources: string[];
+  fearGreed: number;
 };
 
-// Build a de-duplicated list of search terms from a ticker + name.
-// TRUMP28 → ["TRUMP28", "TRUMP"]  (strip trailing digits)
-// 1INCH   → ["1INCH", "INCH"]     (strip leading digits)
-// "Chad House" → adds "Chad", "House" as individual words (≥4 chars)
 function expandSearchTerms(ticker: string, tokenName: string): string[] {
   const terms = new Set<string>([ticker]);
   const stripped = ticker.replace(/^\d+|\d+$/, "").trim();
@@ -538,23 +495,18 @@ function expandSearchTerms(ticker: string, tokenName: string): string[] {
   return [...terms];
 }
 
-// withGdelt=false for the polling loop (GDELT 429s under parallel load).
-// withGdelt=true for RESEARCH_REQUEST — user-triggered, rare, worth the call.
+// withGdelt=false for polling loop (429s under parallel load).
+// withGdelt=true for RESEARCH_REQUEST (user-triggered, rare, worth the call).
 async function checkTrendSignal(
   ticker: string,
   tokenName: string,
   withGdelt = false,
 ): Promise<TrendSignal> {
   const terms    = expandSearchTerms(ticker, tokenName);
-  // Short tickers (≤4 chars) are common English words — "BULL", "MOON", "PUMP".
-  // Require dollar-prefix in RSS so "bull market" articles don't register as signal.
   const rssTerms = [...new Set([...terms, tokenName])]
     .filter((t) => t.length >= 2)
     .map((t) => t.length <= 4 ? `$${t}` : t);
 
-  // Neynar cast search requires a paid plan (HTTP 402 on free tier).
-  // Re-enable checkNeynar() here once the plan is upgraded.
-  // Reddit replaces Neynar: each matched subreddit adds one signal point.
   const [gdelt, rss, stocktwits, reddit, fearGreed] = await Promise.allSettled([
     withGdelt ? checkGdelt(terms) : Promise.resolve(false),
     checkRssFeeds(rssTerms),
@@ -576,9 +528,6 @@ async function checkTrendSignal(
 }
 
 // ─── Narrative multiplier ──────────────────────────────────────────────────────
-// Converts trend strength into a safetyScore multiplier (1.0x–1.8x).
-// More independent sources = stronger signal = higher ceiling.
-// Fear & Greed modulates by ±0.1 at the extremes (greed up, fear down).
 function computeNarrativeMultiplier(signal: TrendSignal): number {
   let base: number;
   if (signal.mentionCount >= 3)       base = 1.7;
@@ -594,9 +543,6 @@ function computeNarrativeMultiplier(signal: TrendSignal): number {
 }
 
 // ─── Polling cycle ─────────────────────────────────────────────────────────────
-// Fetches the latest token profiles and boosts from DexScreener, deduplicates
-// against the seen-token registry, and fires processCandidate() for each new one.
-// Each candidate is processed independently — one failure doesn't abort the cycle.
 async function runPollingCycle(): Promise<void> {
   try {
     const [profiles, boosts] = await Promise.all([
@@ -604,7 +550,6 @@ async function runPollingCycle(): Promise<void> {
       getLatestBoosts(),
     ]);
 
-    // Merge both sources. Boosts are paid promotions but often have real momentum.
     const candidates = new Map<string, { address: string; chainId: DexScreenerChain }>();
     for (const item of [...profiles, ...boosts]) {
       if (!isValidChain(item.chainId)) continue;
@@ -622,7 +567,6 @@ async function runPollingCycle(): Promise<void> {
     }
 
     for (const [key, candidate] of candidates) {
-      // Mark seen immediately — even if processing fails, don't retry next cycle.
       seenTokens.add(key);
       void processCandidate(candidate.address, candidate.chainId);
     }
@@ -632,17 +576,12 @@ async function runPollingCycle(): Promise<void> {
 }
 
 // ─── Candidate pipeline ────────────────────────────────────────────────────────
-// Runs a single token through the full evaluation pipeline. Each commit adds one
-// more stage. At the end, if the opportunityScore clears the threshold, ALPHA_FOUND
-// is emitted.
 async function processCandidate(
   address: string,
   chainId: DexScreenerChain,
 ): Promise<void> {
   try {
-    // ── Stage 1: DexScreener liquidity + volume filter ─────────────────────────
-    // Pick the highest-liquidity pair for this token as the canonical data point.
-    // If DexScreener has no pair data, skip — we have nothing to evaluate.
+    // Stage 1: liquidity + volume filter
     const pairs = await getPairsByToken(chainId, address).catch(() => [] as DexPair[]);
     const best  = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
     if (!best) return;
@@ -665,17 +604,14 @@ async function processCandidate(
       ` liq=$${liquidityUsd.toFixed(0)} vol24h=$${volume24h.toFixed(0)}`,
     );
 
-    // ── Stage 2: security scan ─────────────────────────────────────────────────
+    // Stage 2: security scan
     const chainClass = detectChainClass(address);
     const security   = await runSecurityScan(address, chainClass, chainId);
 
-    // Hard drop 1: confirmed honeypot — never surface these to users.
     if (security.flags.includes("HONEYPOT")) {
       console.log(`[research] drop ${ticker}: HONEYPOT`);
       return;
     }
-
-    // Hard drop 2: known rugger wallet deployed this token.
     if (security.flags.includes("KNOWN_RUGGER")) {
       console.log(`[research] drop ${ticker}: KNOWN_RUGGER`);
       return;
@@ -683,30 +619,22 @@ async function processCandidate(
 
     const safetyScore = security.score;
 
-    // ── Stage 3: holder/age intelligence ──────────────────────────────────────
+    // Stage 3: holder/age intelligence
     const ageAndHolders = await checkAgeAndHolders(address, chainClass, chainId);
 
-    // Hard drop 3: token less than 1 hour old — too new, likely sniper bait.
     if (ageAndHolders.ageHours !== null && ageAndHolders.ageHours < 1) {
       console.log(`[research] drop ${ticker}: too new (${ageAndHolders.ageHours.toFixed(1)}h old)`);
       return;
     }
-
-    // Hard drop 4: top 3 wallets hold > 80% of supply — coordinated dump setup.
     if (ageAndHolders.top3Pct !== null && ageAndHolders.top3Pct > 80) {
       console.log(`[research] drop ${ticker}: holder concentration ${ageAndHolders.top3Pct.toFixed(0)}%`);
       return;
     }
 
-    // ── Stage 4: trend signal + narrative multiplier + ALPHA_FOUND ───────────
-    // Industry acronyms skip trend entirely — searching "EVM", "NFT", "DAO"
-    // generates false positives in every source by definition. They can still
-    // pass via the fundamentals override below if metrics are strong enough.
+    // Stage 4: trend signal + narrative multiplier + ALPHA_FOUND
     let trend: TrendSignal = { mentionCount: 0, sources: [], fearGreed: 50 };
     if (!INDUSTRY_TERM_TICKERS.has(ticker.toUpperCase())) {
       trend = await checkTrendSignal(ticker, tokenName);
-      // PARTIAL signal: only 1 free source fired → use Tavily to confirm/amplify.
-      // Avoids burning Tavily's quota on tokens with no signal at all.
       if (trend.mentionCount === 1) {
         const tavilyConfirmed = await checkTavily(ticker);
         if (tavilyConfirmed) trend.sources.push("tavily");
@@ -724,8 +652,7 @@ async function processCandidate(
 
     if (opportunityScore < ALPHA_THRESHOLD) return;
 
-    // Require at least one trend signal — unless fundamentals are strong enough
-    // to stand alone: ≥200 holders, ≥$150k liquidity, ≥$300k 24h volume.
+    // Require at least one trend signal — unless fundamentals are strong enough to stand alone.
     const fundamentalsOverride =
       (ageAndHolders.holderCount ?? 0) > 200 &&
       liquidityUsd > 150_000 &&
@@ -743,7 +670,7 @@ async function processCandidate(
         ? `Trend confirmed by: ${trend.sources.join(", ")}.`
         : "Passes all safety filters — no active trend signals.");
 
-    void priceUsd; // available for Commit 5 ALPHA_FOUND extension if needed
+    void priceUsd;
 
     bus.emit("ALPHA_FOUND", {
       address,
@@ -760,13 +687,11 @@ async function processCandidate(
 }
 
 // ─── CoinGecko ────────────────────────────────────────────────────────────────
-// Two-step: search by symbol → fetch full coin data. Free public API, no key.
-// Called only for RESEARCH_REQUEST (user-triggered) to stay within the free rate limit.
 type CoinGeckoData = {
-  priceUsd:     number | null;
-  marketCap:    number | null;
-  volume24h:    number | null;
-  sentimentUp:  number | null; // % of users who voted bullish
+  priceUsd:      number | null;
+  marketCap:     number | null;
+  volume24h:     number | null;
+  sentimentUp:   number | null;
   sentimentDown: number | null;
 };
 
@@ -812,8 +737,6 @@ async function fetchCoinGecko(ticker: string): Promise<CoinGeckoData | null> {
 }
 
 // ─── Birdeye (Solana only) ────────────────────────────────────────────────────
-// Enhanced Solana analytics — more accurate price/volume than DexScreener for SPL tokens.
-// Only called when chainClass === "solana". Requires BIRDEYE_API_KEY.
 type BirdeyeData = { priceUsd: number | null; volume24h: number | null };
 
 async function fetchBirdeye(address: string): Promise<BirdeyeData | null> {
@@ -836,8 +759,6 @@ async function fetchBirdeye(address: string): Promise<BirdeyeData | null> {
 }
 
 // ─── Brave Search ─────────────────────────────────────────────────────────────
-// Reserved for RESEARCH_REQUEST — not the polling loop (2k/month free tier).
-// Searches global + crypto-specific results for fresh context on the token.
 type BraveResult = { title: string; description: string; url: string };
 
 async function searchBrave(query: string): Promise<BraveResult[]> {
@@ -865,10 +786,10 @@ async function searchBrave(query: string): Promise<BraveResult[]> {
   }
 }
 
-// ─── LLM synthesis via 0G Compute ─────────────────────────────────────────────
-// Uses OgComputeClient (src/integrations/0g/compute.ts). Requires HAWKEYE_EVM_PRIVATE_KEY.
-// Lazy singleton — initialised on first call, reused for the process lifetime.
-// Falls back to "" if the key is absent or inference fails; caller uses buildTemplateSummary().
+// ─── LLM synthesis ────────────────────────────────────────────────────────────
+// Prefers the injected LlmClient (Israel's FallbackLlmClient at startup).
+// Falls back to direct OgComputeClient if no client is injected (standalone/smoke-test).
+// Returns "" on failure — caller uses buildTemplateSummary() as the final fallback.
 let _ogClient: OgComputeClient | null = null;
 
 function getOgClient(): OgComputeClient {
@@ -876,7 +797,23 @@ function getOgClient(): OgComputeClient {
   return _ogClient;
 }
 
-async function callLLM(prompt: string): Promise<string> {
+async function callLLM(prompt: string, llm?: LlmClient): Promise<string> {
+  if (llm) {
+    try {
+      const resp = await llm.infer({
+        system: "You are a crypto research assistant. Give concise, direct verdicts on tokens.",
+        user:   prompt,
+        maxTokens: 250,
+      });
+      const result = resp.text.trim();
+      if (result) return result;
+      console.warn("[research] injected LLM returned empty — falling back to OgComputeClient");
+    } catch (err) {
+      console.error("[research] injected LLM failed:", err);
+    }
+  }
+
+  // Standalone fallback: direct OgComputeClient.
   if (!process.env["HAWKEYE_EVM_PRIVATE_KEY"]) return "";
   try {
     const resp = await getOgClient().infer({
@@ -920,10 +857,10 @@ function buildResearchPrompt(d: ResearchData): string {
     `Trend signals: ${d.trend.sources.join(", ") || "none"} (Fear & Greed: ${d.trend.fearGreed}/100)`,
     `Opportunity score: ${d.opportunityScore}/100`,
   ];
-  if (d.cg?.marketCap)    lines.push(`CoinGecko market cap: $${(d.cg.marketCap / 1e6).toFixed(1)}M`);
-  if (d.cg?.sentimentUp)  lines.push(`CoinGecko sentiment: ${d.cg.sentimentUp.toFixed(0)}% bullish`);
+  if (d.cg?.marketCap)     lines.push(`CoinGecko market cap: $${(d.cg.marketCap / 1e6).toFixed(1)}M`);
+  if (d.cg?.sentimentUp)   lines.push(`CoinGecko sentiment: ${d.cg.sentimentUp.toFixed(0)}% bullish`);
   if (d.birdeye?.volume24h) lines.push(`Birdeye 24h volume: $${d.birdeye.volume24h.toFixed(0)}`);
-  if (d.brave.length > 0) lines.push(`Web results: ${d.brave.slice(0, 3).map((r) => r.title).join(" | ")}`);
+  if (d.brave.length > 0)  lines.push(`Web results: ${d.brave.slice(0, 3).map((r) => r.title).join(" | ")}`);
   lines.push(`\nUser question: ${d.question}`);
   lines.push("\nGive a concise 2-3 sentence verdict on this token. Be direct — mention the most important risk or opportunity. No filler.");
   return lines.join("\n");
@@ -944,11 +881,9 @@ function buildTemplateSummary(d: ResearchData): string {
 }
 
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
-async function handleResearchRequest(req: ResearchRequest): Promise<void> {
+async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Promise<void> {
   console.log(`[research] RESEARCH_REQUEST for ${req.address ?? req.tokenName ?? "unknown"}`);
 
-  // ── 1. Resolve address ───────────────────────────────────────────────────────
-  // If the user asked by ticker name instead of address, find it via DexScreener.
   let address = req.address;
   let resolvedChainId: DexScreenerChain = "ethereum";
 
@@ -958,7 +893,7 @@ async function handleResearchRequest(req: ResearchRequest): Promise<void> {
     }));
     const top = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
     if (top && isValidChain(top.chainId)) {
-      address        = top.baseToken.address;
+      address         = top.baseToken.address;
       resolvedChainId = top.chainId as DexScreenerChain;
     }
   }
@@ -971,20 +906,18 @@ async function handleResearchRequest(req: ResearchRequest): Promise<void> {
   const chainClass = detectChainClass(address);
   if (req.chain === "solana" || chainClass === "solana") resolvedChainId = "solana";
 
-  // ── 2. DexScreener — canonical pair data ────────────────────────────────────
   const pairs = await getPairsByToken(resolvedChainId, address).catch(() => [] as DexPair[]);
   const best  = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
 
-  const ticker      = best?.baseToken?.symbol ?? req.tokenName ?? address.slice(0, 8);
-  const tokenName   = best?.baseToken?.name   ?? req.tokenName ?? ticker;
-  const priceUsd    = parseFloat(best?.priceUsd ?? "0") || null;
+  const ticker       = best?.baseToken?.symbol ?? req.tokenName ?? address.slice(0, 8);
+  const tokenName    = best?.baseToken?.name   ?? req.tokenName ?? ticker;
+  const priceUsd     = parseFloat(best?.priceUsd ?? "0") || null;
   const liquidityUsd = best?.liquidity?.usd    ?? null;
 
-  // ── 3. All sources in parallel ───────────────────────────────────────────────
   const [secS, ageS, trendS, cgS, birdS, braveS] = await Promise.allSettled([
     runSecurityScan(address, chainClass, resolvedChainId),
     checkAgeAndHolders(address, chainClass, resolvedChainId),
-    checkTrendSignal(ticker, tokenName, true), // withGdelt=true — user-triggered, low frequency
+    checkTrendSignal(ticker, tokenName, true),
     fetchCoinGecko(ticker),
     chainClass === "solana" ? fetchBirdeye(address) : Promise.resolve(null),
     searchBrave(`${ticker} ${tokenName} crypto`),
@@ -997,19 +930,15 @@ async function handleResearchRequest(req: ResearchRequest): Promise<void> {
   const birdeye  = birdS.status  === "fulfilled" ? birdS.value  : null;
   const brave    = braveS.status === "fulfilled" ? braveS.value : [];
 
-  // Tavily always fires for RESEARCH_REQUEST — unlike the polling loop it's
-  // user-initiated so spending a quota call here is always justified.
-  // 7-day window gives more context than the polling loop's 3-day fresh-signal filter.
   const tavilyHit = await checkTavily(ticker, 7);
   if (tavilyHit && !trend.sources.includes("tavily")) {
     trend.sources.push("tavily");
     trend.mentionCount++;
   }
 
-  const multiplier      = computeNarrativeMultiplier(trend);
+  const multiplier       = computeNarrativeMultiplier(trend);
   const opportunityScore = Math.min(100, Math.round(security.score * multiplier));
 
-  // ── 4. LLM synthesis → template fallback ────────────────────────────────────
   const data: ResearchData = {
     ticker, tokenName, address,
     chainId: resolvedChainId,
@@ -1019,7 +948,7 @@ async function handleResearchRequest(req: ResearchRequest): Promise<void> {
     question: req.question,
   };
 
-  let summary = await callLLM(buildResearchPrompt(data));
+  let summary = await callLLM(buildResearchPrompt(data), llm);
   if (!summary) summary = buildTemplateSummary(data);
 
   bus.emit("RESEARCH_RESULT", {
@@ -1040,24 +969,29 @@ async function handleResearchRequest(req: ResearchRequest): Promise<void> {
 // ─── Agent entry point ─────────────────────────────────────────────────────────
 /**
  * Starts the Research Agent. Call once from src/index.ts at boot time.
+ * Returns stop() for clean shutdown.
+ *
+ * @param deps.llm  Optional LlmClient (Israel's FallbackLlmClient). When provided,
+ *                  all LLM synthesis uses it instead of a direct OgComputeClient.
  *
  * Job 1: background polling loop — emits ALPHA_FOUND for tokens that pass all gates.
- * Job 2: RESEARCH_REQUEST listener — emits RESEARCH_RESULT with LLM-synthesised verdict.
- *
- * Keys required (add to .env.local — never committed):
- *   HAWKEYE_EVM_PRIVATE_KEY — 0G Compute wallet for LLM inference
- *   ETHERSCAN_API_KEY, BIRDEYE_API_KEY, BRAVE_API_KEY,
- *   TAVILY_API_KEY, NEYNAR_API_KEY (upgrade to paid for cast search)
+ * Job 2: RESEARCH_REQUEST listener — emits RESEARCH_RESULT with synthesised verdict.
  */
-export function startResearchAgent(): void {
-  // Fire the first poll cycle immediately, then repeat on the interval.
+export function startResearchAgent(deps?: { llm?: LlmClient }): { stop(): void } {
   void runPollingCycle();
-  setInterval(() => { void runPollingCycle(); }, POLL_INTERVAL_MS);
+  const timer = setInterval(() => { void runPollingCycle(); }, POLL_INTERVAL_MS);
 
-  // Job 2 listener — registered now, implemented in Commit 5.
-  bus.on("RESEARCH_REQUEST", (req: ResearchRequest) => {
-    void handleResearchRequest(req);
-  });
+  const onRequest = (req: ResearchRequest) => {
+    void handleResearchRequest(req, deps?.llm);
+  };
+  bus.on("RESEARCH_REQUEST", onRequest);
 
   console.log("[research] Research Agent started — polling every 30s, listening for RESEARCH_REQUEST");
+
+  return {
+    stop(): void {
+      clearInterval(timer);
+      bus.off("RESEARCH_REQUEST", onRequest);
+    },
+  };
 }
