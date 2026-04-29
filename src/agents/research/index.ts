@@ -79,9 +79,135 @@ const FLAG_DEDUCTIONS: Partial<Record<SafetyFlag, number>> = {
   BLACKLIST: 20, LOW_LIQUIDITY: 20, UNVERIFIED_CONTRACT: 15, PROXY_CONTRACT: 10,
 };
 
-function computeScore(flags: SafetyFlag[]): number {
-  const deduction = flags.reduce((t, f) => t + (FLAG_DEDUCTIONS[f] ?? 0), 0);
-  return Math.max(0, 100 - deduction);
+// Weighted scoring — single-source flags are discounted by source reliability.
+// HONEYPOT always gets full deduction regardless of source.
+type FlagSource = "goplus" | "honeypot" | "rugcheck" | "goplusSolana" | "dexscreener";
+type FlagWithSource = { flag: SafetyFlag; source: FlagSource };
+
+const SOURCE_WEIGHTS: Record<FlagSource, number> = {
+  goplus: 0.90, honeypot: 0.85, rugcheck: 0.85, goplusSolana: 0.85, dexscreener: 1.0,
+};
+
+const GOPLUS_RETRY_DELAYS_MS = [1_000, 2_000] as const;
+
+function computeScore(
+  flagsWithSources: FlagWithSource[],
+  jupiterBonus = false,
+): { score: number; flags: SafetyFlag[] } {
+  const flagSources = new Map<SafetyFlag, Set<FlagSource>>();
+  for (const { flag, source } of flagsWithSources) {
+    if (!flagSources.has(flag)) flagSources.set(flag, new Set());
+    flagSources.get(flag)!.add(source);
+  }
+  let deduction = 0;
+  for (const [flag, sources] of flagSources) {
+    const base = FLAG_DEDUCTIONS[flag] ?? 0;
+    if (flag === "HONEYPOT" || sources.size >= 2) {
+      deduction += base;
+    } else {
+      const onlySource = [...sources][0] as FlagSource;
+      deduction += base * (SOURCE_WEIGHTS[onlySource] ?? 1.0);
+    }
+  }
+  if (jupiterBonus) deduction -= 5;
+  return {
+    score: Math.max(0, Math.round(100 - deduction)),
+    flags: [...flagSources.keys()],
+  };
+}
+
+// GoPlus EVM fetch with 429 retry. Extracted so runSecurityScan() can await it
+// directly instead of wrapping in Promise.allSettled (which can't retry inline).
+async function fetchGoPlusEVM(
+  address: string,
+  numericChainId: number,
+): Promise<Response | null> {
+  const url =
+    `https://api.gopluslabs.io/api/v1/token_security/${numericChainId}` +
+    `?contract_addresses=${address.toLowerCase()}`;
+  let lastResp: Response | null = null;
+  for (let attempt = 0; attempt <= GOPLUS_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      const delay = GOPLUS_RETRY_DELAYS_MS[attempt - 1] ?? 1_000;
+      console.warn(`[research] GoPlus 429 chain=${numericChainId} — retry ${attempt} in ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    try {
+      const resp = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
+        lastResp = resp; continue;
+      }
+      return resp;
+    } catch { return null; }
+  }
+  if (lastResp?.status === 429) console.warn(`[research] GoPlus all retries exhausted chain=${numericChainId} — failing open`);
+  return lastResp;
+}
+
+// GoPlus Solana — dedicated endpoint with different fields from the EVM endpoint.
+// Solana addresses are base58 case-sensitive — do NOT .toLowerCase() the key lookup.
+type GoPlusSolanaData = {
+  is_mintable?: string; freezeable?: string; metadata_upgradeable?: string;
+  transfer_fee_enable?: string; transfer_fee_rate?: string; hidden_owner?: string;
+};
+
+async function fetchGoPlusSolana(mintAddress: string): Promise<FlagWithSource[]> {
+  const url = `https://api.gopluslabs.io/api/v1/solana/token_security?contract_addresses=${mintAddress}`;
+  let lastResp: Response | null = null;
+  for (let attempt = 0; attempt <= GOPLUS_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      const delay = GOPLUS_RETRY_DELAYS_MS[attempt - 1] ?? 1_000;
+      console.warn(`[research] GoPlus Solana 429 — retry ${attempt} in ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    try {
+      const resp = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
+        lastResp = resp; continue;
+      }
+      lastResp = resp; break;
+    } catch { return [{ flag: "UNVERIFIED_CONTRACT", source: "goplusSolana" }]; }
+  }
+  if (!lastResp?.ok) return [];
+  try {
+    const body = await lastResp.json() as { result?: Record<string, GoPlusSolanaData> };
+    const data = body.result?.[mintAddress] ?? null;
+    if (!data) return [{ flag: "UNVERIFIED_CONTRACT", source: "goplusSolana" }];
+    const flags: FlagWithSource[] = [];
+    if (data.freezeable === "1")                          flags.push({ flag: "FREEZE_AUTHORITY", source: "goplusSolana" });
+    if (data.is_mintable === "1")                         flags.push({ flag: "MINT_AUTHORITY",   source: "goplusSolana" });
+    if (parseFloat(data.transfer_fee_rate ?? "0") > 0.1) flags.push({ flag: "HIGH_TAX",         source: "goplusSolana" });
+    return flags;
+  } catch { return []; }
+}
+
+// Jupiter strict token list — vetted tokens get a -5 deduction bonus.
+const JUPITER_STRICT_TTL_MS = 60 * 60 * 1_000;
+let jupiterStrictCache: { mints: Set<string>; expiresAt: number } | null = null;
+
+async function isOnJupiterStrictList(mintAddress: string): Promise<boolean> {
+  if (jupiterStrictCache && Date.now() < jupiterStrictCache.expiresAt) {
+    return jupiterStrictCache.mints.has(mintAddress);
+  }
+  try {
+    const resp = await fetch("https://token.jup.ag/strict", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!resp.ok) return false;
+    const tokens = await resp.json() as Array<{ address: string }>;
+    const mints = new Set(tokens.map((t) => t.address));
+    jupiterStrictCache = { mints, expiresAt: Date.now() + JUPITER_STRICT_TTL_MS };
+    return mints.has(mintAddress);
+  } catch {
+    return false;
+  }
 }
 
 async function runSecurityScan(
@@ -89,84 +215,82 @@ async function runSecurityScan(
   chainClass: "evm" | "solana",
   chainId: string,
 ): Promise<{ flags: SafetyFlag[]; score: number; ok: boolean }> {
-  const flags: SafetyFlag[] = [];
+  const allFlags: FlagWithSource[] = [];
   let ok = true;
 
   if (chainClass === "evm") {
     const numericId = CHAIN_NUMERIC_ID[chainId] ?? 1;
 
     const [goplusResp, honeypotResp] = await Promise.allSettled([
-      fetch(
-        `https://api.gopluslabs.io/api/v1/token_security/${numericId}` +
-        `?contract_addresses=${address.toLowerCase()}`,
-        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
-      ),
+      fetchGoPlusEVM(address, numericId),
       fetch(
         `https://api.honeypot.is/v2/IsHoneypot?address=${address}&chainID=${numericId}`,
         { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(6_000) },
       ),
     ]);
 
-    if (goplusResp.status === "fulfilled" && goplusResp.value.ok) {
+    if (goplusResp.status === "fulfilled" && goplusResp.value?.ok) {
       const body = await goplusResp.value.json() as { result?: Record<string, Record<string, string>> };
       const data = body.result?.[address.toLowerCase()];
       if (data) {
-        if (data["is_honeypot"] === "1")                flags.push("HONEYPOT");
-        if (data["is_mintable"] === "1")                flags.push("MINT_AUTHORITY");
-        if (data["is_proxy"] === "1")                   flags.push("PROXY_CONTRACT");
-        if (data["is_blacklisted"] === "1")             flags.push("BLACKLIST");
-        if (data["is_open_source"] !== "1")             flags.push("UNVERIFIED_CONTRACT");
-        if (data["honeypot_with_same_creator"] === "1") flags.push("KNOWN_RUGGER");
+        if (data["is_honeypot"] === "1")                allFlags.push({ flag: "HONEYPOT",           source: "goplus" });
+        if (data["is_mintable"] === "1")                allFlags.push({ flag: "MINT_AUTHORITY",      source: "goplus" });
+        if (data["is_proxy"] === "1")                   allFlags.push({ flag: "PROXY_CONTRACT",      source: "goplus" });
+        if (data["is_blacklisted"] === "1")             allFlags.push({ flag: "BLACKLIST",           source: "goplus" });
+        if (data["is_open_source"] !== "1")             allFlags.push({ flag: "UNVERIFIED_CONTRACT", source: "goplus" });
+        if (data["honeypot_with_same_creator"] === "1") allFlags.push({ flag: "KNOWN_RUGGER",        source: "goplus" });
         const buyTax  = parseFloat(data["buy_tax"]  ?? "0");
         const sellTax = parseFloat(data["sell_tax"] ?? "0");
-        if (buyTax > 0.1 || sellTax > 0.1) flags.push("HIGH_TAX");
+        if (buyTax > 0.1 || sellTax > 0.1) allFlags.push({ flag: "HIGH_TAX", source: "goplus" });
       } else {
-        flags.push("UNVERIFIED_CONTRACT"); ok = false;
+        allFlags.push({ flag: "UNVERIFIED_CONTRACT", source: "goplus" }); ok = false;
       }
     } else {
-      // Log GoPlus 429 explicitly — rate limit is a known failure mode under load.
-      if (goplusResp.status === "fulfilled" && goplusResp.value.status === 429) {
-        console.warn(`[research] GoPlus rate limited (429) chain=${numericId} — failing open`);
-      } else {
-        flags.push("UNVERIFIED_CONTRACT"); ok = false;
-      }
+      allFlags.push({ flag: "UNVERIFIED_CONTRACT", source: "goplus" }); ok = false;
     }
 
     if (honeypotResp.status === "fulfilled" && honeypotResp.value.ok) {
       const body = await honeypotResp.value.json() as { isHoneypot?: boolean };
-      if (body.isHoneypot && !flags.includes("HONEYPOT")) flags.push("HONEYPOT");
+      if (body.isHoneypot) allFlags.push({ flag: "HONEYPOT", source: "honeypot" });
     }
 
   } else {
-    try {
-      const resp = await fetch(
+    // Solana: RugCheck + GoPlus Solana in parallel for dual-scanner coverage.
+    const [rugcheckResp, goplusSolFlags, onStrict] = await Promise.all([
+      fetch(
         `https://api.rugcheck.xyz/v1/tokens/${address}/report`,
         { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
-      );
-      if (resp.ok) {
-        const report = await resp.json() as {
-          freezeAuthority?: string | null;
-          mintAuthority?:   string | null;
-          risks?: Array<{ name: string; level?: string }>;
-        };
-        if (report.freezeAuthority) flags.push("FREEZE_AUTHORITY");
-        if (report.mintAuthority)   flags.push("MINT_AUTHORITY");
-        for (const risk of report.risks ?? []) {
-          const n = risk.name.toLowerCase();
-          if (n.includes("honeypot") || n.includes("rugged")) flags.push("HONEYPOT");
-          if (n.includes("blacklist"))                         flags.push("BLACKLIST");
-          if (risk.level === "danger" && n.includes("tax"))   flags.push("HIGH_TAX");
-        }
-      } else {
-        flags.push("UNVERIFIED_CONTRACT"); ok = false;
+      ).catch(() => null),
+      fetchGoPlusSolana(address),
+      isOnJupiterStrictList(address),
+    ]);
+
+    if (rugcheckResp?.ok) {
+      const report = await rugcheckResp.json() as {
+        freezeAuthority?: string | null;
+        mintAuthority?:   string | null;
+        risks?: Array<{ name: string; level?: string }>;
+      };
+      if (report.freezeAuthority) allFlags.push({ flag: "FREEZE_AUTHORITY", source: "rugcheck" });
+      if (report.mintAuthority)   allFlags.push({ flag: "MINT_AUTHORITY",   source: "rugcheck" });
+      for (const risk of report.risks ?? []) {
+        const n = risk.name.toLowerCase();
+        if (n.includes("honeypot") || n.includes("rugged")) allFlags.push({ flag: "HONEYPOT",        source: "rugcheck" });
+        if (n.includes("blacklist"))                         allFlags.push({ flag: "BLACKLIST",        source: "rugcheck" });
+        if (risk.level === "danger" && n.includes("tax"))   allFlags.push({ flag: "HIGH_TAX",         source: "rugcheck" });
       }
-    } catch {
-      flags.push("UNVERIFIED_CONTRACT"); ok = false;
+    } else {
+      allFlags.push({ flag: "UNVERIFIED_CONTRACT", source: "rugcheck" }); ok = false;
     }
+
+    allFlags.push(...goplusSolFlags);
+
+    const { score, flags } = computeScore(allFlags, onStrict);
+    return { flags, score, ok };
   }
 
-  const unique = [...new Set(flags)] as SafetyFlag[];
-  return { flags: unique, score: computeScore(unique), ok };
+  const { score, flags } = computeScore(allFlags);
+  return { flags, score, ok };
 }
 
 // ─── Holder and age intelligence ──────────────────────────────────────────────
