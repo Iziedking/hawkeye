@@ -14,12 +14,12 @@
 //   Market     : DexScreener, CoinGecko, Birdeye (Solana)
 //   Holders    : Etherscan (EVM), Solscan (Solana), Arkham (entity labels, both)
 //   Sentiment  : Alternative.me Fear & Greed Index (market-wide, free)
-//   Trend      : CryptoPanic (crypto news + votes), Brave Search (global web),
-//                Reddit (community volume), Tavily (deep fallback)
+//   Trend      : Brave Search ×2 (global + crypto-specific), Stocktwits (trading community),
+//                Farcaster/Neynar (Web3-native community), Tavily (deep fallback)
 //   Synthesis  : OpenRouter locally → 0G Compute in production
 
 import { bus } from "../shared/event-bus";
-import type { AlphaFoundPayload, ResearchRequest, ChainId } from "../shared/types";
+import type { AlphaFoundPayload, ResearchRequest, ChainId, SafetyFlag } from "../shared/types";
 import {
   getLatestTokenProfiles,
   getLatestBoosts,
@@ -43,6 +43,113 @@ const seenTokens = new Set<string>();
 // ─── Chain class helper ────────────────────────────────────────────────────────
 function detectChainClass(address: string): "evm" | "solana" {
   return address.startsWith("0x") ? "evm" : "solana";
+}
+
+// ─── Security scanning ────────────────────────────────────────────────────────
+// Intentionally duplicated from safety.ts — agents don't import each other.
+// GoPlus + Honeypot.is for EVM, RugCheck for Solana. Same scoring as safety.ts
+// so ALPHA_FOUND safetyScore and SAFETY_RESULT score are always comparable.
+
+const CHAIN_NUMERIC_ID: Record<string, number> = {
+  ethereum: 1,   bsc: 56,       polygon: 137,  arbitrum: 42161,
+  base: 8453,    optimism: 10,  avalanche: 43114, fantom: 250,
+  cronos: 25,    zksync: 324,   linea: 59144,  blast: 81457,
+  scroll: 534352, mantle: 5000, celo: 42220,   ronin: 2020,
+  unichain: 130, gnosis: 100,   berachain: 80094, hyperevm: 999,
+  monad: 41454,  mode: 34443,   worldchain: 480,
+};
+
+const FLAG_DEDUCTIONS: Partial<Record<SafetyFlag, number>> = {
+  HONEYPOT: 100, KNOWN_RUGGER: 50,  PHISHING_ORIGIN: 30,
+  MINT_AUTHORITY: 25, FREEZE_AUTHORITY: 25, HIGH_TAX: 25,
+  BLACKLIST: 20, LOW_LIQUIDITY: 20, UNVERIFIED_CONTRACT: 15, PROXY_CONTRACT: 10,
+};
+
+function computeScore(flags: SafetyFlag[]): number {
+  const deduction = flags.reduce((t, f) => t + (FLAG_DEDUCTIONS[f] ?? 0), 0);
+  return Math.max(0, 100 - deduction);
+}
+
+async function runSecurityScan(
+  address: string,
+  chainClass: "evm" | "solana",
+  chainId: string,
+): Promise<{ flags: SafetyFlag[]; score: number; ok: boolean }> {
+  const flags: SafetyFlag[] = [];
+  let ok = true;
+
+  if (chainClass === "evm") {
+    const numericId = CHAIN_NUMERIC_ID[chainId] ?? 1;
+
+    // GoPlus + Honeypot.is in parallel — independent simulations catch different cases.
+    const [goplusResp, honeypotResp] = await Promise.allSettled([
+      fetch(
+        `https://api.gopluslabs.io/api/v1/token_security/${numericId}` +
+        `?contract_addresses=${address.toLowerCase()}`,
+        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
+      ),
+      fetch(
+        `https://api.honeypot.is/v2/IsHoneypot?address=${address}&chainID=${numericId}`,
+        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(6_000) },
+      ),
+    ]);
+
+    if (goplusResp.status === "fulfilled" && goplusResp.value.ok) {
+      const body = await goplusResp.value.json() as { result?: Record<string, Record<string, string>> };
+      const data = body.result?.[address.toLowerCase()];
+      if (data) {
+        if (data["is_honeypot"] === "1")                flags.push("HONEYPOT");
+        if (data["is_mintable"] === "1")                flags.push("MINT_AUTHORITY");
+        if (data["is_proxy"] === "1")                   flags.push("PROXY_CONTRACT");
+        if (data["is_blacklisted"] === "1")             flags.push("BLACKLIST");
+        if (data["is_open_source"] !== "1")             flags.push("UNVERIFIED_CONTRACT");
+        if (data["honeypot_with_same_creator"] === "1") flags.push("KNOWN_RUGGER");
+        const buyTax  = parseFloat(data["buy_tax"]  ?? "0");
+        const sellTax = parseFloat(data["sell_tax"] ?? "0");
+        if (buyTax > 0.1 || sellTax > 0.1) flags.push("HIGH_TAX");
+      } else {
+        flags.push("UNVERIFIED_CONTRACT"); ok = false;
+      }
+    } else {
+      flags.push("UNVERIFIED_CONTRACT"); ok = false;
+    }
+
+    if (honeypotResp.status === "fulfilled" && honeypotResp.value.ok) {
+      const body = await honeypotResp.value.json() as { isHoneypot?: boolean };
+      if (body.isHoneypot && !flags.includes("HONEYPOT")) flags.push("HONEYPOT");
+    }
+
+  } else {
+    // Solana — RugCheck replaces both EVM scanners.
+    try {
+      const resp = await fetch(
+        `https://api.rugcheck.xyz/v1/tokens/${address}/report`,
+        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
+      );
+      if (resp.ok) {
+        const report = await resp.json() as {
+          freezeAuthority?: string | null;
+          mintAuthority?:   string | null;
+          risks?: Array<{ name: string; level?: string }>;
+        };
+        if (report.freezeAuthority) flags.push("FREEZE_AUTHORITY");
+        if (report.mintAuthority)   flags.push("MINT_AUTHORITY");
+        for (const risk of report.risks ?? []) {
+          const n = risk.name.toLowerCase();
+          if (n.includes("honeypot") || n.includes("rugged")) flags.push("HONEYPOT");
+          if (n.includes("blacklist"))                         flags.push("BLACKLIST");
+          if (risk.level === "danger" && n.includes("tax"))   flags.push("HIGH_TAX");
+        }
+      } else {
+        flags.push("UNVERIFIED_CONTRACT"); ok = false;
+      }
+    } catch {
+      flags.push("UNVERIFIED_CONTRACT"); ok = false;
+    }
+  }
+
+  const unique = [...new Set(flags)] as SafetyFlag[];
+  return { flags: unique, score: computeScore(unique), ok };
 }
 
 // ─── Polling cycle ─────────────────────────────────────────────────────────────
@@ -112,22 +219,36 @@ async function processCandidate(
       ` liq=$${liquidityUsd.toFixed(0)} vol24h=$${volume24h.toFixed(0)}`,
     );
 
-    // ── Stage 2: security scan — added in Commit 2 ─────────────────────────────
-    // GoPlus + Honeypot.is (EVM) or RugCheck (Solana).
-    // Hard drops: HONEYPOT flag, token age < 1 hour, holder concentration > 80%.
+    // ── Stage 2: security scan ─────────────────────────────────────────────────
+    const chainClass = detectChainClass(address);
+    const security   = await runSecurityScan(address, chainClass, chainId);
+
+    // Hard drop 1: confirmed honeypot — never surface these to users.
+    if (security.flags.includes("HONEYPOT")) {
+      console.log(`[research] drop ${ticker}: HONEYPOT`);
+      return;
+    }
+
+    // Hard drop 2: known rugger wallet deployed this token.
+    if (security.flags.includes("KNOWN_RUGGER")) {
+      console.log(`[research] drop ${ticker}: KNOWN_RUGGER`);
+      return;
+    }
+
+    const safetyScore = security.score;
 
     // ── Stage 3: holder/age intelligence — added in Commit 3 ───────────────────
     // Etherscan/Solscan for contract age + top holders.
     // Arkham for entity labels on creator + top holders.
+    // Hard drops: token < 1 hour old, top-3 holders > 80% concentration.
     // Emits ALPHA_FOUND once opportunity score is computed.
 
     // ── Stage 4: trend signal + narrative multiplier — added in Commit 4 ────────
-    // CryptoPanic (crypto sentiment), Brave Search (global web), Reddit (community),
-    // Alternative.me (market fear/greed), Tavily (deep fallback for partial signal).
-    // multiplier: 1.0x – 1.8x applied to safety score → opportunityScore.
+    // Brave ×2 (global + crypto), Stocktwits, Farcaster/Neynar,
+    // Alternative.me (fear/greed), Tavily (deep fallback).
+    // multiplier: 1.0x–1.8x applied to safetyScore → opportunityScore.
 
-    // Suppress unused-variable warnings until later commits populate these fields.
-    void ticker; void tokenName; void priceUsd;
+    void tokenName; void priceUsd; void safetyScore; // used from Commit 3 onward
 
   } catch (err) {
     console.error(`[research] error processing ${address} (${chainId}):`, err);
