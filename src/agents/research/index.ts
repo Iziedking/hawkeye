@@ -52,8 +52,36 @@ const ALPHA_THRESHOLD   = 65;
 
 // ─── Seen token registry ───────────────────────────────────────────────────────
 // Prevents re-processing the same address across polling cycles.
-// Key: "${chainId}:${address.toLowerCase()}"
-const seenTokens = new Set<string>();
+// Key: "${chainId}:${address.toLowerCase()}" → timestamp first seen (ms).
+// Entries expire after 4 hours so tokens get re-evaluated if they resurface later.
+const SEEN_TOKEN_TTL_MS = 4 * 60 * 60 * 1_000;
+const seenTokens = new Map<string, number>();
+
+// ─── Etherscan rate limiter ────────────────────────────────────────────────────
+// Serialises all Etherscan fetches to ≤2 calls/sec so polling and research
+// requests never collide regardless of concurrency.
+let _etherscanLastCallAt = 0;
+const _etherscanQueue: Array<() => void> = [];
+let _etherscanDraining = false;
+
+async function _drainEtherscanQueue(): Promise<void> {
+  if (_etherscanDraining) return;
+  _etherscanDraining = true;
+  while (_etherscanQueue.length > 0) {
+    const gap = Date.now() - _etherscanLastCallAt;
+    if (gap < 500) await new Promise((r) => setTimeout(r, 500 - gap));
+    _etherscanLastCallAt = Date.now();
+    _etherscanQueue.shift()?.();
+  }
+  _etherscanDraining = false;
+}
+
+function etherscanFetch(url: string, init?: RequestInit): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    _etherscanQueue.push(() => { fetch(url, init).then(resolve).catch(reject); });
+    void _drainEtherscanQueue();
+  });
+}
 
 // ─── Chain class helper ────────────────────────────────────────────────────────
 function detectChainClass(address: string): "evm" | "solana" {
@@ -314,20 +342,27 @@ async function checkAgeAndHolders(
   return checkSolscan(address);
 }
 
-async function checkEtherscan(address: string, _chainId: string): Promise<AgeAndHolders> {
-  const key = process.env["ETHERSCAN_API_KEY"] ?? "";
-  if (!key) return { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
+// Etherscan V2 free tier only covers Ethereum mainnet (chainid=1).
+// Other chains (BSC=56, Base=8453, etc.) require a paid plan — skip them rather than wasting a call.
+const ETHERSCAN_FREE_CHAINS = new Set(["ethereum"]);
 
-  const base       = "https://api.etherscan.io/api";
+async function checkEtherscan(address: string, chainId: string, ageOnly = false): Promise<AgeAndHolders> {
+  const key = process.env["ETHERSCAN_API_KEY"] ?? "";
+  if (!key || !ETHERSCAN_FREE_CHAINS.has(chainId)) return { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
+
+  const base       = "https://api.etherscan.io/v2/api?chainid=1";
   const cutoff24h  = Math.floor(Date.now() / 1000) - 86_400;
 
   try {
-    // 4 calls in parallel — offset=50 on tokentx is still 1 API call, not pagination.
-    const [ageResp, holdersResp, supplyResp, transfersResp] = await Promise.all([
-      fetch(`${base}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${key}`,  { signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}?module=token&action=tokenholderlist&contractaddress=${address}&page=1&offset=10&apikey=${key}`,                          { signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}?module=stats&action=tokensupply&contractaddress=${address}&apikey=${key}`,                                              { signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}?module=account&action=tokentx&contractaddress=${address}&page=1&offset=50&sort=desc&apikey=${key}`,                     { signal: AbortSignal.timeout(8_000) }),
+    // Full scan only — all fetches go through the rate limiter queue (≤2/sec globally).
+    // ageOnly path removed: polling now derives age from DexScreener pairCreatedAt instead.
+    const [ageResp, supplyResp] = await Promise.all([
+      etherscanFetch(`${base}&module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
+      etherscanFetch(`${base}&module=stats&action=tokensupply&contractaddress=${address}&apikey=${key}`,                                             { signal: AbortSignal.timeout(8_000) }),
+    ]);
+    const [holdersResp, transfersResp] = await Promise.all([
+      etherscanFetch(`${base}&module=token&action=tokenholderlist&contractaddress=${address}&page=1&offset=10&apikey=${key}`,             { signal: AbortSignal.timeout(8_000) }),
+      etherscanFetch(`${base}&module=account&action=tokentx&contractaddress=${address}&page=1&offset=50&sort=desc&apikey=${key}`,         { signal: AbortSignal.timeout(8_000) }),
     ]);
 
     let ageHours: number | null = null;
@@ -341,15 +376,27 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
     let holderCount: number | null = null;
     let totalSupply = 0;
 
-    if (holdersResp.ok && supplyResp.ok) {
-      const holdersBody = await holdersResp.json() as { result?: Array<{ TokenHolderQuantity?: string }> };
-      const supplyBody  = await supplyResp.json()  as { result?: string };
-      totalSupply       = parseFloat(supplyBody.result ?? "0");
-      const holders     = holdersBody.result ?? [];
-      holderCount = holders.length;
-      if (totalSupply > 0 && holders.length >= 3) {
-        const top3 = holders.slice(0, 3).reduce((sum, h) => sum + parseFloat(h.TokenHolderQuantity ?? "0"), 0);
-        top3Pct = (top3 / totalSupply) * 100;
+    // tokensupply is free tier — parse it independently so whale detection works
+    // even when tokenholderlist fails (that endpoint requires Etherscan Pro).
+    // Etherscan always returns HTTP 200; check status field for actual success.
+    if (supplyResp.ok) {
+      const supplyBody = await supplyResp.json() as { status?: string; result?: string };
+      if (supplyBody.status === "1") {
+        totalSupply = parseFloat(supplyBody.result ?? "0");
+      } else {
+        console.warn(`[research] Etherscan tokensupply: ${supplyBody.result ?? "unknown error"}`);
+      }
+    }
+
+    if (holdersResp.ok && totalSupply > 0) {
+      const holdersBody = await holdersResp.json() as { status?: string; result?: Array<{ TokenHolderQuantity?: string }> };
+      if (holdersBody.status === "1") {
+        const holders = holdersBody.result ?? [];
+        holderCount = holders.length;
+        if (holders.length >= 3) {
+          const top3 = holders.slice(0, 3).reduce((sum, h) => sum + parseFloat(h.TokenHolderQuantity ?? "0"), 0);
+          top3Pct = (top3 / totalSupply) * 100;
+        }
       }
     }
 
@@ -358,8 +405,12 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
 
     if (transfersResp.ok && totalSupply > 0) {
       const txBody = await transfersResp.json() as {
+        status?: string;
         result?: Array<{ from?: string; value?: string; timeStamp?: string }>;
       };
+      if (txBody.status !== "1") {
+        console.warn(`[research] Etherscan tokentx: ${typeof txBody.result === "string" ? txBody.result : "unknown error"}`);
+      } else {
       // Filter to last 24h — tokentx includes swaps (DEX sells appear as Transfer from user to pool).
       const txns = (txBody.result ?? []).filter(
         (tx) => parseInt(tx.timeStamp ?? "0", 10) >= cutoff24h,
@@ -378,8 +429,10 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
       }
       distributingWallets = [...sellsByWallet.values()].filter((n) => n >= 6).length;
 
-      if (whaleAlert)           console.log(`[research] ${address}: whale alert — single ERC-20 transfer >= 1% of supply`);
-      if (distributingWallets)  console.log(`[research] ${address}: ${distributingWallets} distributing wallet(s) detected`);
+      if (whaleAlert)              console.log(`[research] ${address}: whale alert — single ERC-20 transfer >= 1% of supply`);
+      else if (distributingWallets) console.log(`[research] ${address}: ${distributingWallets} distributing wallet(s) detected`);
+      else                          console.log(`[research] ${address.slice(0, 8)}: EVM whale scan clean (${txns.length} txns checked)`);
+      }
     }
 
     return { ageHours, top3Pct, holderCount, whaleAlert, distributingWallets };
@@ -388,84 +441,10 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
   }
 }
 
-async function checkSolscan(address: string): Promise<AgeAndHolders> {
-  const base      = "https://public-api.solscan.io";
-  const cutoff24h = Math.floor(Date.now() / 1000) - 86_400;
-
-  try {
-    // 3 calls in parallel — limit=50 on transfers is still 1 request.
-    const [metaResp, holdersResp, transfersResp] = await Promise.all([
-      fetch(`${base}/token/meta?tokenAddress=${address}`,                          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}/token/holders?tokenAddress=${address}&limit=10&offset=0`,     { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}/token/transfer?tokenAddress=${address}&limit=50&offset=0`,    { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
-    ]);
-
-    let ageHours: number | null = null;
-    let totalSupplyUI = 0;
-
-    if (metaResp.ok) {
-      const body = await metaResp.json() as {
-        tokenInfo?: { tokenCreatedAt?: number; supply?: string; decimals?: number };
-      };
-      const createdAt = body.tokenInfo?.tokenCreatedAt;
-      if (createdAt) ageHours = (Date.now() / 1000 - createdAt) / 3600;
-      const rawSupply = parseFloat(body.tokenInfo?.supply ?? "0");
-      const decimals  = body.tokenInfo?.decimals ?? 0;
-      if (rawSupply > 0) totalSupplyUI = rawSupply / Math.pow(10, decimals);
-    }
-
-    let top3Pct: number | null = null;
-    let holderCount: number | null = null;
-    if (holdersResp.ok) {
-      const body = await holdersResp.json() as {
-        total?: number;
-        data?: Array<{ amount?: number }>;
-      };
-      holderCount = body.total ?? null;
-      const holders = body.data ?? [];
-      if (holders.length >= 3) {
-        const amounts     = holders.map((h) => h.amount ?? 0);
-        const totalInList = amounts.reduce((a, b) => a + b, 0);
-        if (totalInList > 0) {
-          const top3 = amounts.slice(0, 3).reduce((a, b) => a + b, 0);
-          top3Pct = (top3 / totalInList) * 100;
-        }
-      }
-    }
-
-    let whaleAlert: boolean | null         = null;
-    let distributingWallets: number | null = null;
-
-    if (transfersResp.ok && totalSupplyUI > 0) {
-      const body = await transfersResp.json() as {
-        data?: Array<{
-          from_address?: string;
-          tokenAmount?:  { uiAmount?: number };
-          blockTime?:    number;
-        }>;
-      };
-      // uiAmount is already decimal-adjusted; compare directly against UI-unit supply.
-      const txns = (body.data ?? []).filter((tx) => (tx.blockTime ?? 0) >= cutoff24h);
-
-      whaleAlert = txns.some((tx) => (tx.tokenAmount?.uiAmount ?? 0) / totalSupplyUI >= 0.01);
-
-      const sellsByWallet = new Map<string, number>();
-      for (const tx of txns) {
-        const from = (tx.from_address ?? "").trim();
-        if (!from) continue;
-        if ((tx.tokenAmount?.uiAmount ?? 0) / totalSupplyUI >= 0.001)
-          sellsByWallet.set(from, (sellsByWallet.get(from) ?? 0) + 1);
-      }
-      distributingWallets = [...sellsByWallet.values()].filter((n) => n >= 6).length;
-
-      if (whaleAlert)          console.log(`[research] ${address}: whale alert — single SPL transfer >= 1% of supply`);
-      if (distributingWallets) console.log(`[research] ${address}: ${distributingWallets} distributing wallet(s) detected (Solana)`);
-    }
-
-    return { ageHours, top3Pct, holderCount, whaleAlert, distributingWallets };
-  } catch {
-    return { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
-  }
+// Solana whale/holder detection skipped — Solscan Pro API requires a paid plan.
+// Helius can replace this post-hackathon: GET /v0/addresses/{mint}/transactions?type=TRANSFER
+function checkSolscan(_address: string): Promise<AgeAndHolders> {
+  return Promise.resolve({ ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null });
 }
 
 // ─── GeckoTerminal OHLCV ─────────────────────────────────────────────────────
@@ -882,7 +861,8 @@ async function runPollingCycle(): Promise<void> {
     for (const item of [...profiles, ...boosts]) {
       if (!isValidChain(item.chainId)) continue;
       const key = `${item.chainId}:${item.tokenAddress.toLowerCase()}`;
-      if (!seenTokens.has(key)) {
+      const seenAt = seenTokens.get(key);
+      if (!seenAt || Date.now() - seenAt > SEEN_TOKEN_TTL_MS) {
         candidates.set(key, {
           address: item.tokenAddress,
           chainId: item.chainId as DexScreenerChain,
@@ -895,7 +875,7 @@ async function runPollingCycle(): Promise<void> {
     }
 
     for (const [key, candidate] of candidates) {
-      seenTokens.add(key);
+      seenTokens.set(key, Date.now());
       void processCandidate(candidate.address, candidate.chainId);
     }
   } catch (err) {
@@ -947,29 +927,16 @@ async function processCandidate(
 
     const safetyScore = security.score;
 
-    // Stage 3: holder/age intelligence
-    const ageAndHolders = await checkAgeAndHolders(address, chainClass, chainId);
-
-    if (ageAndHolders.ageHours !== null && ageAndHolders.ageHours < 1) {
-      console.log(`[research] drop ${ticker}: too new (${ageAndHolders.ageHours.toFixed(1)}h old)`);
-      return;
-    }
-    if (ageAndHolders.top3Pct !== null && ageAndHolders.top3Pct > 80) {
-      console.log(`[research] drop ${ticker}: holder concentration ${ageAndHolders.top3Pct.toFixed(0)}%`);
+    // Stage 3: age gate via DexScreener pairCreatedAt — zero extra API calls from polling.
+    // Etherscan is never touched here; the rate limiter queue is reserved for research requests.
+    const pairCreatedAt = best.pairCreatedAt;
+    const pairAgeHours  = pairCreatedAt ? (Date.now() - pairCreatedAt) / 3_600_000 : null;
+    if (pairAgeHours !== null && pairAgeHours < 1) {
+      console.log(`[research] drop ${ticker}: pair too new (${pairAgeHours.toFixed(1)}h old)`);
       return;
     }
 
-    // Stage 4: transfer-based score adjustments before narrative multiplier.
-    let adjustedSafetyScore = safetyScore;
-    if (ageAndHolders.whaleAlert) {
-      adjustedSafetyScore = Math.max(0, adjustedSafetyScore - 15);
-      console.log(`[research] ${ticker}: whale penalty -15 → ${adjustedSafetyScore}`);
-    }
-    if (ageAndHolders.distributingWallets !== null && ageAndHolders.distributingWallets > 0) {
-      const penalty = ageAndHolders.distributingWallets * 5;
-      adjustedSafetyScore = Math.max(0, adjustedSafetyScore - penalty);
-      console.log(`[research] ${ticker}: distribution penalty -${penalty} (${ageAndHolders.distributingWallets} wallet(s)) → ${adjustedSafetyScore}`);
-    }
+    const adjustedSafetyScore = safetyScore;
 
     // Stage 5: trend signal + narrative multiplier + ALPHA_FOUND
     let trend: TrendSignal = { mentionCount: 0, sources: [], fearGreed: 50 };
@@ -993,22 +960,18 @@ async function processCandidate(
     if (opportunityScore < ALPHA_THRESHOLD) return;
 
     // Require at least one trend signal — unless fundamentals are strong enough to stand alone.
+    // holderCount not available in polling (no Etherscan); liquidity + volume gate is sufficient.
     const fundamentalsOverride =
-      (ageAndHolders.holderCount ?? 0) > 200 &&
-      liquidityUsd > 150_000 &&
-      volume24h    > 300_000;
+      liquidityUsd > 100_000 &&
+      volume24h    > 200_000;
 
     if (trend.sources.length === 0 && !fundamentalsOverride) {
       console.log(`[research] skip ${ticker}: no trend signal, fundamentals below override threshold`);
       return;
     }
 
-    const whaleWarn = ageAndHolders.whaleAlert
-      ? " CAUTION: large single transfer detected."
-      : "";
-    const distWarn  = ageAndHolders.distributingWallets
-      ? ` CAUTION: ${ageAndHolders.distributingWallets} wallet(s) selling in chunks.`
-      : "";
+    const whaleWarn = "";
+    const distWarn  = "";
 
     const reason =
       `${ticker} scored ${opportunityScore}/100 ` +
@@ -1234,6 +1197,8 @@ function buildResearchPrompt(d: ResearchData): string {
   // Transfer-based risk signals
   if (d.age.whaleAlert === true)
     lines.push("Whale alert: single transfer >= 1% of supply in last 24h");
+  else if (d.age.whaleAlert === false)
+    lines.push("Whale movement: clean (in the last 50 txns, no large moves detected)");
   if (d.age.distributingWallets !== null && d.age.distributingWallets > 0)
     lines.push(`Distribution alert: ${d.age.distributingWallets} wallet(s) with 6+ sells of >=0.1% supply in 24h`);
 
@@ -1254,7 +1219,9 @@ function buildTemplateSummary(d: ResearchData): string {
     ? `Active mentions in: ${d.trend.sources.join(", ")}.`
     : "No trend signals detected.";
   const age        = d.age.ageHours != null ? `Token age: ${d.age.ageHours.toFixed(0)}h.` : "";
-  const whale      = d.age.whaleAlert === true ? "Whale transfer detected." : "";
+  const whale      = d.age.whaleAlert === true  ? "Whale transfer detected."
+                   : d.age.whaleAlert === false ? "Whale movement: clean (in the last 50 txns, no large moves detected)"
+                   : "";
   const dist       = d.age.distributingWallets ? `${d.age.distributingWallets} wallet(s) distributing.` : "";
   const priceTrend = d.gecko ? `Price trend: ${d.gecko.priceTrend}.` : "";
   return [
