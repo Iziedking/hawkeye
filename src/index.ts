@@ -3,22 +3,66 @@
 import process from "node:process";
 import { bus } from "./shared/event-bus";
 import { startGateway } from "./gateway/index";
-import { startSafetyAgent } from "./agents/safety/index";
-import { startQuoteAgent } from "./agents/quote/index";
-import { startStrategyAgent } from "./agents/strategy/index";
-import { startResearchAgent } from "./agents/research/index";
+import { startLightSafetyAgent } from "./agents/safety-light";
+import { startQuoteAgent } from "./agents/quote";
 import { startExecutionAgent } from "./agents/execution";
 import { startEducationAgent } from "./agents/education";
+import type { Quote, SafetyReport } from "./shared/types";
 
 async function main(): Promise<void> {
   console.log("[hawkeye] booting agent swarm...");
 
-  const stopSafety = startSafetyAgent();
+  const stopSafety = startLightSafetyAgent();
   const stopQuote = startQuoteAgent();
-  const stopStrategy = startStrategyAgent();
-  const research = startResearchAgent();
   const stopExecution = startExecutionAgent();
   const stopEducation = startEducationAgent();
+
+  // Local lightweight strategy loop for the current repo layout.
+  // It correlates quote+safety and emits a decision for execution.
+  const quoteCache = new Map<string, Quote>();
+  const safetyCache = new Map<string, SafetyReport>();
+  const onQuote = (quote: Quote): void => {
+    const safety = safetyCache.get(quote.intentId);
+    if (!safety) {
+      quoteCache.set(quote.intentId, quote);
+      return;
+    }
+
+    safetyCache.delete(quote.intentId);
+    bus.emit("STRATEGY_DECISION", {
+      intentId: quote.intentId,
+      decision: safety.score >= 40 ? "EXECUTE" : "REJECT",
+      reason:
+        safety.score >= 40
+          ? `Auto-approve: safety=${safety.score} route=${quote.route}`
+          : `Rejected: low safety score ${safety.score}`,
+      ...(safety.score >= 40
+        ? { approvedAt: Date.now() }
+        : { rejectedAt: Date.now() }),
+    });
+  };
+  const onSafety = (safety: SafetyReport): void => {
+    const quote = quoteCache.get(safety.intentId);
+    if (!quote) {
+      safetyCache.set(safety.intentId, safety);
+      return;
+    }
+
+    quoteCache.delete(safety.intentId);
+    bus.emit("STRATEGY_DECISION", {
+      intentId: safety.intentId,
+      decision: safety.score >= 40 ? "EXECUTE" : "REJECT",
+      reason:
+        safety.score >= 40
+          ? `Auto-approve: safety=${safety.score} route=${quote.route}`
+          : `Rejected: low safety score ${safety.score}`,
+      ...(safety.score >= 40
+        ? { approvedAt: Date.now() }
+        : { rejectedAt: Date.now() }),
+    });
+  };
+  bus.on("QUOTE_RESULT", onQuote);
+  bus.on("SAFETY_RESULT", onSafety);
 
   // Log bus activity for debugging
   bus.on("TRADE_REQUEST", (intent) => {
@@ -64,10 +108,10 @@ async function main(): Promise<void> {
     console.log("\n[hawkeye] shutting down...");
     stopSafety();
     stopQuote();
-    stopStrategy();
-    research.stop();
     stopExecution();
     stopEducation();
+    bus.off("QUOTE_RESULT", onQuote);
+    bus.off("SAFETY_RESULT", onSafety);
     gateway?.stop();
     process.exit(0);
   };

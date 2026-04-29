@@ -4,8 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "npx tsx src/telegram/bot.ts",
-    "dev:swarm": "npx tsx src/index.ts",
+    "dev": "node scripts/dev.cjs",
+    "dev:swarm": "node scripts/dev.cjs swarm",
     "typecheck": "npx tsc -p src/agents/tsconfig.json --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

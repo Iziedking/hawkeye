@@ -157,8 +157,8 @@ function buildRouteLabel(chainId: string, chain: "evm" | "solana"): string {
 // Agent entry point
 // ---------------------------------------------------------------------------
 
-export function startQuoteAgent(): void {
-  bus.on("TRADE_REQUEST", async (intent: TradeIntent) => {
+export function startQuoteAgent(): () => void {
+  const handler = async (intent: TradeIntent): Promise<void> => {
     const start = Date.now();
     console.log(
       `[QuoteAgent] TRADE_REQUEST received — intentId=${intent.intentId} address=${intent.address} chain=${intent.chain}`,
@@ -244,7 +244,13 @@ export function startQuoteAgent(): void {
         reason: "Internal error while fetching quote. Please try again.",
       });
     }
-  });
+  };
+
+  bus.on("TRADE_REQUEST", handler);
 
   console.log("[QuoteAgent] ✓ Listening for TRADE_REQUEST");
+
+  return () => {
+    bus.off("TRADE_REQUEST", handler);
+  };
 }

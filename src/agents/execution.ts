@@ -165,11 +165,14 @@ async function simulateTransaction(
         gasUnits?: number;
       };
 
-      return {
-        success: data.ok,
-        reason: data.revertReason,
-        estimatedGasUnits: data.gasUnits,
-      };
+      const result: SimulationResult = { success: data.ok };
+      if (typeof data.revertReason === "string" && data.revertReason.length > 0) {
+        result.reason = data.revertReason;
+      }
+      if (typeof data.gasUnits === "number") {
+        result.estimatedGasUnits = data.gasUnits;
+      }
+      return result;
     }
 
     // Solana — Jito simulation (placeholder; real impl signs a versioned tx
@@ -249,8 +252,15 @@ async function executeEvmSwap(
     throw new Error(`[ExecutionAgent] Uniswap quote failed: ${swapReq.status} ${err}`);
   }
 
-  const quoteData = await swapReq.json();
-  const { permitData, permitTransaction, ...cleanQuote } = quoteData;
+  const quoteData = (await swapReq.json()) as Record<string, unknown> & {
+    permitData?: unknown;
+    permitTransaction?: unknown;
+  };
+  const {
+    permitData: _permitData,
+    permitTransaction: _permitTransaction,
+    ...cleanQuote
+  } = quoteData;
 
   const swapExecReq = await fetch("https://trade-api.gateway.uniswap.org/v1/swap", {
     method: "POST",
@@ -398,7 +408,7 @@ async function handleExecute(intentId: string): Promise<void> {
   );
 
   // 1. Simulation (skip if INSTANT to be as fast as possible, abort if CAREFUL mode and simulation fails)
-  let sim = { success: true, reason: "skipped for speed" };
+  let sim: SimulationResult = { success: true, reason: "skipped for speed" };
   if (intent.urgency !== "INSTANT") {
     sim = await simulateTransaction(intent, quote);
     if (!sim.success) {

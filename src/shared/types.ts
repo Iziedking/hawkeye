@@ -115,6 +115,12 @@ export type Quote = {
   completedAt: number;
 };
 
+export type QuoteFailedPayload = {
+  intentId: string;
+  address: string;
+  reason: string;
+};
+
 
 export type StrategyDecision =
   | {
@@ -280,6 +286,7 @@ export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",
   SAFETY_RESULT: "SAFETY_RESULT",
   QUOTE_RESULT: "QUOTE_RESULT",
+  QUOTE_FAILED: "QUOTE_FAILED",
   STRATEGY_DECISION: "STRATEGY_DECISION",
   EXECUTE_TRADE: "EXECUTE_TRADE",
   TRADE_EXECUTED: "TRADE_EXECUTED",
@@ -299,6 +306,7 @@ export type BusEvents = {
   TRADE_REQUEST: TradeIntent;
   SAFETY_RESULT: SafetyReport;
   QUOTE_RESULT: Quote;
+  QUOTE_FAILED: QuoteFailedPayload;
   STRATEGY_DECISION: StrategyDecision;
   EXECUTE_TRADE: Position;
   TRADE_EXECUTED: TradeExecutedPayload;
