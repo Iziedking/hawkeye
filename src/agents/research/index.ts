@@ -298,9 +298,11 @@ async function runSecurityScan(
 // Solana → Solscan: tokenCreatedAt for age, holders endpoint for concentration.
 
 type AgeAndHolders = {
-  ageHours:    number | null;
-  top3Pct:     number | null;
-  holderCount: number | null;
+  ageHours:            number | null;
+  top3Pct:             number | null;
+  holderCount:         number | null;
+  whaleAlert:          boolean | null; // true if any single transfer >= 1% of supply in last 24h
+  distributingWallets: number | null;  // wallets with 6+ sells of >=0.1% supply in last 24h
 };
 
 async function checkAgeAndHolders(
@@ -314,15 +316,18 @@ async function checkAgeAndHolders(
 
 async function checkEtherscan(address: string, _chainId: string): Promise<AgeAndHolders> {
   const key = process.env["ETHERSCAN_API_KEY"] ?? "";
-  if (!key) return { ageHours: null, top3Pct: null, holderCount: null };
+  if (!key) return { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
 
-  const base = "https://api.etherscan.io/api";
+  const base       = "https://api.etherscan.io/api";
+  const cutoff24h  = Math.floor(Date.now() / 1000) - 86_400;
 
   try {
-    const [ageResp, holdersResp, supplyResp] = await Promise.all([
-      fetch(`${base}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}?module=token&action=tokenholderlist&contractaddress=${address}&page=1&offset=10&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
-      fetch(`${base}?module=stats&action=tokensupply&contractaddress=${address}&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
+    // 4 calls in parallel — offset=50 on tokentx is still 1 API call, not pagination.
+    const [ageResp, holdersResp, supplyResp, transfersResp] = await Promise.all([
+      fetch(`${base}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${key}`,  { signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}?module=token&action=tokenholderlist&contractaddress=${address}&page=1&offset=10&apikey=${key}`,                          { signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}?module=stats&action=tokensupply&contractaddress=${address}&apikey=${key}`,                                              { signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}?module=account&action=tokentx&contractaddress=${address}&page=1&offset=50&sort=desc&apikey=${key}`,                     { signal: AbortSignal.timeout(8_000) }),
     ]);
 
     let ageHours: number | null = null;
@@ -334,40 +339,79 @@ async function checkEtherscan(address: string, _chainId: string): Promise<AgeAnd
 
     let top3Pct: number | null = null;
     let holderCount: number | null = null;
+    let totalSupply = 0;
+
     if (holdersResp.ok && supplyResp.ok) {
       const holdersBody = await holdersResp.json() as { result?: Array<{ TokenHolderQuantity?: string }> };
       const supplyBody  = await supplyResp.json()  as { result?: string };
-      const totalSupply = parseFloat(supplyBody.result ?? "0");
+      totalSupply       = parseFloat(supplyBody.result ?? "0");
       const holders     = holdersBody.result ?? [];
       holderCount = holders.length;
       if (totalSupply > 0 && holders.length >= 3) {
-        const top3 = holders
-          .slice(0, 3)
-          .reduce((sum, h) => sum + parseFloat(h.TokenHolderQuantity ?? "0"), 0);
+        const top3 = holders.slice(0, 3).reduce((sum, h) => sum + parseFloat(h.TokenHolderQuantity ?? "0"), 0);
         top3Pct = (top3 / totalSupply) * 100;
       }
     }
 
-    return { ageHours, top3Pct, holderCount };
+    let whaleAlert: boolean | null          = null;
+    let distributingWallets: number | null  = null;
+
+    if (transfersResp.ok && totalSupply > 0) {
+      const txBody = await transfersResp.json() as {
+        result?: Array<{ from?: string; value?: string; timeStamp?: string }>;
+      };
+      // Filter to last 24h — tokentx includes swaps (DEX sells appear as Transfer from user to pool).
+      const txns = (txBody.result ?? []).filter(
+        (tx) => parseInt(tx.timeStamp ?? "0", 10) >= cutoff24h,
+      );
+
+      whaleAlert = txns.some((tx) => parseFloat(tx.value ?? "0") / totalSupply >= 0.01);
+
+      // Distribution detection: group by sender, count transfers >= 0.1% supply.
+      // 6+ such moves from the same wallet in 24h signals coordinated distribution / slow rug.
+      const sellsByWallet = new Map<string, number>();
+      for (const tx of txns) {
+        const from = (tx.from ?? "").toLowerCase();
+        if (!from || from === address.toLowerCase()) continue; // skip mint events
+        if (parseFloat(tx.value ?? "0") / totalSupply >= 0.001)
+          sellsByWallet.set(from, (sellsByWallet.get(from) ?? 0) + 1);
+      }
+      distributingWallets = [...sellsByWallet.values()].filter((n) => n >= 6).length;
+
+      if (whaleAlert)           console.log(`[research] ${address}: whale alert — single ERC-20 transfer >= 1% of supply`);
+      if (distributingWallets)  console.log(`[research] ${address}: ${distributingWallets} distributing wallet(s) detected`);
+    }
+
+    return { ageHours, top3Pct, holderCount, whaleAlert, distributingWallets };
   } catch {
-    return { ageHours: null, top3Pct: null, holderCount: null };
+    return { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
   }
 }
 
 async function checkSolscan(address: string): Promise<AgeAndHolders> {
-  const base = "https://public-api.solscan.io";
+  const base      = "https://public-api.solscan.io";
+  const cutoff24h = Math.floor(Date.now() / 1000) - 86_400;
 
   try {
-    const [metaResp, holdersResp] = await Promise.all([
+    // 3 calls in parallel — limit=50 on transfers is still 1 request.
+    const [metaResp, holdersResp, transfersResp] = await Promise.all([
       fetch(`${base}/token/meta?tokenAddress=${address}`,                          { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
       fetch(`${base}/token/holders?tokenAddress=${address}&limit=10&offset=0`,     { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}/token/transfer?tokenAddress=${address}&limit=50&offset=0`,    { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
     ]);
 
     let ageHours: number | null = null;
+    let totalSupplyUI = 0;
+
     if (metaResp.ok) {
-      const body = await metaResp.json() as { tokenInfo?: { tokenCreatedAt?: number } };
+      const body = await metaResp.json() as {
+        tokenInfo?: { tokenCreatedAt?: number; supply?: string; decimals?: number };
+      };
       const createdAt = body.tokenInfo?.tokenCreatedAt;
       if (createdAt) ageHours = (Date.now() / 1000 - createdAt) / 3600;
+      const rawSupply = parseFloat(body.tokenInfo?.supply ?? "0");
+      const decimals  = body.tokenInfo?.decimals ?? 0;
+      if (rawSupply > 0) totalSupplyUI = rawSupply / Math.pow(10, decimals);
     }
 
     let top3Pct: number | null = null;
@@ -375,12 +419,12 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
     if (holdersResp.ok) {
       const body = await holdersResp.json() as {
         total?: number;
-        data?: Array<{ amount?: number; decimals?: number }>;
+        data?: Array<{ amount?: number }>;
       };
       holderCount = body.total ?? null;
       const holders = body.data ?? [];
       if (holders.length >= 3) {
-        const amounts = holders.map((h) => h.amount ?? 0);
+        const amounts     = holders.map((h) => h.amount ?? 0);
         const totalInList = amounts.reduce((a, b) => a + b, 0);
         if (totalInList > 0) {
           const top3 = amounts.slice(0, 3).reduce((a, b) => a + b, 0);
@@ -389,10 +433,170 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
       }
     }
 
-    return { ageHours, top3Pct, holderCount };
+    let whaleAlert: boolean | null         = null;
+    let distributingWallets: number | null = null;
+
+    if (transfersResp.ok && totalSupplyUI > 0) {
+      const body = await transfersResp.json() as {
+        data?: Array<{
+          from_address?: string;
+          tokenAmount?:  { uiAmount?: number };
+          blockTime?:    number;
+        }>;
+      };
+      // uiAmount is already decimal-adjusted; compare directly against UI-unit supply.
+      const txns = (body.data ?? []).filter((tx) => (tx.blockTime ?? 0) >= cutoff24h);
+
+      whaleAlert = txns.some((tx) => (tx.tokenAmount?.uiAmount ?? 0) / totalSupplyUI >= 0.01);
+
+      const sellsByWallet = new Map<string, number>();
+      for (const tx of txns) {
+        const from = (tx.from_address ?? "").trim();
+        if (!from) continue;
+        if ((tx.tokenAmount?.uiAmount ?? 0) / totalSupplyUI >= 0.001)
+          sellsByWallet.set(from, (sellsByWallet.get(from) ?? 0) + 1);
+      }
+      distributingWallets = [...sellsByWallet.values()].filter((n) => n >= 6).length;
+
+      if (whaleAlert)          console.log(`[research] ${address}: whale alert — single SPL transfer >= 1% of supply`);
+      if (distributingWallets) console.log(`[research] ${address}: ${distributingWallets} distributing wallet(s) detected (Solana)`);
+    }
+
+    return { ageHours, top3Pct, holderCount, whaleAlert, distributingWallets };
   } catch {
-    return { ageHours: null, top3Pct: null, holderCount: null };
+    return { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
   }
+}
+
+// ─── GeckoTerminal OHLCV ─────────────────────────────────────────────────────
+// Free, no auth required. Owned by CoinGecko but DEX-pool-first — data is real-time
+// (same feed as DexScreener). Gives proper candlestick history instead of stale % changes.
+//
+// Two-step: (1) find best pool for the token, (2) fetch 48 hourly + 14 daily candles.
+// Derived metrics: price trend, volume trend, volatility, ATH/ATL, price-vs-range.
+
+const GECKO_NETWORK: Record<string, string> = {
+  ethereum: "eth",   bsc: "bsc",          polygon: "polygon_pos",
+  arbitrum: "arbitrum", base: "base",     optimism: "optimism_ethereum",
+  avalanche: "avax", solana: "solana",    blast: "blast",
+  scroll: "scroll",  mantle: "mantle",    linea: "linea",
+  zksync: "zksync",  unichain: "unichain", berachain: "berachain",
+};
+
+type GeckoTerminalData = {
+  priceTrend:      "rising" | "falling" | "sideways";
+  volumeTrend:     "accelerating" | "decelerating" | "stable";
+  volatility14d:   number;        // avg (daily_high - daily_low) / close over 14 days
+  ath48h:          number | null; // highest wick in last 48 hourly candles
+  atl48h:          number | null; // lowest wick in last 48 hourly candles
+  ath14d:          number | null;
+  atl14d:          number | null;
+  priceVsRange14d: number | null; // 0.0 = near 14d low, 1.0 = near 14d high
+  consecutiveGreen: number;       // consecutive green daily candles from most recent
+  consecutiveRed:   number;
+};
+
+// OHLCV candle tuple: [timestamp, open, high, low, close, volume]
+type OhlcvCandle = [number, number, number, number, number, number];
+
+async function fetchGeckoTerminal(
+  address: string,
+  chainId: string,
+): Promise<GeckoTerminalData | null> {
+  const network = GECKO_NETWORK[chainId];
+  if (!network) return null;
+
+  // Step 1: find best pool (highest reserve) for the token.
+  const poolsResp = await fetch(
+    `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${address}/pools?page=1`,
+    { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) },
+  ).catch(() => null);
+  if (!poolsResp?.ok) return null;
+
+  const poolsBody = await poolsResp.json() as {
+    data?: Array<{ attributes?: { address?: string; reserve_in_usd?: string } }>;
+  };
+  const bestPool = (poolsBody.data ?? [])
+    .sort((a, b) => parseFloat(b.attributes?.reserve_in_usd ?? "0") - parseFloat(a.attributes?.reserve_in_usd ?? "0"))[0];
+  const poolAddress = bestPool?.attributes?.address;
+  if (!poolAddress) return null;
+
+  // Step 2: 48 hourly + 14 daily candles in parallel.
+  const ohlcvBase = `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv`;
+  const [hourlyResp, dailyResp] = await Promise.all([
+    fetch(`${ohlcvBase}/hour?limit=48&currency=usd`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) }).catch(() => null),
+    fetch(`${ohlcvBase}/day?limit=14&currency=usd`,  { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) }).catch(() => null),
+  ]);
+
+  type OhlcvBody = { data?: { attributes?: { ohlcv_list?: OhlcvCandle[] } } };
+
+  // GeckoTerminal returns newest-first; reverse so index 0 = oldest.
+  let hourly: OhlcvCandle[] = [];
+  let daily:  OhlcvCandle[] = [];
+  if (hourlyResp?.ok) {
+    const b = await hourlyResp.json() as OhlcvBody;
+    hourly = [...(b.data?.attributes?.ohlcv_list ?? [])].reverse();
+  }
+  if (dailyResp?.ok) {
+    const b = await dailyResp.json() as OhlcvBody;
+    daily = [...(b.data?.attributes?.ohlcv_list ?? [])].reverse();
+  }
+  if (hourly.length === 0 && daily.length === 0) return null;
+
+  // ─ Price trend: avg close of most recent 12h vs prior 12h ──────────────────
+  let priceTrend: "rising" | "falling" | "sideways" = "sideways";
+  if (hourly.length >= 24) {
+    const avg = (arr: OhlcvCandle[]) => arr.reduce((s, c) => s + c[4], 0) / arr.length;
+    const ratio = avg(hourly.slice(-12)) / avg(hourly.slice(-24, -12));
+    if (ratio > 1.02) priceTrend = "rising";
+    else if (ratio < 0.98) priceTrend = "falling";
+  }
+
+  // ─ ATH / ATL (48h hourly window) ──────────────────────────────────────────
+  const ath48h = hourly.length > 0 ? Math.max(...hourly.map((c) => c[2])) : null;
+  const atl48h = hourly.length > 0 ? Math.min(...hourly.map((c) => c[3])) : null;
+
+  // ─ Volume trend: avg last 3 days vs prior 3 days ──────────────────────────
+  let volumeTrend: "accelerating" | "decelerating" | "stable" = "stable";
+  if (daily.length >= 6) {
+    const avgVol = (arr: OhlcvCandle[]) => arr.reduce((s, c) => s + c[5], 0) / arr.length;
+    const ratio  = avgVol(daily.slice(-3)) / avgVol(daily.slice(-6, -3));
+    if (ratio > 1.2) volumeTrend = "accelerating";
+    else if (ratio < 0.8) volumeTrend = "decelerating";
+  }
+
+  // ─ ATH / ATL + volatility (14d daily window) ──────────────────────────────
+  const ath14d = daily.length > 0 ? Math.max(...daily.map((c) => c[2])) : null;
+  const atl14d = daily.length > 0 ? Math.min(...daily.map((c) => c[3])) : null;
+  const volatility14d = daily.length > 0
+    ? daily.reduce((s, c) => s + (c[4] > 0 ? (c[2] - c[3]) / c[4] : 0), 0) / daily.length
+    : 0;
+
+  // ─ Price vs 14d range (0 = near bottom, 1 = near top) ────────────────────
+  let priceVsRange14d: number | null = null;
+  if (ath14d !== null && atl14d !== null && ath14d > atl14d && hourly.length > 0) {
+    const currentClose = hourly[hourly.length - 1]![4];
+    priceVsRange14d = (currentClose - atl14d) / (ath14d - atl14d);
+  }
+
+  // ─ Consecutive green / red daily candles (from most recent) ──────────────
+  let consecutiveGreen = 0;
+  let consecutiveRed   = 0;
+  for (let i = daily.length - 1; i >= 0; i--) {
+    const c       = daily[i]!;
+    const isGreen = c[4] >= c[1]; // close >= open
+    if (consecutiveGreen === 0 && consecutiveRed === 0) {
+      if (isGreen) consecutiveGreen = 1; else consecutiveRed = 1;
+    } else if (consecutiveGreen > 0 &&  isGreen) { consecutiveGreen++; }
+    else if   (consecutiveRed   > 0 && !isGreen) { consecutiveRed++;   }
+    else break;
+  }
+
+  return {
+    priceTrend, volumeTrend, volatility14d,
+    ath48h, atl48h, ath14d, atl14d, priceVsRange14d,
+    consecutiveGreen, consecutiveRed,
+  };
 }
 
 // ─── GDELT rate-limit gate ────────────────────────────────────────────────────
@@ -755,7 +959,19 @@ async function processCandidate(
       return;
     }
 
-    // Stage 4: trend signal + narrative multiplier + ALPHA_FOUND
+    // Stage 4: transfer-based score adjustments before narrative multiplier.
+    let adjustedSafetyScore = safetyScore;
+    if (ageAndHolders.whaleAlert) {
+      adjustedSafetyScore = Math.max(0, adjustedSafetyScore - 15);
+      console.log(`[research] ${ticker}: whale penalty -15 → ${adjustedSafetyScore}`);
+    }
+    if (ageAndHolders.distributingWallets !== null && ageAndHolders.distributingWallets > 0) {
+      const penalty = ageAndHolders.distributingWallets * 5;
+      adjustedSafetyScore = Math.max(0, adjustedSafetyScore - penalty);
+      console.log(`[research] ${ticker}: distribution penalty -${penalty} (${ageAndHolders.distributingWallets} wallet(s)) → ${adjustedSafetyScore}`);
+    }
+
+    // Stage 5: trend signal + narrative multiplier + ALPHA_FOUND
     let trend: TrendSignal = { mentionCount: 0, sources: [], fearGreed: 50 };
     if (!INDUSTRY_TERM_TICKERS.has(ticker.toUpperCase())) {
       trend = await checkTrendSignal(ticker, tokenName);
@@ -767,11 +983,11 @@ async function processCandidate(
     }
 
     const multiplier       = computeNarrativeMultiplier(trend);
-    const opportunityScore = Math.min(100, Math.round(safetyScore * multiplier));
+    const opportunityScore = Math.min(100, Math.round(adjustedSafetyScore * multiplier));
 
     console.log(
       `[research] ${ticker} opportunity=${opportunityScore}` +
-      ` (safety=${safetyScore}×${multiplier.toFixed(2)}) trend=[${trend.sources.join(",")}]`,
+      ` (safety=${safetyScore}→${adjustedSafetyScore}×${multiplier.toFixed(2)}) trend=[${trend.sources.join(",")}]`,
     );
 
     if (opportunityScore < ALPHA_THRESHOLD) return;
@@ -787,19 +1003,27 @@ async function processCandidate(
       return;
     }
 
+    const whaleWarn = ageAndHolders.whaleAlert
+      ? " CAUTION: large single transfer detected."
+      : "";
+    const distWarn  = ageAndHolders.distributingWallets
+      ? ` CAUTION: ${ageAndHolders.distributingWallets} wallet(s) selling in chunks.`
+      : "";
+
     const reason =
       `${ticker} scored ${opportunityScore}/100 ` +
       `(safety ${safetyScore}, ${multiplier.toFixed(2)}x narrative boost). ` +
       (trend.sources.length > 0
         ? `Trend confirmed by: ${trend.sources.join(", ")}.`
-        : "Passes all safety filters — no active trend signals.");
+        : "Passes all safety filters — no active trend signals.") +
+      whaleWarn + distWarn;
 
     void priceUsd;
 
     bus.emit("ALPHA_FOUND", {
       address,
       chainId: chainId as ChainId,
-      safetyScore,
+      safetyScore: adjustedSafetyScore,
       liquidityUsd,
       reason,
       foundAt: Date.now(),
@@ -964,6 +1188,8 @@ type ResearchData = {
   cg: CoinGeckoData | null;
   birdeye: BirdeyeData | null;
   brave: BraveResult[];
+  gecko: GeckoTerminalData | null;
+  priceChange: { h1: number | null; h6: number | null; h24: number | null } | null;
   opportunityScore: number;
   question: string;
 };
@@ -981,26 +1207,59 @@ function buildResearchPrompt(d: ResearchData): string {
     `Trend signals: ${d.trend.sources.join(", ") || "none"} (Fear & Greed: ${d.trend.fearGreed}/100)`,
     `Opportunity score: ${d.opportunityScore}/100`,
   ];
-  if (d.cg?.marketCap)     lines.push(`CoinGecko market cap: $${(d.cg.marketCap / 1e6).toFixed(1)}M`);
-  if (d.cg?.sentimentUp)   lines.push(`CoinGecko sentiment: ${d.cg.sentimentUp.toFixed(0)}% bullish`);
+
+  // DexScreener short-term price changes (real-time)
+  if (d.priceChange) {
+    const parts: string[] = [];
+    if (d.priceChange.h1  != null) parts.push(`1h: ${d.priceChange.h1.toFixed(1)}%`);
+    if (d.priceChange.h6  != null) parts.push(`6h: ${d.priceChange.h6.toFixed(1)}%`);
+    if (d.priceChange.h24 != null) parts.push(`24h: ${d.priceChange.h24.toFixed(1)}%`);
+    if (parts.length) lines.push(`Price change: ${parts.join(", ")}`);
+  }
+
+  // GeckoTerminal OHLCV — real-time candle data, not stale CoinGecko percentages
+  if (d.gecko) {
+    const g = d.gecko;
+    lines.push(`Price trend (12h): ${g.priceTrend}`);
+    lines.push(`Volume trend (3d vs prior 3d): ${g.volumeTrend}`);
+    lines.push(`14d volatility: ${(g.volatility14d * 100).toFixed(1)}% avg daily range`);
+    if (g.ath14d != null && g.atl14d != null)
+      lines.push(`14d range: $${g.atl14d.toPrecision(4)} – $${g.ath14d.toPrecision(4)}`);
+    if (g.priceVsRange14d != null)
+      lines.push(`Price vs 14d range: ${(g.priceVsRange14d * 100).toFixed(0)}% (0=near low, 100=near high)`);
+    if (g.consecutiveGreen > 1) lines.push(`Consecutive green days: ${g.consecutiveGreen}`);
+    if (g.consecutiveRed   > 1) lines.push(`Consecutive red days: ${g.consecutiveRed}`);
+  }
+
+  // Transfer-based risk signals
+  if (d.age.whaleAlert === true)
+    lines.push("Whale alert: single transfer >= 1% of supply in last 24h");
+  if (d.age.distributingWallets !== null && d.age.distributingWallets > 0)
+    lines.push(`Distribution alert: ${d.age.distributingWallets} wallet(s) with 6+ sells of >=0.1% supply in 24h`);
+
+  if (d.cg?.marketCap)      lines.push(`Market cap: $${(d.cg.marketCap / 1e6).toFixed(1)}M`);
+  if (d.cg?.sentimentUp)    lines.push(`CoinGecko sentiment: ${d.cg.sentimentUp.toFixed(0)}% bullish`);
   if (d.birdeye?.volume24h) lines.push(`Birdeye 24h volume: $${d.birdeye.volume24h.toFixed(0)}`);
-  if (d.brave.length > 0)  lines.push(`Web results: ${d.brave.slice(0, 3).map((r) => r.title).join(" | ")}`);
+  if (d.brave.length > 0)   lines.push(`Web results: ${d.brave.slice(0, 3).map((r) => r.title).join(" | ")}`);
   lines.push(`\nUser question: ${d.question}`);
   lines.push("\nGive a concise 2-3 sentence verdict on this token. Be direct — mention the most important risk or opportunity. No filler.");
   return lines.join("\n");
 }
 
 function buildTemplateSummary(d: ResearchData): string {
-  const risk  = d.security.flags.length > 0
+  const risk       = d.security.flags.length > 0
     ? `Risk flags: ${d.security.flags.join(", ")}.`
     : "No major risk flags detected.";
-  const trend = d.trend.sources.length > 0
+  const trend      = d.trend.sources.length > 0
     ? `Active mentions in: ${d.trend.sources.join(", ")}.`
     : "No trend signals detected.";
-  const age   = d.age.ageHours != null ? `Token age: ${d.age.ageHours.toFixed(0)}h.` : "";
+  const age        = d.age.ageHours != null ? `Token age: ${d.age.ageHours.toFixed(0)}h.` : "";
+  const whale      = d.age.whaleAlert === true ? "Whale transfer detected." : "";
+  const dist       = d.age.distributingWallets ? `${d.age.distributingWallets} wallet(s) distributing.` : "";
+  const priceTrend = d.gecko ? `Price trend: ${d.gecko.priceTrend}.` : "";
   return [
     `${d.ticker}: safety ${d.security.score}/100, opportunity ${d.opportunityScore}/100.`,
-    risk, trend, age,
+    risk, trend, age, whale, dist, priceTrend,
   ].filter(Boolean).join(" ");
 }
 
@@ -1038,21 +1297,29 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
   const priceUsd     = parseFloat(best?.priceUsd ?? "0") || null;
   const liquidityUsd = best?.liquidity?.usd    ?? null;
 
-  const [secS, ageS, trendS, cgS, birdS, braveS] = await Promise.allSettled([
+  const priceChange = best?.priceChange ? {
+    h1:  best.priceChange.h1  ?? null,
+    h6:  best.priceChange.h6  ?? null,
+    h24: best.priceChange.h24 ?? null,
+  } : null;
+
+  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS] = await Promise.allSettled([
     runSecurityScan(address, chainClass, resolvedChainId),
     checkAgeAndHolders(address, chainClass, resolvedChainId),
     checkTrendSignal(ticker, tokenName, true),
     fetchCoinGecko(ticker),
     chainClass === "solana" ? fetchBirdeye(address) : Promise.resolve(null),
     searchBrave(`${ticker} ${tokenName} crypto`),
+    fetchGeckoTerminal(address, resolvedChainId),
   ]);
 
   const security = secS.status   === "fulfilled" ? secS.value   : { flags: [] as SafetyFlag[], score: 50, ok: false };
-  const age      = ageS.status   === "fulfilled" ? ageS.value   : { ageHours: null, top3Pct: null, holderCount: null };
+  const age      = ageS.status   === "fulfilled" ? ageS.value   : { ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null };
   const trend    = trendS.status === "fulfilled" ? trendS.value : { mentionCount: 0, sources: [] as string[], fearGreed: 50 };
   const cg       = cgS.status    === "fulfilled" ? cgS.value    : null;
   const birdeye  = birdS.status  === "fulfilled" ? birdS.value  : null;
   const brave    = braveS.status === "fulfilled" ? braveS.value : [];
+  const gecko    = geckoS.status === "fulfilled" ? geckoS.value : null;
 
   const tavilyHit = await checkTavily(ticker, 7);
   if (tavilyHit && !trend.sources.includes("tavily")) {
@@ -1060,14 +1327,20 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
     trend.mentionCount++;
   }
 
+  // Apply transfer-based adjustments before narrative multiplier.
+  let baseScore = security.score;
+  if (age.whaleAlert) baseScore = Math.max(0, baseScore - 15);
+  if (age.distributingWallets) baseScore = Math.max(0, baseScore - age.distributingWallets * 5);
+
   const multiplier       = computeNarrativeMultiplier(trend);
-  const opportunityScore = Math.min(100, Math.round(security.score * multiplier));
+  const opportunityScore = Math.min(100, Math.round(baseScore * multiplier));
 
   const data: ResearchData = {
     ticker, tokenName, address,
     chainId: resolvedChainId,
     priceUsd, liquidityUsd,
     security, age, trend, cg, birdeye, brave,
+    gecko, priceChange,
     opportunityScore,
     question: req.question,
   };
@@ -1080,7 +1353,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
     address,
     chain:       chainClass,
     summary,
-    safetyScore: security.score,
+    safetyScore: baseScore,
     priceUsd,
     liquidityUsd,
     flags:       security.flags,
