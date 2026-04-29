@@ -102,7 +102,7 @@ Improvements:
 
 **Key invariant**: The Execution Agent caches intents and quotes in maps keyed by intentId. Both TRADE_REQUEST and QUOTE_RESULT must be cached before STRATEGY_DECISION arrives.
 
-### Samuel Chukwu (Safety and Data)
+### Samuel Chuku (Safety and Data)
 
 You need to build and PR two agents: Safety and Research.
 
