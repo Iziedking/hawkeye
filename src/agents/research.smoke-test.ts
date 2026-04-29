@@ -8,8 +8,9 @@
 //   npx tsx src/agents/research.smoke-test.ts job2    → research request (RESEARCH_RESULT) only
 //
 // Keys needed for full coverage (add to .env.local):
-//   ETHERSCAN_API_KEY, NEYNAR_API_KEY, TAVILY_API_KEY, OG_PRIVATE_KEY
-//   BIRDEYE_API_KEY (Solana tokens only), BRAVE_API_KEY (Commit 5 Brave Search)
+//   HAWKEYE_EVM_PRIVATE_KEY — 0G Compute wallet (LLM inference)
+//   ETHERSCAN_API_KEY, BIRDEYE_API_KEY, BRAVE_API_KEY, TAVILY_API_KEY
+//   NEYNAR_API_KEY — cast search requires paid plan; free tier falls back gracefully
 //   GOPLUS_API_KEY optional — free tier activates automatically when absent
 
 import { loadEnvLocal } from "../shared/env";
