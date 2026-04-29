@@ -21,11 +21,12 @@
 //   Synthesis  : OpenRouter locally → 0G Compute in production
 
 import { bus } from "../shared/event-bus";
-import type { AlphaFoundPayload, ResearchRequest, ChainId, SafetyFlag } from "../shared/types";
+import type { AlphaFoundPayload, ResearchRequest, ResearchResult, ChainId, SafetyFlag } from "../shared/types";
 import {
   getLatestTokenProfiles,
   getLatestBoosts,
   getPairsByToken,
+  searchPairs,
   isValidChain,
 } from "../tools/dexscreener-mcp/client";
 import type { DexPair, DexScreenerChain } from "../tools/dexscreener-mcp/client";
@@ -594,13 +595,279 @@ async function processCandidate(
   }
 }
 
+// ─── CoinGecko ────────────────────────────────────────────────────────────────
+// Two-step: search by symbol → fetch full coin data. Free public API, no key.
+// Called only for RESEARCH_REQUEST (user-triggered) to stay within the free rate limit.
+type CoinGeckoData = {
+  priceUsd:     number | null;
+  marketCap:    number | null;
+  volume24h:    number | null;
+  sentimentUp:  number | null; // % of users who voted bullish
+  sentimentDown: number | null;
+};
+
+async function fetchCoinGecko(ticker: string): Promise<CoinGeckoData | null> {
+  const empty: CoinGeckoData = { priceUsd: null, marketCap: null, volume24h: null, sentimentUp: null, sentimentDown: null };
+  try {
+    const searchResp = await fetch(
+      `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(ticker)}`,
+      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
+    );
+    if (!searchResp.ok) return empty;
+    const searchBody = await searchResp.json() as { coins?: Array<{ id: string; symbol: string }> };
+    const coinId = searchBody.coins?.find(
+      (c) => c.symbol.toLowerCase() === ticker.toLowerCase(),
+    )?.id;
+    if (!coinId) return empty;
+
+    const coinResp = await fetch(
+      `https://api.coingecko.com/api/v3/coins/${coinId}` +
+      `?localization=false&tickers=false&market_data=true&community_data=true&developer_data=false&sparkline=false`,
+      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
+    );
+    if (!coinResp.ok) return empty;
+    const coin = await coinResp.json() as {
+      market_data?: {
+        current_price?: { usd?: number };
+        market_cap?: { usd?: number };
+        total_volume?: { usd?: number };
+      };
+      sentiment_votes_up_percentage?: number;
+      sentiment_votes_down_percentage?: number;
+    };
+    return {
+      priceUsd:     coin.market_data?.current_price?.usd ?? null,
+      marketCap:    coin.market_data?.market_cap?.usd ?? null,
+      volume24h:    coin.market_data?.total_volume?.usd ?? null,
+      sentimentUp:  coin.sentiment_votes_up_percentage ?? null,
+      sentimentDown: coin.sentiment_votes_down_percentage ?? null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+// ─── Birdeye (Solana only) ────────────────────────────────────────────────────
+// Enhanced Solana analytics — more accurate price/volume than DexScreener for SPL tokens.
+// Only called when chainClass === "solana". Requires BIRDEYE_API_KEY.
+type BirdeyeData = { priceUsd: number | null; volume24h: number | null };
+
+async function fetchBirdeye(address: string): Promise<BirdeyeData | null> {
+  const key = process.env["BIRDEYE_API_KEY"];
+  if (!key) return null;
+  try {
+    const resp = await fetch(
+      `https://public-api.birdeye.so/defi/token_overview?address=${address}`,
+      {
+        headers: { "X-API-KEY": key, Accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (!resp.ok) return null;
+    const body = await resp.json() as { data?: { price?: number; v24hUSD?: number } };
+    return { priceUsd: body.data?.price ?? null, volume24h: body.data?.v24hUSD ?? null };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Brave Search ─────────────────────────────────────────────────────────────
+// Reserved for RESEARCH_REQUEST — not the polling loop (2k/month free tier).
+// Searches global + crypto-specific results for fresh context on the token.
+type BraveResult = { title: string; description: string; url: string };
+
+async function searchBrave(query: string): Promise<BraveResult[]> {
+  const key = process.env["BRAVE_API_KEY"];
+  if (!key) return [];
+  try {
+    const resp = await fetch(
+      `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`,
+      {
+        headers: { "X-Subscription-Token": key, Accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!resp.ok) return [];
+    const body = await resp.json() as {
+      web?: { results?: Array<{ title?: string; description?: string; url?: string }> };
+    };
+    return (body.web?.results ?? []).map((r) => ({
+      title:       r.title       ?? "",
+      description: r.description ?? "",
+      url:         r.url         ?? "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ─── LLM synthesis ────────────────────────────────────────────────────────────
+// Uses OpenRouter locally. Swap the fetch call for 0G Compute before pushing
+// to production (HAWKEYE_EVM_PRIVATE_KEY + OgComputeClient in src/integrations/0g/).
+// Returns "" if the key is absent — the caller falls back to buildTemplateSummary().
+async function callLLM(prompt: string): Promise<string> {
+  const key = process.env["OPENROUTER_API_KEY"];
+  if (!key) return "";
+  try {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "meta-llama/llama-3.1-8b-instruct:free",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 250,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!resp.ok) return "";
+    const body = await resp.json() as { choices?: Array<{ message?: { content?: string } }> };
+    return body.choices?.[0]?.message?.content?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// ─── Prompt + fallback template ───────────────────────────────────────────────
+type ResearchData = {
+  ticker: string; tokenName: string; address: string; chainId: string;
+  priceUsd: number | null; liquidityUsd: number | null;
+  security: { flags: SafetyFlag[]; score: number; ok: boolean };
+  age: AgeAndHolders;
+  trend: TrendSignal;
+  cg: CoinGeckoData | null;
+  birdeye: BirdeyeData | null;
+  brave: BraveResult[];
+  opportunityScore: number;
+  question: string;
+};
+
+function buildResearchPrompt(d: ResearchData): string {
+  const lines = [
+    `Token: ${d.ticker} (${d.tokenName}) on ${d.chainId}`,
+    `Address: ${d.address}`,
+    `Price: ${d.priceUsd != null ? `$${d.priceUsd}` : "unknown"}`,
+    `Liquidity: ${d.liquidityUsd != null ? `$${d.liquidityUsd.toFixed(0)}` : "unknown"}`,
+    `Safety score: ${d.security.score}/100`,
+    `Flags: ${d.security.flags.length > 0 ? d.security.flags.join(", ") : "none"}`,
+    `Age: ${d.age.ageHours != null ? `${d.age.ageHours.toFixed(0)}h` : "unknown"}`,
+    `Top-3 holder concentration: ${d.age.top3Pct != null ? `${d.age.top3Pct.toFixed(0)}%` : "unknown"}`,
+    `Trend signals: ${d.trend.sources.join(", ") || "none"} (Fear & Greed: ${d.trend.fearGreed}/100)`,
+    `Opportunity score: ${d.opportunityScore}/100`,
+  ];
+  if (d.cg?.marketCap)    lines.push(`CoinGecko market cap: $${(d.cg.marketCap / 1e6).toFixed(1)}M`);
+  if (d.cg?.sentimentUp)  lines.push(`CoinGecko sentiment: ${d.cg.sentimentUp.toFixed(0)}% bullish`);
+  if (d.birdeye?.volume24h) lines.push(`Birdeye 24h volume: $${d.birdeye.volume24h.toFixed(0)}`);
+  if (d.brave.length > 0) lines.push(`Web results: ${d.brave.slice(0, 3).map((r) => r.title).join(" | ")}`);
+  lines.push(`\nUser question: ${d.question}`);
+  lines.push("\nGive a concise 2-3 sentence verdict on this token. Be direct — mention the most important risk or opportunity. No filler.");
+  return lines.join("\n");
+}
+
+function buildTemplateSummary(d: ResearchData): string {
+  const risk  = d.security.flags.length > 0
+    ? `Risk flags: ${d.security.flags.join(", ")}.`
+    : "No major risk flags detected.";
+  const trend = d.trend.sources.length > 0
+    ? `Active mentions in: ${d.trend.sources.join(", ")}.`
+    : "No trend signals detected.";
+  const age   = d.age.ageHours != null ? `Token age: ${d.age.ageHours.toFixed(0)}h.` : "";
+  return [
+    `${d.ticker}: safety ${d.security.score}/100, opportunity ${d.opportunityScore}/100.`,
+    risk, trend, age,
+  ].filter(Boolean).join(" ");
+}
+
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
-// Full implementation in Commit 5. Receives a user-initiated research question,
-// runs the complete source stack (security + market + holder + trend + LLM),
-// and emits RESEARCH_RESULT.
 async function handleResearchRequest(req: ResearchRequest): Promise<void> {
-  console.log(`[research] RESEARCH_REQUEST for ${req.address ?? req.tokenName ?? "unknown"} — full handler in Commit 5`);
-  void req;
+  console.log(`[research] RESEARCH_REQUEST for ${req.address ?? req.tokenName ?? "unknown"}`);
+
+  // ── 1. Resolve address ───────────────────────────────────────────────────────
+  // If the user asked by ticker name instead of address, find it via DexScreener.
+  let address = req.address;
+  let resolvedChainId: DexScreenerChain = "ethereum";
+
+  if (!address && req.tokenName) {
+    const { pairs } = await searchPairs(req.tokenName, { limit: 5 }).catch(() => ({
+      query: "", pairs: [] as DexPair[], note: "",
+    }));
+    const top = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    if (top && isValidChain(top.chainId)) {
+      address        = top.baseToken.address;
+      resolvedChainId = top.chainId as DexScreenerChain;
+    }
+  }
+
+  if (!address) {
+    console.log(`[research] could not resolve address for "${req.tokenName}"`);
+    return;
+  }
+
+  const chainClass = detectChainClass(address);
+  if (req.chain === "solana" || chainClass === "solana") resolvedChainId = "solana";
+
+  // ── 2. DexScreener — canonical pair data ────────────────────────────────────
+  const pairs = await getPairsByToken(resolvedChainId, address).catch(() => [] as DexPair[]);
+  const best  = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+
+  const ticker      = best?.baseToken?.symbol ?? req.tokenName ?? address.slice(0, 8);
+  const tokenName   = best?.baseToken?.name   ?? req.tokenName ?? ticker;
+  const priceUsd    = parseFloat(best?.priceUsd ?? "0") || null;
+  const liquidityUsd = best?.liquidity?.usd    ?? null;
+
+  // ── 3. All sources in parallel ───────────────────────────────────────────────
+  const [secS, ageS, trendS, cgS, birdS, braveS] = await Promise.allSettled([
+    runSecurityScan(address, chainClass, resolvedChainId),
+    checkAgeAndHolders(address, chainClass, resolvedChainId),
+    checkTrendSignal(ticker, tokenName),
+    fetchCoinGecko(ticker),
+    chainClass === "solana" ? fetchBirdeye(address) : Promise.resolve(null),
+    searchBrave(`${ticker} ${tokenName} crypto`),
+  ]);
+
+  const security = secS.status   === "fulfilled" ? secS.value   : { flags: [] as SafetyFlag[], score: 50, ok: false };
+  const age      = ageS.status   === "fulfilled" ? ageS.value   : { ageHours: null, top3Pct: null, holderCount: null };
+  const trend    = trendS.status === "fulfilled" ? trendS.value : { mentionCount: 0, sources: [] as string[], fearGreed: 50 };
+  const cg       = cgS.status    === "fulfilled" ? cgS.value    : null;
+  const birdeye  = birdS.status  === "fulfilled" ? birdS.value  : null;
+  const brave    = braveS.status === "fulfilled" ? braveS.value : [];
+
+  // Tavily always fires for RESEARCH_REQUEST — unlike the polling loop it's
+  // user-initiated so spending a quota call here is always justified.
+  const tavilyHit = await checkTavily(ticker);
+  if (tavilyHit && !trend.sources.includes("tavily")) {
+    trend.sources.push("tavily");
+    trend.mentionCount++;
+  }
+
+  const multiplier      = computeNarrativeMultiplier(trend);
+  const opportunityScore = Math.min(100, Math.round(security.score * multiplier));
+
+  // ── 4. LLM synthesis → template fallback ────────────────────────────────────
+  const data: ResearchData = {
+    ticker, tokenName, address,
+    chainId: resolvedChainId,
+    priceUsd, liquidityUsd,
+    security, age, trend, cg, birdeye, brave,
+    opportunityScore,
+    question: req.question,
+  };
+
+  let summary = await callLLM(buildResearchPrompt(data));
+  if (!summary) summary = buildTemplateSummary(data);
+
+  bus.emit("RESEARCH_RESULT", {
+    requestId:   req.requestId,
+    address,
+    chain:       chainClass,
+    summary,
+    safetyScore: security.score,
+    priceUsd,
+    liquidityUsd,
+    flags:       security.flags,
+    completedAt: Date.now(),
+  } satisfies ResearchResult);
+
+  console.log(`[research] RESEARCH_RESULT emitted for ${ticker} (opportunity=${opportunityScore})`);
 }
 
 // ─── Agent entry point ─────────────────────────────────────────────────────────
