@@ -21,6 +21,7 @@ export const CHAIN_IDS = [
   "sui",
   "aptos",
   "tron",
+  "sepolia",
 ] as const;
 
 export type ChainId = (typeof CHAIN_IDS)[number];
@@ -41,7 +42,7 @@ export type ExitTarget =
   | { kind: "marketcap"; usd: number };      // e.g. MC $5M
 
 export type PartialExit = {
-  
+
   percent: number;
   target: ExitTarget;
 };
@@ -72,6 +73,7 @@ export type TradeIntent = {
   urgency: TradingMode;
   rawText: string;
   createdAt: number;
+  chainHint?: ChainId;
 };
 
 
@@ -294,6 +296,15 @@ export const EVENT_NAMES = {
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
+
+export type LlmClient = {
+  infer(req: {
+    system: string;
+    user: string;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<{ text: string }>;
+};
 
 export type BusEvents = {
   TRADE_REQUEST: TradeIntent;
