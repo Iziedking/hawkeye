@@ -267,6 +267,189 @@ async function checkSolscan(address: string): Promise<AgeAndHolders> {
   }
 }
 
+// ─── Fear & Greed Index (cached) ──────────────────────────────────────────────
+// Alternative.me publishes a market-wide sentiment index every 24h. We cache it
+// for 15 minutes so the polling loop never hammers the endpoint. Extreme greed
+// bumps the narrative multiplier; extreme fear cuts it.
+let fearGreedCache: { value: number; expiresAt: number } | null = null;
+
+async function getFearGreedIndex(): Promise<number> {
+  if (fearGreedCache && Date.now() < fearGreedCache.expiresAt) return fearGreedCache.value;
+  try {
+    const resp = await fetch("https://api.alternative.me/fng/?limit=1", {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (resp.ok) {
+      const body = await resp.json() as { data?: Array<{ value?: string }> };
+      const value = parseInt(body.data?.[0]?.value ?? "50", 10);
+      fearGreedCache = { value, expiresAt: Date.now() + 15 * 60 * 1_000 };
+      return value;
+    }
+  } catch { /* fall through */ }
+  return 50; // neutral when unreachable
+}
+
+// ─── Trend signal source checks ────────────────────────────────────────────────
+// Each returns true if it found any mention of the ticker in the source.
+// All fail open — a network error returns false so we never drop a token
+// just because a trend source went down.
+
+// GDELT 2.0 — 250k+ global news sources, updated every 15 minutes, no key needed.
+async function checkGdelt(ticker: string): Promise<boolean> {
+  try {
+    const q = encodeURIComponent(`"${ticker}"`);
+    const resp = await fetch(
+      `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=artlist&maxrecords=5&timespan=15min&format=json`,
+      { signal: AbortSignal.timeout(8_000) },
+    );
+    if (!resp.ok) return false;
+    const body = await resp.json() as { articles?: unknown[] };
+    return (body.articles?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Eight curated RSS feeds: CoinDesk, CoinTelegraph, Decrypt, The Defiant,
+// CoinJournal, The Block, Reuters business, BBC business. Fetched in parallel;
+// a simple case-insensitive substring scan checks for any search term.
+// No XML parser needed — the ticker appears in title/description as plain text.
+const RSS_FEEDS = [
+  "https://www.coindesk.com/arc/outboundfeeds/rss/",
+  "https://cointelegraph.com/rss",
+  "https://decrypt.co/feed",
+  "https://thedefiant.io/feed",
+  "https://coinjournal.net/feed/",
+  "https://www.theblock.co/rss.xml",
+  "https://feeds.reuters.com/reuters/businessNews",
+  "http://feeds.bbci.co.uk/news/business/rss.xml",
+] as const;
+
+async function checkRssFeeds(terms: string[]): Promise<boolean> {
+  const results = await Promise.allSettled(
+    RSS_FEEDS.map((url) =>
+      fetch(url, {
+        headers: { "User-Agent": "hawkeye-research-agent/0.1" },
+        signal: AbortSignal.timeout(6_000),
+      }).then((r) => (r.ok ? r.text() : "")),
+    ),
+  );
+  for (const result of results) {
+    if (result.status !== "fulfilled" || !result.value) continue;
+    const text = result.value.toLowerCase();
+    if (terms.some((t) => text.includes(t.toLowerCase()))) return true;
+  }
+  return false;
+}
+
+// Stocktwits — real-time trading community discussion, public API, no key needed.
+async function checkStocktwits(ticker: string): Promise<boolean> {
+  try {
+    const resp = await fetch(
+      `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(ticker)}.json`,
+      { signal: AbortSignal.timeout(6_000) },
+    );
+    if (!resp.ok) return false;
+    const body = await resp.json() as { messages?: unknown[] };
+    return (body.messages?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Neynar — Farcaster search, Web3-native social. Requires NEYNAR_API_KEY.
+// Falls back gracefully to false when the key is missing.
+async function checkNeynar(ticker: string): Promise<boolean> {
+  const key = process.env["NEYNAR_API_KEY"];
+  if (!key) return false;
+  try {
+    const resp = await fetch(
+      `https://api.neynar.com/v2/farcaster/cast/search?q=${encodeURIComponent(ticker)}&limit=5`,
+      {
+        headers: { api_key: key, Accept: "application/json" },
+        signal: AbortSignal.timeout(6_000),
+      },
+    );
+    if (!resp.ok) return false;
+    const body = await resp.json() as { result?: { casts?: unknown[] } };
+    return (body.result?.casts?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Tavily — deep search fallback. Called only on PARTIAL signal (exactly 1 free
+// source fires) in the polling loop. Always called in RESEARCH_REQUEST (Commit 5).
+// Requires TAVILY_API_KEY.
+async function checkTavily(ticker: string): Promise<boolean> {
+  const key = process.env["TAVILY_API_KEY"];
+  if (!key) return false;
+  try {
+    const resp = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: key,
+        query: `${ticker} crypto token`,
+        search_depth: "basic",
+        max_results: 5,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) return false;
+    const body = await resp.json() as { results?: unknown[] };
+    return (body.results?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Trend signal aggregator ───────────────────────────────────────────────────
+type TrendSignal = {
+  mentionCount: number; // sources that returned a positive hit
+  sources: string[];    // names of those sources (for the ALPHA_FOUND reason string)
+  fearGreed: number;    // 0–100 market-wide index from Alternative.me
+};
+
+async function checkTrendSignal(ticker: string, tokenName: string): Promise<TrendSignal> {
+  const terms = [ticker, tokenName].filter((t) => t && t.length >= 2);
+
+  const [gdelt, rss, stocktwits, neynar, fearGreed] = await Promise.allSettled([
+    checkGdelt(ticker),
+    checkRssFeeds(terms),
+    checkStocktwits(ticker),
+    checkNeynar(ticker),
+    getFearGreedIndex(),
+  ]);
+
+  const sources: string[] = [];
+  if (gdelt.status      === "fulfilled" && gdelt.value)      sources.push("gdelt");
+  if (rss.status        === "fulfilled" && rss.value)        sources.push("rss");
+  if (stocktwits.status === "fulfilled" && stocktwits.value) sources.push("stocktwits");
+  if (neynar.status     === "fulfilled" && neynar.value)     sources.push("neynar");
+
+  const fg = fearGreed.status === "fulfilled" ? fearGreed.value : 50;
+  return { mentionCount: sources.length, sources, fearGreed: fg };
+}
+
+// ─── Narrative multiplier ──────────────────────────────────────────────────────
+// Converts trend strength into a safetyScore multiplier (1.0x–1.8x).
+// More independent sources = stronger signal = higher ceiling.
+// Fear & Greed modulates by ±0.1 at the extremes (greed up, fear down).
+function computeNarrativeMultiplier(signal: TrendSignal): number {
+  let base: number;
+  if (signal.mentionCount >= 3)       base = 1.7;
+  else if (signal.mentionCount === 2) base = 1.4;
+  else if (signal.mentionCount === 1) base = 1.15;
+  else                                base = 1.0;
+
+  let fgAdjust = 0;
+  if (signal.fearGreed >= 75)      fgAdjust =  0.1;
+  else if (signal.fearGreed <= 25) fgAdjust = -0.1;
+
+  return Math.min(1.8, Math.max(1.0, base + fgAdjust));
+}
+
 // ─── Polling cycle ─────────────────────────────────────────────────────────────
 // Fetches the latest token profiles and boosts from DexScreener, deduplicates
 // against the seen-token registry, and fires processCandidate() for each new one.
@@ -367,12 +550,44 @@ async function processCandidate(
       return;
     }
 
-    // ── Stage 4: trend signal + narrative multiplier — added in Commit 4 ────────
-    // GDELT (global news), RSS crypto feeds, Stocktwits, Farcaster/Neynar,
-    // Alternative.me (fear/greed).
-    // multiplier: 1.0x–1.8x applied to safetyScore → opportunityScore → ALPHA_FOUND.
+    // ── Stage 4: trend signal + narrative multiplier + ALPHA_FOUND ───────────
+    const trend = await checkTrendSignal(ticker, tokenName);
 
-    void tokenName; void priceUsd; void safetyScore; // used in Commit 4
+    // PARTIAL signal: only 1 free source fired → use Tavily to confirm/amplify.
+    // Avoids burning Tavily's 2k/month quota on tokens with no signal at all.
+    if (trend.mentionCount === 1) {
+      const tavilyConfirmed = await checkTavily(ticker);
+      if (tavilyConfirmed) trend.sources.push("tavily");
+      trend.mentionCount = trend.sources.length;
+    }
+
+    const multiplier       = computeNarrativeMultiplier(trend);
+    const opportunityScore = Math.min(100, Math.round(safetyScore * multiplier));
+
+    console.log(
+      `[research] ${ticker} opportunity=${opportunityScore}` +
+      ` (safety=${safetyScore}×${multiplier.toFixed(2)}) trend=[${trend.sources.join(",")}]`,
+    );
+
+    if (opportunityScore < ALPHA_THRESHOLD) return;
+
+    const reason =
+      `${ticker} scored ${opportunityScore}/100 ` +
+      `(safety ${safetyScore}, ${multiplier.toFixed(2)}x narrative boost). ` +
+      (trend.sources.length > 0
+        ? `Trend confirmed by: ${trend.sources.join(", ")}.`
+        : "Passes all safety filters — no active trend signals.");
+
+    void priceUsd; // available for Commit 5 ALPHA_FOUND extension if needed
+
+    bus.emit("ALPHA_FOUND", {
+      address,
+      chainId: chainId as ChainId,
+      safetyScore,
+      liquidityUsd,
+      reason,
+      foundAt: Date.now(),
+    } satisfies AlphaFoundPayload);
 
   } catch (err) {
     console.error(`[research] error processing ${address} (${chainId}):`, err);
@@ -396,9 +611,9 @@ async function handleResearchRequest(req: ResearchRequest): Promise<void> {
  * Job 2: RESEARCH_REQUEST listener — emits RESEARCH_RESULT with LLM-synthesised verdict.
  *
  * Keys required (add to .env.local — never committed):
- *   ETHERSCAN_API_KEY, BIRDEYE_API_KEY, ARKHAM_API_KEY, BRAVE_API_KEY,
- *   REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, CRYPTOPANIC_AUTH_TOKEN,
- *   TAVILY_API_KEY, OPENROUTER_API_KEY (local) or HAWKEYE_EVM_PRIVATE_KEY (production)
+ *   ETHERSCAN_API_KEY, BIRDEYE_API_KEY, ARKHAM_API_KEY,
+ *   NEYNAR_API_KEY, BRAVE_API_KEY, TAVILY_API_KEY,
+ *   OPENROUTER_API_KEY (local) or HAWKEYE_EVM_PRIVATE_KEY (production)
  */
 export function startResearchAgent(): void {
   // Fire the first poll cycle immediately, then repeat on the interval.
