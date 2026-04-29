@@ -296,19 +296,26 @@ async function getFearGreedIndex(): Promise<number> {
 // just because a trend source went down.
 
 // GDELT 2.0 — 250k+ global news sources, updated every 15 minutes, no key needed.
-async function checkGdelt(ticker: string): Promise<boolean> {
-  try {
-    const q = encodeURIComponent(`"${ticker}"`);
-    const resp = await fetch(
-      `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=artlist&maxrecords=5&timespan=15min&format=json`,
-      { signal: AbortSignal.timeout(8_000) },
-    );
-    if (!resp.ok) return false;
-    const body = await resp.json() as { articles?: unknown[] };
-    return (body.articles?.length ?? 0) > 0;
-  } catch {
-    return false;
-  }
+// Tries each term in parallel and returns true on the first hit.
+// timespan=6h catches tokens trending over hours, not just the last 15 minutes.
+async function checkGdelt(terms: string[]): Promise<boolean> {
+  const results = await Promise.allSettled(
+    terms.map(async (term) => {
+      try {
+        const q = encodeURIComponent(`"${term}"`);
+        const resp = await fetch(
+          `https://api.gdeltproject.org/api/v2/doc/doc?query=${q}&mode=artlist&maxrecords=5&timespan=6h&format=json`,
+          { signal: AbortSignal.timeout(8_000) },
+        );
+        if (!resp.ok) return false;
+        const body = await resp.json() as { articles?: unknown[] };
+        return (body.articles?.length ?? 0) > 0;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return results.some((r) => r.status === "fulfilled" && r.value);
 }
 
 // Eight curated RSS feeds: CoinDesk, CoinTelegraph, Decrypt, The Defiant,
@@ -344,39 +351,51 @@ async function checkRssFeeds(terms: string[]): Promise<boolean> {
 }
 
 // Stocktwits — real-time trading community discussion, public API, no key needed.
-async function checkStocktwits(ticker: string): Promise<boolean> {
-  try {
-    const resp = await fetch(
-      `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(ticker)}.json`,
-      { signal: AbortSignal.timeout(6_000) },
-    );
-    if (!resp.ok) return false;
-    const body = await resp.json() as { messages?: unknown[] };
-    return (body.messages?.length ?? 0) > 0;
-  } catch {
-    return false;
-  }
+// Tries each term so TRUMP28 also checks TRUMP, etc.
+async function checkStocktwits(terms: string[]): Promise<boolean> {
+  const results = await Promise.allSettled(
+    terms.map(async (term) => {
+      try {
+        const resp = await fetch(
+          `https://api.stocktwits.com/api/2/streams/symbol/${encodeURIComponent(term)}.json`,
+          { signal: AbortSignal.timeout(6_000) },
+        );
+        if (!resp.ok) return false;
+        const body = await resp.json() as { messages?: unknown[] };
+        return (body.messages?.length ?? 0) > 0;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return results.some((r) => r.status === "fulfilled" && r.value);
 }
 
 // Neynar — Farcaster search, Web3-native social. Requires NEYNAR_API_KEY.
 // Falls back gracefully to false when the key is missing.
-async function checkNeynar(ticker: string): Promise<boolean> {
+// Tries each term so partial matches (e.g. TRUMP from TRUMP28) are caught.
+async function checkNeynar(terms: string[]): Promise<boolean> {
   const key = process.env["NEYNAR_API_KEY"];
   if (!key) return false;
-  try {
-    const resp = await fetch(
-      `https://api.neynar.com/v2/farcaster/cast/search?q=${encodeURIComponent(ticker)}&limit=5`,
-      {
-        headers: { api_key: key, Accept: "application/json" },
-        signal: AbortSignal.timeout(6_000),
-      },
-    );
-    if (!resp.ok) return false;
-    const body = await resp.json() as { result?: { casts?: unknown[] } };
-    return (body.result?.casts?.length ?? 0) > 0;
-  } catch {
-    return false;
-  }
+  const results = await Promise.allSettled(
+    terms.map(async (term) => {
+      try {
+        const resp = await fetch(
+          `https://api.neynar.com/v2/farcaster/cast/search?q=${encodeURIComponent(term)}&limit=5`,
+          {
+            headers: { api_key: key, Accept: "application/json" },
+            signal: AbortSignal.timeout(6_000),
+          },
+        );
+        if (!resp.ok) return false;
+        const body = await resp.json() as { result?: { casts?: unknown[] } };
+        return (body.result?.casts?.length ?? 0) > 0;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return results.some((r) => r.status === "fulfilled" && r.value);
 }
 
 // Tavily — deep search fallback. Called only on PARTIAL signal (exactly 1 free
@@ -412,14 +431,29 @@ type TrendSignal = {
   fearGreed: number;    // 0–100 market-wide index from Alternative.me
 };
 
+// Build a de-duplicated list of search terms from a ticker + name.
+// TRUMP28 → ["TRUMP28", "TRUMP"]  (strip trailing digits)
+// 1INCH   → ["1INCH", "INCH"]     (strip leading digits)
+// "Chad House" → adds "Chad", "House" as individual words (≥4 chars)
+function expandSearchTerms(ticker: string, tokenName: string): string[] {
+  const terms = new Set<string>([ticker]);
+  const stripped = ticker.replace(/^\d+|\d+$/, "").trim();
+  if (stripped.length >= 3 && stripped !== ticker) terms.add(stripped);
+  for (const word of tokenName.split(/\s+/)) {
+    if (word.length >= 4) terms.add(word);
+  }
+  return [...terms];
+}
+
 async function checkTrendSignal(ticker: string, tokenName: string): Promise<TrendSignal> {
-  const terms = [ticker, tokenName].filter((t) => t && t.length >= 2);
+  const terms    = expandSearchTerms(ticker, tokenName);
+  const rssTerms = [...new Set([...terms, tokenName])].filter((t) => t.length >= 2);
 
   const [gdelt, rss, stocktwits, neynar, fearGreed] = await Promise.allSettled([
-    checkGdelt(ticker),
-    checkRssFeeds(terms),
-    checkStocktwits(ticker),
-    checkNeynar(ticker),
+    checkGdelt(terms),
+    checkRssFeeds(rssTerms),
+    checkStocktwits(terms),
+    checkNeynar(terms),
     getFearGreedIndex(),
   ]);
 
