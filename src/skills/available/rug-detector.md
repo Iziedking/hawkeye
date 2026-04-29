@@ -1,7 +1,7 @@
 ---
 name: "Rug Detector"
 description: "Advanced rug pull detection with pattern recognition and warning system"
-enabled: true
+enabled: false
 priority: 100
 tags: ["safety", "rug-detection", "security"]
 ---

@@ -31,6 +31,8 @@ import { OpenRouterClient } from "../integrations/openrouter/client";
 import { getChainName, getChainExplorer, getSupportedChains } from "../shared/evm-chains";
 import { startQuoteAgent } from "../agents/quote";
 import { startLightSafetyAgent } from "../agents/safety-light";
+import { startEducationAgent } from "../agents/education";
+import { startExecutionAgent } from "../agents/execution";
 import {
   loadAllSkills,
   buildSkillPrompt,
@@ -83,6 +85,8 @@ const pendingChainConfirm = new Map<
 
 startQuoteAgent();
 startLightSafetyAgent();
+startEducationAgent();
+startExecutionAgent();
 
 // Lightweight Strategy Agent — auto-approves for testing
 bus.on("QUOTE_RESULT", (quote: Quote) => {
@@ -120,6 +124,9 @@ function makeStrategyDecision(
 ): void {
   const chatId = pendingReplies.get(intentId);
 
+  // Clean up immediately — prevents the 20s timeout from firing after we respond
+  pendingReplies.delete(intentId);
+
   if (safety.score < 40) {
     // Too risky
     bus.emit("STRATEGY_DECISION", {
@@ -133,9 +140,9 @@ function makeStrategyDecision(
       void bot.api.sendMessage(
         chatId,
         `🚫 *Trade Rejected*\n\n` +
-          `Safety Score: ${safety.score}/100\n` +
-          `Flags: ${safety.flags.join(", ") || "none"}\n` +
-          `Reason: Too risky to proceed.`,
+        `Safety Score: ${safety.score}/100\n` +
+        `Flags: ${safety.flags.join(", ") || "none"}\n` +
+        `Reason: Too risky to proceed.`,
         { parse_mode: "Markdown" },
       ).catch(console.error);
     }
@@ -222,7 +229,12 @@ bus.on("QUOTE_FAILED", (failure: { intentId: string; address: string; reason: st
 
   pendingReplies.delete(failure.intentId);
   quoteCache.delete(`quote-${failure.intentId}`);
+  // Mark as failed so late safety results don't linger
+  failedIntents.add(failure.intentId);
+  setTimeout(() => failedIntents.delete(failure.intentId), 60_000);
 });
+
+const failedIntents = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Conversational system prompt
@@ -271,15 +283,15 @@ function getFullPrompt(): string {
 bot.command("start", async (ctx: Context) => {
   await ctx.reply(
     `🦅 *Welcome to HAWKEYE*\n\n` +
-      `I'm your autonomous on-chain trading agent.\n\n` +
-      `*What I can do:*\n` +
-      `• Paste a token address → instant price quote + safety check\n` +
-      `• Ask me anything about crypto/DeFi\n` +
-      `• /quote <address> — get a quick quote\n` +
-      `• /status — check swarm status\n` +
-      `• /chains — see supported networks\n\n` +
-      `*Supported chains:* ${getSupportedChains().length} EVM networks\n\n` +
-      `_Just send me a contract address or ask me anything!_`,
+    `I'm your autonomous on-chain trading agent.\n\n` +
+    `*What I can do:*\n` +
+    `• Paste a token address → instant price quote + safety check\n` +
+    `• Ask me anything about crypto/DeFi\n` +
+    `• /quote <address> — get a quick quote\n` +
+    `• /status — check swarm status\n` +
+    `• /chains — see supported networks\n\n` +
+    `*Supported chains:* ${getSupportedChains().length} EVM networks\n\n` +
+    `_Just send me a contract address or ask me anything!_`,
     { parse_mode: "Markdown" },
   );
 });
@@ -287,14 +299,14 @@ bot.command("start", async (ctx: Context) => {
 bot.command("help", async (ctx: Context) => {
   await ctx.reply(
     `🦅 *HAWKEYE Commands*\n\n` +
-      `/start — Welcome message\n` +
-      `/quote <address> — Quick token quote\n` +
-      `/chains — List supported networks\n` +
-      `/skills — View/manage agent skills\n` +
-      `/skill <name> on|off — Toggle a skill\n` +
-      `/status — Swarm health check\n` +
-      `/help — This message\n\n` +
-      `Or just send me a token address or ask anything!`,
+    `/start — Welcome message\n` +
+    `/quote <address> — Quick token quote\n` +
+    `/chains — List supported networks\n` +
+    `/skills — View/manage agent skills\n` +
+    `/skill <name> on|off — Toggle a skill\n` +
+    `/status — Swarm health check\n` +
+    `/help — This message\n\n` +
+    `Or just send me a token address or ask anything!`,
     { parse_mode: "Markdown" },
   );
 });
@@ -309,10 +321,14 @@ bot.command("chains", async (ctx: Context) => {
   );
 });
 
+function getSkillSlug(filename: string): string {
+  return filename.replace(".md", "").replace(/[^a-zA-Z0-9]/g, "_").toLowerCase();
+}
+
 bot.command("skills", async (ctx: Context) => {
   const list = formatSkillList(skills);
   await ctx.reply(
-    `🧠 *Agent Skills*\n\n${list}\n\n_Toggle with_ /skill <filename> on|off`,
+    `🧠 *Agent Skills*\n\n${list}\n\n_Type /skill to see auto-complete options to toggle skills._`,
     { parse_mode: "Markdown" },
   );
 });
@@ -323,9 +339,29 @@ bot.command("skill", async (ctx: Context) => {
   const name = parts[1];
   const action = parts[2]?.toLowerCase();
 
-  if (!name || (action !== "on" && action !== "off")) {
+  if (!name) {
+    // Show inline keyboard for auto-completion / easy selection
+    const { InlineKeyboard } = await import("grammy");
+    const keyboard = new InlineKeyboard();
+
+    skills.forEach((skill, index) => {
+      const status = skill.enabled ? "✅" : "⬜";
+      const action = skill.enabled ? "off" : "on";
+      const slug = getSkillSlug(skill.filename);
+      // Callback data format: skill_toggle:slug:action
+      keyboard.text(`${status} ${skill.name}`, `skill_toggle:${slug}:${action}`).row();
+    });
+
+    await ctx.reply("🧠 *Select a skill to toggle:*", {
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+    return;
+  }
+
+  if (action !== "on" && action !== "off") {
     await ctx.reply(
-      "Usage: `/skill <filename> on|off`\n\nExample: `/skill degen-trader on`",
+      "Usage: `/skill <filename> on|off`\n\nAlternatively, just type `/skill` to see the menu.",
       { parse_mode: "Markdown" },
     );
     return;
@@ -336,14 +372,79 @@ bot.command("skill", async (ctx: Context) => {
   const success = toggleSkill(filename, enabled);
 
   if (success) {
-    // Reload skills
     skills = loadAllSkills();
+    await updateTelegramCommands(); // Update the ON/OFF state in the menu
     await ctx.reply(
       `${enabled ? "✅" : "⬜"} Skill *${name}* ${enabled ? "enabled" : "disabled"}`,
       { parse_mode: "Markdown" },
     );
   } else {
-    await ctx.reply(`❌ Skill file \`${filename}\` not found.`, { parse_mode: "Markdown" });
+    await ctx.reply(`❌ Skill \`${filename}\` not found.`, { parse_mode: "Markdown" });
+  }
+});
+
+// Handle inline keyboard callbacks for skill toggles
+bot.on("callback_query:data", async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  if (data.startsWith("skill_toggle:")) {
+    const [, slug, action] = data.split(":");
+    const targetSkill = skills.find((s) => getSkillSlug(s.filename) === slug);
+
+    if (targetSkill) {
+      const newState = action === "on";
+      const success = toggleSkill(targetSkill.filename, newState);
+
+      if (success) {
+        skills = loadAllSkills();
+        await updateTelegramCommands();
+        await ctx.answerCallbackQuery({
+          text: `${newState ? "✅ Enabled" : "⬜ Disabled"} ${targetSkill.name}`,
+        });
+
+        // Update the keyboard to reflect new state
+        const { InlineKeyboard } = await import("grammy");
+        const keyboard = new InlineKeyboard();
+        skills.forEach((skill) => {
+          const status = skill.enabled ? "✅" : "⬜";
+          const nextAction = skill.enabled ? "off" : "on";
+          const sSlug = getSkillSlug(skill.filename);
+          keyboard.text(`${status} ${skill.name}`, `skill_toggle:${sSlug}:${nextAction}`).row();
+        });
+
+        await ctx.editMessageReplyMarkup({ reply_markup: keyboard }).catch(() => { });
+      } else {
+        await ctx.answerCallbackQuery({ text: "❌ Failed to toggle skill", show_alert: true });
+      }
+    } else {
+      await ctx.answerCallbackQuery({ text: "❌ Skill not found", show_alert: true });
+    }
+  }
+});
+
+// Handle auto-completed dynamic skill commands like /skill_rug_detector
+bot.hears(/^\/skill_([a-zA-Z0-9_]+)/, async (ctx) => {
+  const slugMatch = ctx.match?.[1];
+  if (!slugMatch) return;
+
+  // Find the skill that matches this slug
+  const targetSkill = skills.find(s => getSkillSlug(s.filename) === slugMatch);
+
+  if (!targetSkill) {
+    await ctx.reply(`❌ Skill not found.`, { parse_mode: "Markdown" });
+    return;
+  }
+
+  // Toggle its state
+  const newState = !targetSkill.enabled;
+  const success = toggleSkill(targetSkill.filename, newState);
+
+  if (success) {
+    skills = loadAllSkills();
+    await updateTelegramCommands(); // Update the ON/OFF state in the menu
+    await ctx.reply(
+      `${newState ? "✅" : "⬜"} Skill *${targetSkill.name}* ${newState ? "enabled" : "disabled"}`,
+      { parse_mode: "Markdown" },
+    );
   }
 });
 
@@ -352,12 +453,12 @@ bot.command("status", async (ctx: Context) => {
   const safetyListeners = bus.listenerCount("TRADE_REQUEST");
   await ctx.reply(
     `🦅 *HAWKEYE Swarm Status*\n\n` +
-      `🤖 LLM: OpenRouter (${llm.model})\n` +
-      `📡 Quote Agent: ${quoteListeners > 0 ? "✅ Online" : "❌ Offline"}\n` +
-      `🛡️ Safety Agent: ${safetyListeners > 0 ? "✅ Online" : "❌ Offline"}\n` +
-      `🌐 Chains: ${getSupportedChains().length} EVM networks\n` +
-      `⏱️ Uptime: ${formatUptime(process.uptime())}\n` +
-      `📊 Pending: ${pendingReplies.size} intents`,
+    `🤖 LLM: OpenRouter (${llm.model})\n` +
+    `📡 Quote Agent: ${quoteListeners > 0 ? "✅ Online" : "❌ Offline"}\n` +
+    `🛡️ Safety Agent: ${safetyListeners > 0 ? "✅ Online" : "❌ Offline"}\n` +
+    `🌐 Chains: ${getSupportedChains().length} EVM networks\n` +
+    `⏱️ Uptime: ${formatUptime(process.uptime())}\n` +
+    `📊 Pending: ${pendingReplies.size} intents`,
     { parse_mode: "Markdown" },
   );
 });
@@ -413,7 +514,7 @@ bot.on("message:text", async (ctx: Context) => {
   console.log(`[TelegramBot] Message from ${userId}: ${text.slice(0, 80)}`);
 
   // Show typing indicator immediately — feels fast
-  await ctx.api.sendChatAction(chatId, "typing").catch(() => {});
+  await ctx.api.sendChatAction(chatId, "typing").catch(() => { });
 
   try {
     // Route through the LLM
@@ -488,7 +589,7 @@ async function handleTradeFromTelegram(
   // Auto-detect chain from DexScreener — ask user to confirm
   await ctx.reply(
     `🔍 *Analyzing token...*\n\`${address}\`\n\n` +
-      `_Checking price, safety, and liquidity across all EVM chains..._`,
+    `_Checking price, safety, and liquidity across all EVM chains..._`,
     { parse_mode: "Markdown" },
   );
 
@@ -526,7 +627,7 @@ async function handleTradeFromTelegram(
 
   bus.emit("TRADE_REQUEST", intent);
 
-  // Safety net: if nothing responds within 20s, tell the user
+  // Safety net: if nothing responds within 45s, tell the user
   setTimeout(() => {
     if (pendingReplies.has(intentId)) {
       pendingReplies.delete(intentId);
@@ -536,13 +637,13 @@ async function handleTradeFromTelegram(
         .sendMessage(
           chatId,
           `⏰ *Request timed out*\n\nToken: \`${address}\`\n` +
-            `The quote and safety agents didn't respond in time.\n\n` +
-            `_Please try again or check the contract address._`,
+          `The quote and safety agents didn't respond in time.\n\n` +
+          `_Please try again or check the contract address._`,
           { parse_mode: "Markdown" },
         )
         .catch(console.error);
     }
-  }, 20_000);
+  }, 45_000);
 }
 
 async function handleResearchFromTelegram(
@@ -604,7 +705,7 @@ async function handleConversational(
 
   // Keep typing indicator alive during LLM call
   const typingInterval = setInterval(() => {
-    if (chatId) ctx.api.sendChatAction(chatId, "typing").catch(() => {});
+    if (chatId) ctx.api.sendChatAction(chatId, "typing").catch(() => { });
   }, 4000);
 
   try {
@@ -634,7 +735,7 @@ async function handleConversational(
         placeholder.chat.id,
         placeholder.message_id,
         "🦅 Didn't catch that. Try asking about tokens, chains, or trading strategies — or paste a contract address for a live scan.",
-      ).catch(() => {});
+      ).catch(() => { });
     }
   } catch (err) {
     clearInterval(typingInterval);
@@ -643,11 +744,11 @@ async function handleConversational(
       placeholder.chat.id,
       placeholder.message_id,
       "🦅 My LLM is warming up — give me a sec and try again.\n\n" +
-        "Meanwhile, you can:\n" +
-        "• Paste a token contract address for instant analysis\n" +
-        "• Try /chains to see supported networks\n" +
-        "• Try /status to check system health",
-    ).catch(() => {});
+      "Meanwhile, you can:\n" +
+      "• Paste a token contract address for instant analysis\n" +
+      "• Try /chains to see supported networks\n" +
+      "• Try /status to check system health",
+    ).catch(() => { });
   }
 }
 
@@ -664,11 +765,11 @@ async function handleComingSoon(
   };
   await ctx.reply(
     `🚧 *Coming Soon*\n\n` +
-      `${names[category] ?? category} is under development.\n\n` +
-      `For now, I can help with:\n` +
-      `• Token trading (paste a contract address)\n` +
-      `• Token research\n` +
-      `• Market questions`,
+    `${names[category] ?? category} is under development.\n\n` +
+    `For now, I can help with:\n` +
+    `• Token trading (paste a contract address)\n` +
+    `• Token research\n` +
+    `• Market questions`,
     { parse_mode: "Markdown" },
   );
 }
@@ -688,14 +789,39 @@ function formatUptime(seconds: number): string {
 // Boot
 // ---------------------------------------------------------------------------
 
+async function updateTelegramCommands() {
+  const commands = [
+    { command: "start", description: "Welcome message" },
+    { command: "help", description: "Show commands and usage" },
+    { command: "quote", description: "Quick token quote" },
+    { command: "chains", description: "List supported networks" },
+    { command: "skills", description: "View all agent skills" },
+    { command: "status", description: "Check swarm health" },
+  ];
+
+  for (const skill of skills) {
+    const slug = `skill_${getSkillSlug(skill.filename)}`;
+    commands.push({
+      command: slug,
+      description: `Toggle ${skill.name} (${skill.enabled ? 'ON' : 'OFF'})`
+    });
+  }
+
+  await bot.api.setMyCommands(commands).catch(err => {
+    console.error("[TelegramBot] Failed to set commands:", err);
+  });
+}
+
 async function main(): Promise<void> {
   console.log("[TelegramBot] 🦅 HAWKEYE starting...");
   console.log(`[TelegramBot] LLM: OpenRouter (${llm.model})`);
   console.log(`[TelegramBot] Chains: ${getSupportedChains().length} EVM networks`);
 
   await llm.ready();
+  await updateTelegramCommands();
 
   bot.start({
+    drop_pending_updates: true,
     onStart: (botInfo) => {
       console.log(`[TelegramBot] ✅ Bot @${botInfo.username} is live`);
       console.log(`[TelegramBot] Send a message to https://t.me/${botInfo.username}`);

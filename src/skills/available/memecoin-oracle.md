@@ -1,7 +1,7 @@
 ---
 name: "Memecoin Oracle"
 description: "Memecoin lifecycle analysis, narrative detection, and timing strategies"
-enabled: true
+enabled: false
 priority: 73
 tags: ["memecoin", "narrative", "timing", "social"]
 ---

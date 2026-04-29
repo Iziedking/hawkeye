@@ -1,7 +1,7 @@
 ---
 name: "Safety First"
 description: "Conservative trading with strict safety checks and risk management"
-enabled: false
+enabled: true
 priority: 95
 tags: ["safety", "risk-management"]
 ---

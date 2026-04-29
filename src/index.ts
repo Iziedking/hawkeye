@@ -7,6 +7,8 @@ import { startSafetyAgent } from "./agents/safety/index";
 import { startQuoteAgent } from "./agents/quote/index";
 import { startStrategyAgent } from "./agents/strategy/index";
 import { startResearchAgent } from "./agents/research/index";
+import { startExecutionAgent } from "./agents/execution";
+import { startEducationAgent } from "./agents/education";
 
 async function main(): Promise<void> {
   console.log("[hawkeye] booting agent swarm...");
@@ -15,6 +17,8 @@ async function main(): Promise<void> {
   const stopQuote = startQuoteAgent();
   const stopStrategy = startStrategyAgent();
   const research = startResearchAgent();
+  const stopExecution = startExecutionAgent();
+  const stopEducation = startEducationAgent();
 
   // Log bus activity for debugging
   bus.on("TRADE_REQUEST", (intent) => {
@@ -62,6 +66,8 @@ async function main(): Promise<void> {
     stopQuote();
     stopStrategy();
     research.stop();
+    stopExecution();
+    stopEducation();
     gateway?.stop();
     process.exit(0);
   };
