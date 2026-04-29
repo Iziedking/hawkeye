@@ -14,8 +14,10 @@
 //   Market     : DexScreener, CoinGecko, Birdeye (Solana)
 //   Holders    : Etherscan (EVM), Solscan (Solana), Arkham (entity labels, both)
 //   Sentiment  : Alternative.me Fear & Greed Index (market-wide, free)
-//   Trend      : Brave Search ×2 (global + crypto-specific), Stocktwits (trading community),
-//                Farcaster/Neynar (Web3-native community), Tavily (deep fallback)
+//   Trend      : GDELT (250k+ global news sources, no key), RSS feeds (CoinDesk/CoinTelegraph/
+//                Decrypt/Reuters/BBC — direct from source, no key), Stocktwits (trading community),
+//                Farcaster/Neynar (Web3-native community), Alternative.me (market fear/greed)
+//                Brave Search reserved for RESEARCH_REQUEST only (user-initiated, 2k/mo free tier)
 //   Synthesis  : OpenRouter locally → 0G Compute in production
 
 import { bus } from "../shared/event-bus";
@@ -152,6 +154,119 @@ async function runSecurityScan(
   return { flags: unique, score: computeScore(unique), ok };
 }
 
+// ─── Holder and age intelligence ──────────────────────────────────────────────
+// EVM  → Etherscan: first tx timestamp for age, tokenholderlist + tokensupply for concentration.
+// Solana → Solscan: tokenCreatedAt for age, holders endpoint for concentration.
+// Arkham entity labels skipped until API key is approved — slot is reserved here.
+
+type AgeAndHolders = {
+  ageHours:      number | null; // null = could not determine (don't drop, just skip age check)
+  top3Pct:       number | null; // null = could not determine (don't drop, just skip concentration check)
+  holderCount:   number | null;
+};
+
+async function checkAgeAndHolders(
+  address: string,
+  chainClass: "evm" | "solana",
+  chainId: string,
+): Promise<AgeAndHolders> {
+  if (chainClass === "evm") {
+    return checkEtherscan(address, chainId);
+  }
+  return checkSolscan(address);
+}
+
+async function checkEtherscan(address: string, _chainId: string): Promise<AgeAndHolders> {
+  const key = process.env["ETHERSCAN_API_KEY"] ?? "";
+  if (!key) return { ageHours: null, top3Pct: null, holderCount: null };
+
+  const base = "https://api.etherscan.io/api";
+
+  try {
+    // Age: pull the first transaction ever sent to/from this contract.
+    // The earliest tx timestamp is the contract deployment time.
+    const [ageResp, holdersResp, supplyResp] = await Promise.all([
+      fetch(`${base}?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}?module=token&action=tokenholderlist&contractaddress=${address}&page=1&offset=10&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}?module=stats&action=tokensupply&contractaddress=${address}&apikey=${key}`, { signal: AbortSignal.timeout(8_000) }),
+    ]);
+
+    // Age calculation
+    let ageHours: number | null = null;
+    if (ageResp.ok) {
+      const body = await ageResp.json() as { result?: Array<{ timeStamp?: string }> };
+      const ts = parseInt(body.result?.[0]?.timeStamp ?? "0", 10);
+      if (ts > 0) ageHours = (Date.now() / 1000 - ts) / 3600;
+    }
+
+    // Holder concentration — top 3 holders as % of total supply
+    let top3Pct: number | null = null;
+    let holderCount: number | null = null;
+    if (holdersResp.ok && supplyResp.ok) {
+      const holdersBody = await holdersResp.json() as { result?: Array<{ TokenHolderQuantity?: string }> };
+      const supplyBody  = await supplyResp.json()  as { result?: string };
+      const totalSupply = parseFloat(supplyBody.result ?? "0");
+      const holders     = holdersBody.result ?? [];
+      holderCount = holders.length;
+      if (totalSupply > 0 && holders.length >= 3) {
+        const top3 = holders
+          .slice(0, 3)
+          .reduce((sum, h) => sum + parseFloat(h.TokenHolderQuantity ?? "0"), 0);
+        top3Pct = (top3 / totalSupply) * 100;
+      }
+    }
+
+    return { ageHours, top3Pct, holderCount };
+  } catch {
+    // Etherscan unavailable — fail open (don't drop the token on a network error)
+    return { ageHours: null, top3Pct: null, holderCount: null };
+  }
+}
+
+async function checkSolscan(address: string): Promise<AgeAndHolders> {
+  const base = "https://public-api.solscan.io";
+
+  try {
+    const [metaResp, holdersResp] = await Promise.all([
+      fetch(`${base}/token/meta?tokenAddress=${address}`,                           { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+      fetch(`${base}/token/holders?tokenAddress=${address}&limit=10&offset=0`,      { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) }),
+    ]);
+
+    // Age
+    let ageHours: number | null = null;
+    if (metaResp.ok) {
+      const body = await metaResp.json() as { tokenInfo?: { tokenCreatedAt?: number } };
+      const createdAt = body.tokenInfo?.tokenCreatedAt;
+      if (createdAt) ageHours = (Date.now() / 1000 - createdAt) / 3600;
+    }
+
+    // Holder concentration
+    let top3Pct: number | null = null;
+    let holderCount: number | null = null;
+    if (holdersResp.ok) {
+      const body = await holdersResp.json() as {
+        total?: number;
+        data?: Array<{ amount?: number; decimals?: number }>;
+      };
+      holderCount = body.total ?? null;
+      const holders = body.data ?? [];
+      if (holders.length >= 3) {
+        const amounts = holders.map((h) => h.amount ?? 0);
+        const totalInList = amounts.reduce((a, b) => a + b, 0);
+        if (totalInList > 0) {
+          const top3 = amounts.slice(0, 3).reduce((a, b) => a + b, 0);
+          // Use list total as proxy for supply — conservative estimate
+          top3Pct = (top3 / totalInList) * 100;
+        }
+      }
+    }
+
+    return { ageHours, top3Pct, holderCount };
+  } catch {
+    return { ageHours: null, top3Pct: null, holderCount: null };
+  }
+}
+
 // ─── Polling cycle ─────────────────────────────────────────────────────────────
 // Fetches the latest token profiles and boosts from DexScreener, deduplicates
 // against the seen-token registry, and fires processCandidate() for each new one.
@@ -237,18 +352,27 @@ async function processCandidate(
 
     const safetyScore = security.score;
 
-    // ── Stage 3: holder/age intelligence — added in Commit 3 ───────────────────
-    // Etherscan/Solscan for contract age + top holders.
-    // Arkham for entity labels on creator + top holders.
-    // Hard drops: token < 1 hour old, top-3 holders > 80% concentration.
-    // Emits ALPHA_FOUND once opportunity score is computed.
+    // ── Stage 3: holder/age intelligence ──────────────────────────────────────
+    const ageAndHolders = await checkAgeAndHolders(address, chainClass, chainId);
+
+    // Hard drop 3: token less than 1 hour old — too new, likely sniper bait.
+    if (ageAndHolders.ageHours !== null && ageAndHolders.ageHours < 1) {
+      console.log(`[research] drop ${ticker}: too new (${ageAndHolders.ageHours.toFixed(1)}h old)`);
+      return;
+    }
+
+    // Hard drop 4: top 3 wallets hold > 80% of supply — coordinated dump setup.
+    if (ageAndHolders.top3Pct !== null && ageAndHolders.top3Pct > 80) {
+      console.log(`[research] drop ${ticker}: holder concentration ${ageAndHolders.top3Pct.toFixed(0)}%`);
+      return;
+    }
 
     // ── Stage 4: trend signal + narrative multiplier — added in Commit 4 ────────
-    // Brave ×2 (global + crypto), Stocktwits, Farcaster/Neynar,
-    // Alternative.me (fear/greed), Tavily (deep fallback).
-    // multiplier: 1.0x–1.8x applied to safetyScore → opportunityScore.
+    // GDELT (global news), RSS crypto feeds, Stocktwits, Farcaster/Neynar,
+    // Alternative.me (fear/greed).
+    // multiplier: 1.0x–1.8x applied to safetyScore → opportunityScore → ALPHA_FOUND.
 
-    void tokenName; void priceUsd; void safetyScore; // used from Commit 3 onward
+    void tokenName; void priceUsd; void safetyScore; // used in Commit 4
 
   } catch (err) {
     console.error(`[research] error processing ${address} (${chainId}):`, err);
