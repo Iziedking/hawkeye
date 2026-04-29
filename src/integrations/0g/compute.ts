@@ -1,4 +1,3 @@
-
 import { createZGComputeNetworkBroker } from "@0glabs/0g-serving-broker";
 import { ethers } from "ethers";
 import { envOr, requireEnv } from "../../shared/env";
@@ -7,7 +6,6 @@ const DEFAULT_RPC_URL = "https://evmrpc-testnet.0g.ai";
 
 const DEFAULT_PROVIDER_ADDRESS = "0xa48f01287233509FD694a22Bf840225062E67836";
 const DEFAULT_MODEL = "qwen/qwen-2.5-7b-instruct";
-
 
 const MIN_LEDGER_OG = 3;
 const MIN_PROVIDER_FUND_OG = 1;
@@ -43,7 +41,6 @@ export class OgComputeError extends Error {
     if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
   }
 }
-
 
 type Broker = Awaited<ReturnType<typeof createZGComputeNetworkBroker>>;
 
@@ -81,7 +78,6 @@ export class OgComputeClient {
     return this.brokerPromise;
   }
 
-
   async ready(): Promise<void> {
     if (this.readyPromise === null) {
       this.readyPromise = this.doReady().catch((err) => {
@@ -94,7 +90,6 @@ export class OgComputeClient {
 
   private async doReady(): Promise<void> {
     const broker = await this.getBroker();
-
 
     try {
       await broker.ledger.addLedger(MIN_LEDGER_OG);
@@ -112,7 +107,6 @@ export class OgComputeClient {
       }
     }
 
-
     try {
       await broker.inference.acknowledgeProviderSigner(this.providerAddress);
     } catch (err) {
@@ -121,7 +115,6 @@ export class OgComputeClient {
       }
     }
 
-
     try {
       await broker.ledger.transferFund(
         this.providerAddress,
@@ -129,7 +122,6 @@ export class OgComputeClient {
         ethers.parseEther(String(MIN_PROVIDER_FUND_OG)),
       );
     } catch (err) {
-
       if (!isAlreadyExistsError(err)) {
         throw classify(err, "LEDGER_LOW", "transferFund failed");
       }
@@ -145,13 +137,11 @@ export class OgComputeClient {
     return this.serviceMetaPromise;
   }
 
-
   async infer(req: OgInferenceRequest): Promise<OgInferenceResponse> {
     await this.ready();
     const broker = await this.getBroker();
     const meta = await this.getServiceMeta();
     const model = req.model ?? this.model ?? meta.model;
-
 
     let headers: Record<string, string | undefined>;
     try {
@@ -202,7 +192,6 @@ export class OgComputeClient {
     const chatId = completion.id ?? "";
     const text = completion.choices?.[0]?.message?.content ?? "";
 
-
     // processResponse may throw on testnet (no TEE receipts), treat as unverified
     let verified: boolean;
     try {
@@ -221,10 +210,7 @@ export class OgComputeClient {
     };
   }
 
-
-  async close(): Promise<void> {
-
-  }
+  async close(): Promise<void> {}
 }
 
 function isAlreadyExistsError(err: unknown): boolean {
@@ -237,17 +223,17 @@ function isAlreadyExistsError(err: unknown): boolean {
   );
 }
 
-function classify(
-  err: unknown,
-  reason: OgComputeErrorReason,
-  label: string,
-): OgComputeError {
+function classify(err: unknown, reason: OgComputeErrorReason, label: string): OgComputeError {
   const msg = (err as Error)?.message ?? String(err);
   const lowered = msg.toLowerCase();
   if (lowered.includes("insufficient") || lowered.includes("balance")) {
     return new OgComputeError("LEDGER_LOW", `${label}: ${msg}`, err);
   }
-  if (lowered.includes("network") || lowered.includes("timeout") || lowered.includes("econnrefused")) {
+  if (
+    lowered.includes("network") ||
+    lowered.includes("timeout") ||
+    lowered.includes("econnrefused")
+  ) {
     return new OgComputeError("PROVIDER_UNREACHABLE", `${label}: ${msg}`, err);
   }
   return new OgComputeError(reason, `${label}: ${msg}`, err);

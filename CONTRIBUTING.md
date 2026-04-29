@@ -55,22 +55,22 @@ SAFETY_RESULT      QUOTE_RESULT
 
 ### Events
 
-| Event | Emitter | Listener |
-|-------|---------|----------|
-| TRADE_REQUEST | Gateway (DEGEN_SNIPE/TRADE) | Safety, Quote |
-| SAFETY_RESULT | Safety | Strategy, Gateway |
-| QUOTE_RESULT | Quote | Strategy |
-| STRATEGY_DECISION | Strategy | Gateway |
-| EXECUTE_TRADE | Strategy | Execution |
-| TRADE_EXECUTED | Execution | Monitor, Gateway |
-| EXECUTE_SELL | Monitor | Execution |
-| ALPHA_FOUND | Research | Gateway |
-| COPY_TRADE_REQUEST | Gateway (COPY_TRADE) / Copy Trade Agent | Safety pipeline |
-| POSITION_UPDATE | Monitor | Gateway |
-| RESEARCH_REQUEST | Gateway (RESEARCH_TOKEN) | Research Agent |
-| RESEARCH_RESULT | Research Agent | Gateway |
-| GENERAL_QUERY_REQUEST | Gateway (GENERAL_QUERY) | (future agents) |
-| GENERAL_QUERY_RESULT | Gateway (inline 0G call) | (future agents) |
+| Event                 | Emitter                                 | Listener          |
+| --------------------- | --------------------------------------- | ----------------- |
+| TRADE_REQUEST         | Gateway (DEGEN_SNIPE/TRADE)             | Safety, Quote     |
+| SAFETY_RESULT         | Safety                                  | Strategy, Gateway |
+| QUOTE_RESULT          | Quote                                   | Strategy          |
+| STRATEGY_DECISION     | Strategy                                | Gateway           |
+| EXECUTE_TRADE         | Strategy                                | Execution         |
+| TRADE_EXECUTED        | Execution                               | Monitor, Gateway  |
+| EXECUTE_SELL          | Monitor                                 | Execution         |
+| ALPHA_FOUND           | Research                                | Gateway           |
+| COPY_TRADE_REQUEST    | Gateway (COPY_TRADE) / Copy Trade Agent | Safety pipeline   |
+| POSITION_UPDATE       | Monitor                                 | Gateway           |
+| RESEARCH_REQUEST      | Gateway (RESEARCH_TOKEN)                | Research Agent    |
+| RESEARCH_RESULT       | Research Agent                          | Gateway           |
+| GENERAL_QUERY_REQUEST | Gateway (GENERAL_QUERY)                 | (future agents)   |
+| GENERAL_QUERY_RESULT  | Gateway (inline 0G call)                | (future agents)   |
 
 ### Writing an Agent
 
@@ -92,14 +92,14 @@ Import types from `src/shared/types.ts`. Talk only through the bus. Each agent g
 
 These are pre-wired in `.mcp.json` and work after `npm install`.
 
-| MCP | What it does | Who needs it |
-|-----|-------------|--------------|
-| dexscreener | DEX pair and token data, 7 tools | Quote, Research, Safety |
-| goplus | Token security scanning, 7 tools | Safety |
-| coingecko | Market data, OHLC, exchanges, 50 tools | Quote, Research |
-| openclaw-docs | OpenClaw documentation search | Gateway dev |
-| gensyn-axl | P2P messaging and topology | Bus transport |
-| keeperhub | EVM execution and gas management | Execution |
+| MCP           | What it does                           | Who needs it            |
+| ------------- | -------------------------------------- | ----------------------- |
+| dexscreener   | DEX pair and token data, 7 tools       | Quote, Research, Safety |
+| goplus        | Token security scanning, 7 tools       | Safety                  |
+| coingecko     | Market data, OHLC, exchanges, 50 tools | Quote, Research         |
+| openclaw-docs | OpenClaw documentation search          | Gateway dev             |
+| gensyn-axl    | P2P messaging and topology             | Bus transport           |
+| keeperhub     | EVM execution and gas management       | Execution               |
 
 Uniswap AI skills are in `.agents/skills/` for swap and liquidity guidance.
 

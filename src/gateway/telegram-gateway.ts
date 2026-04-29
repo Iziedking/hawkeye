@@ -1,6 +1,5 @@
 // Direct Telegram gateway via grammY. Full control over UX.
 
-import process from "node:process";
 import { randomUUID } from "node:crypto";
 import { Bot } from "grammy";
 import { bus } from "../shared/event-bus";
@@ -70,9 +69,12 @@ function codeAddr(addr: string): string {
   return `<code>${html(addr)}</code>`;
 }
 
-export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Promise<TelegramGatewayHandle> {
+export async function startTelegramGateway(
+  deps: TelegramGatewayDeps = {},
+): Promise<TelegramGatewayHandle> {
   const token = deps.botToken ?? envOr("TELEGRAM_BOT_TOKEN", "");
-  if (!token) throw new Error("TELEGRAM_BOT_TOKEN required. Set it in .env.local or pass via deps.");
+  if (!token)
+    throw new Error("TELEGRAM_BOT_TOKEN required. Set it in .env.local or pass via deps.");
 
   const bot = new Bot(token);
   const wm = deps.walletManager ?? null;
@@ -81,7 +83,11 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
   const llm = deps.llm !== undefined ? deps.llm : await tryInitLlm();
   const storage = tryInitStorage();
 
-  async function reply(ctx: ReplyCtx, text: string, parseMode: "HTML" | undefined = "HTML"): Promise<void> {
+  async function reply(
+    ctx: ReplyCtx,
+    text: string,
+    parseMode: "HTML" | undefined = "HTML",
+  ): Promise<void> {
     try {
       if (parseMode === "HTML") {
         await bot.api.sendMessage(ctx.chatId, text, { parse_mode: "HTML" });
@@ -98,12 +104,15 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
     const pending = replyByRequestId.get(pos.intentId);
     if (!pending) return;
     replyByRequestId.delete(pos.intentId);
-    void reply(pending.ctx, [
-      "<b>Trade Executed</b>",
-      `Filled: ${pos.filled.value} ${pos.filled.unit}`,
-      `Entry: $${pos.entryPriceUsd.toFixed(6)}`,
-      `TX: ${codeAddr(pos.txHash)}`,
-    ].join("\n"));
+    void reply(
+      pending.ctx,
+      [
+        "<b>Trade Executed</b>",
+        `Filled: ${pos.filled.value} ${pos.filled.unit}`,
+        `Entry: $${pos.entryPriceUsd.toFixed(6)}`,
+        `TX: ${codeAddr(pos.txHash)}`,
+      ].join("\n"),
+    );
   };
 
   const onStrategy = (d: import("../shared/types").StrategyDecision): void => {
@@ -112,12 +121,15 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
       if (!pending) return;
       replyByRequestId.delete(d.intentId);
       if (pending.isTestnet && d.reason.includes("No trading pair")) {
-        void reply(pending.ctx, [
-          `Testnet trading pairs aren't available through DEX aggregators.`,
-          ``,
-          `For live testing: try a mainnet trade with a small amount (e.g. $5 worth).`,
-          `I can trade on Ethereum, Base, Arbitrum, Optimism, Polygon, and BSC.`,
-        ].join("\n"));
+        void reply(
+          pending.ctx,
+          [
+            `Testnet trading pairs aren't available through DEX aggregators.`,
+            ``,
+            `For live testing: try a mainnet trade with a small amount (e.g. $5 worth).`,
+            `I can trade on Ethereum, Base, Arbitrum, Optimism, Polygon, and BSC.`,
+          ].join("\n"),
+        );
       } else {
         void reply(pending.ctx, `Trade rejected: ${html(d.reason)}`);
       }
@@ -153,42 +165,48 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
 
   // /start — welcome message
   bot.command("start", async (ctx) => {
-    await ctx.reply([
-      "<b>HAWKEYE</b> — Autonomous On-Chain Agent\n",
-      "I can help you with:",
-      "  Swap tokens across DEXes",
-      "  Research token safety and data",
-      "  Bridge assets between chains",
-      "  Provide or manage liquidity",
-      "  Track your portfolio and positions",
-      "  Find alpha: trending tokens, smart money\n",
-      "Get started:",
-      "  /wallet — Create or view your agent wallet",
-      "  Paste a contract address to trade",
-      "  Ask me anything about crypto\n",
-      "<i>Type /help for all commands</i>",
-    ].join("\n"), { parse_mode: "HTML" });
+    await ctx.reply(
+      [
+        "<b>HAWKEYE</b> — Autonomous On-Chain Agent\n",
+        "I can help you with:",
+        "  Swap tokens across DEXes",
+        "  Research token safety and data",
+        "  Bridge assets between chains",
+        "  Provide or manage liquidity",
+        "  Track your portfolio and positions",
+        "  Find alpha: trending tokens, smart money\n",
+        "Get started:",
+        "  /wallet — Create or view your agent wallet",
+        "  Paste a contract address to trade",
+        "  Ask me anything about crypto\n",
+        "<i>Type /help for all commands</i>",
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
   });
 
   // /help
   bot.command("help", async (ctx) => {
-    await ctx.reply([
-      "<b>Commands</b>\n",
-      "/wallet — Create or view your wallet",
-      "/start — Welcome message\n",
-      "<b>Wallet</b>",
-      "<code>connect 0x...</code> — Link external wallet",
-      "<code>use agent wallet</code> — Switch to HAWKEYE wallet",
-      "<code>use external wallet</code> — Switch to your wallet\n",
-      "<b>Trading</b>",
-      "Paste a contract address to snipe",
-      '"Swap 0.1 ETH to USDC on Base"',
-      '"Bridge 0.5 ETH to Arbitrum"\n',
-      "<b>Research</b>",
-      '"Is 0x... safe?"',
-      '"Check this token"',
-      '"What\'s trending?"',
-    ].join("\n"), { parse_mode: "HTML" });
+    await ctx.reply(
+      [
+        "<b>Commands</b>\n",
+        "/wallet — Create or view your wallet",
+        "/start — Welcome message\n",
+        "<b>Wallet</b>",
+        "<code>connect 0x...</code> — Link external wallet",
+        "<code>use agent wallet</code> — Switch to HAWKEYE wallet",
+        "<code>use external wallet</code> — Switch to your wallet\n",
+        "<b>Trading</b>",
+        "Paste a contract address to snipe",
+        '"Swap 0.1 ETH to USDC on Base"',
+        '"Bridge 0.5 ETH to Arbitrum"\n',
+        "<b>Research</b>",
+        '"Is 0x... safe?"',
+        '"Check this token"',
+        '"What\'s trending?"',
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
   });
 
   // /wallet — create on explicit request, show info
@@ -203,12 +221,15 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
     if (!existing) {
       try {
         const wallet = await wm.getOrCreateWallet(userId);
-        await ctx.reply([
-          "<b>Wallet Created</b>\n",
-          `Address: ${codeAddr(wallet.address)}`,
-          "\nFund this address with ETH to start trading.",
-          "Tap the address to copy it.",
-        ].join("\n"), { parse_mode: "HTML" });
+        await ctx.reply(
+          [
+            "<b>Wallet Created</b>\n",
+            `Address: ${codeAddr(wallet.address)}`,
+            "\nFund this address with ETH to start trading.",
+            "Tap the address to copy it.",
+          ].join("\n"),
+          { parse_mode: "HTML" },
+        );
       } catch (err) {
         await ctx.reply(`Failed to create wallet: ${(err as Error).message}`);
       }
@@ -248,23 +269,29 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
     if (wm && (lower === "use agent wallet" || lower === "use hawkeye wallet")) {
       wm.setWalletMode(userId, "agent");
       const w = wm.getWallet(userId);
-      await ctx.reply(
-        `Switched to agent wallet${w ? ": " + codeAddr(w.address) : ""}`,
-        { parse_mode: "HTML" },
-      );
+      await ctx.reply(`Switched to agent wallet${w ? ": " + codeAddr(w.address) : ""}`, {
+        parse_mode: "HTML",
+      });
       return;
     }
 
-    if (wm && (lower === "use external wallet" || lower === "use my wallet" || lower === "use connected wallet")) {
+    if (
+      wm &&
+      (lower === "use external wallet" ||
+        lower === "use my wallet" ||
+        lower === "use connected wallet")
+    ) {
       const config = wm.getWalletConfig(userId);
       if (config.externalAddress) {
         wm.setWalletMode(userId, "external");
+        await ctx.reply(`Switched to external wallet: ${codeAddr(config.externalAddress)}`, {
+          parse_mode: "HTML",
+        });
+      } else {
         await ctx.reply(
-          `Switched to external wallet: ${codeAddr(config.externalAddress)}`,
+          `No external wallet connected. Say <code>connect 0x...</code> to link one.`,
           { parse_mode: "HTML" },
         );
-      } else {
-        await ctx.reply(`No external wallet connected. Say <code>connect 0x...</code> to link one.`, { parse_mode: "HTML" });
       }
       return;
     }
@@ -276,7 +303,9 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
       routerDeps,
     );
 
-    console.log(`[telegram] user=${userId} category=${result.category} confidence=${result.confidence.toFixed(2)} text="${text.slice(0, 50)}"`);
+    console.log(
+      `[telegram] user=${userId} category=${result.category} confidence=${result.confidence.toFixed(2)} text="${text.slice(0, 50)}"`,
+    );
 
     switch (result.category) {
       case "DEGEN_SNIPE":
@@ -303,7 +332,12 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
 
   // --- Handlers ---
 
-  async function llmReply(rctx: ReplyCtx, userMsg: string, context: string, fallbackText: string): Promise<void> {
+  async function llmReply(
+    rctx: ReplyCtx,
+    userMsg: string,
+    context: string,
+    fallbackText: string,
+  ): Promise<void> {
     if (!llm) {
       void reply(rctx, fallbackText);
       return;
@@ -331,15 +365,19 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
   ): Promise<void> {
     const d = result.data;
     let address = typeof d["address"] === "string" ? d["address"] : null;
-    let chain: ChainClass | null = d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
+    let chain: ChainClass | null =
+      d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
     const fromToken = typeof d["fromToken"] === "string" ? d["fromToken"] : null;
     const toToken = typeof d["toToken"] === "string" ? d["toToken"] : null;
     const chainHint = typeof d["chain"] === "string" ? d["chain"] : null;
 
     if (walletMgr && !walletMgr.getWallet(userId)) {
-      void llmReply(rctx, result.rawText,
+      void llmReply(
+        rctx,
+        result.rawText,
         "The user wants to trade but hasn't created a wallet yet. Tell them to use /wallet first. Keep it brief.",
-        "You need a wallet first. Use /wallet to create one.");
+        "You need a wallet first. Use /wallet to create one.",
+      );
       return;
     }
 
@@ -353,19 +391,26 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
           address = resolved.address;
           resolvedChainName = resolveChainAlias(resolved.chain) ?? resolved.chain;
           chain = resolvedChainName === "solana" ? "solana" : "evm";
-          console.log(`[telegram] resolved "${targetSymbol}" → ${address} on ${resolved.chain} (${resolved.source}${resolved.liquidity ? ", liq=$" + resolved.liquidity.toFixed(0) : ""})`);
+          console.log(
+            `[telegram] resolved "${targetSymbol}" → ${address} on ${resolved.chain} (${resolved.source}${resolved.liquidity ? ", liq=$" + resolved.liquidity.toFixed(0) : ""})`,
+          );
         }
       }
     }
 
     if (!address) {
-      const context = fromToken || toToken
-        ? `The user wants to swap${fromToken ? " " + fromToken : ""}${toToken ? " to " + toToken : ""} but I couldn't find the token on any DEX. Ask if they can provide the contract address, or check the token name spelling.`
-        : `The user wants to trade/swap but didn't specify which tokens. Ask what they want to swap and on which chain. Mention they can say things like "swap 0.1 ETH to USDC on Base" or paste a contract address.`;
-      void llmReply(rctx, result.rawText, context,
+      const context =
+        fromToken || toToken
+          ? `The user wants to swap${fromToken ? " " + fromToken : ""}${toToken ? " to " + toToken : ""} but I couldn't find the token on any DEX. Ask if they can provide the contract address, or check the token name spelling.`
+          : `The user wants to trade/swap but didn't specify which tokens. Ask what they want to swap and on which chain. Mention they can say things like "swap 0.1 ETH to USDC on Base" or paste a contract address.`;
+      void llmReply(
+        rctx,
+        result.rawText,
+        context,
         fromToken || toToken
           ? `Couldn't find ${toToken ?? fromToken} on any DEX. Check the name or paste the contract address.`
-          : `What do you want to swap? Example: "swap 0.1 ETH to USDC on Base" or paste a contract address.`);
+          : `What do you want to swap? Example: "swap 0.1 ETH to USDC on Base" or paste a contract address.`,
+      );
       return;
     }
 
@@ -376,12 +421,14 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
     if (amountRaw && typeof amountRaw === "object") {
       const v = typeof amountRaw["value"] === "number" ? amountRaw["value"] : 0;
       const u = amountRaw["unit"];
-      const unit: TradeAmount["unit"] = u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
+      const unit: TradeAmount["unit"] =
+        u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
       amount = { value: Number.isFinite(v) && v > 0 ? v : 0, unit };
     }
 
     const urgencyRaw = d["urgency"];
-    const urgency: TradingMode = urgencyRaw === "INSTANT" || urgencyRaw === "CAREFUL" ? urgencyRaw : "NORMAL";
+    const urgency: TradingMode =
+      urgencyRaw === "INSTANT" || urgencyRaw === "CAREFUL" ? urgencyRaw : "NORMAL";
 
     const specificChain = resolvedChainName ?? chainHint ?? null;
     const intentBase = {
@@ -400,25 +447,38 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
       ? { ...intentBase, chainHint: specificChain as ChainId }
       : intentBase;
 
-    const isTestnet = specificChain ? ["sepolia", "goerli", "mumbai", "fuji"].includes(specificChain) : false;
+    const isTestnet = specificChain
+      ? ["sepolia", "goerli", "mumbai", "fuji"].includes(specificChain)
+      : false;
     const pending: PendingReply = { ctx: rctx, rootHash: null };
     if (isTestnet) pending.isTestnet = true;
     pendingMap.set(intent.intentId, pending);
     bus.emit("TRADE_REQUEST", intent);
 
-    const tokenLabel = toToken ? `${html(toToken.toUpperCase())} (${codeAddr(address)})` : codeAddr(address);
-    const chainLabel = specificChain && specificChain !== chain ? `${chain} (${html(specificChain)})` : chain;
-    await reply(rctx, [
-      `<b>Processing trade</b>`,
-      `Token: ${tokenLabel}`,
-      `Chain: ${chainLabel}`,
-      fromToken && toToken ? `Swap: ${html(fromToken.toUpperCase())} → ${html(toToken.toUpperCase())}` : "",
-      amount.value > 0 ? `Amount: ${amount.value} ${amount.unit}` : "",
-      `\nSafety + Quote agents running in parallel...`,
-    ].filter(Boolean).join("\n"));
+    const tokenLabel = toToken
+      ? `${html(toToken.toUpperCase())} (${codeAddr(address)})`
+      : codeAddr(address);
+    const chainLabel =
+      specificChain && specificChain !== chain ? `${chain} (${html(specificChain)})` : chain;
+    await reply(
+      rctx,
+      [
+        `<b>Processing trade</b>`,
+        `Token: ${tokenLabel}`,
+        `Chain: ${chainLabel}`,
+        fromToken && toToken
+          ? `Swap: ${html(fromToken.toUpperCase())} → ${html(toToken.toUpperCase())}`
+          : "",
+        amount.value > 0 ? `Amount: ${amount.value} ${amount.unit}` : "",
+        `\nSafety + Quote agents running in parallel...`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
 
     if (storage) {
-      void storage.writeJson(intent.intentId, intent)
+      void storage
+        .writeJson(intent.intentId, intent)
         .then((res) => {
           pending.rootHash = res.rootHash;
           console.log(`[telegram] 0G audit: intent=${intent.intentId} root=${res.rootHash}`);
@@ -434,7 +494,8 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
   ): void {
     const d = result.data;
     const address = typeof d["address"] === "string" ? d["address"] : null;
-    const chain = d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
+    const chain =
+      d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
 
     const requestId = randomUUID();
     pendingMap.set(requestId, { ctx: rctx, rootHash: null });
@@ -452,53 +513,82 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
     });
 
     if (address) {
-      void reply(rctx, `Researching ${codeAddr(address)}...\nAnalyzing safety, liquidity, and price data.`);
+      void reply(
+        rctx,
+        `Researching ${codeAddr(address)}...\nAnalyzing safety, liquidity, and price data.`,
+      );
     } else {
-      void llmReply(rctx, result.rawText,
+      void llmReply(
+        rctx,
+        result.rawText,
         "The user wants to research a token but didn't provide a contract address. Acknowledge their question and ask for the contract address for deeper analysis.",
-        "Looking into that. For detailed analysis, paste the contract address.");
+        "Looking into that. For detailed analysis, paste the contract address.",
+      );
     }
   }
 
   function handleResearchWallet(result: RouterResult, rctx: ReplyCtx): void {
     const d = result.data;
     const wallet = typeof d["walletAddress"] === "string" ? d["walletAddress"] : null;
-    void llmReply(rctx, result.rawText,
+    void llmReply(
+      rctx,
+      result.rawText,
       `The user wants wallet analysis${wallet ? " for " + wallet : ""}. This feature is coming soon. Mention what you CAN do now (trading, token research, alpha scanning).`,
       wallet
         ? `Wallet analysis is coming soon. For now I can research tokens and find alpha — paste a contract address or ask "what's trending?".`
-        : `Paste a wallet address and I'll analyze it. Wallet tracking is coming soon.`);
+        : `Paste a wallet address and I'll analyze it. Wallet tracking is coming soon.`,
+    );
   }
 
   function handleBridge(result: RouterResult, rctx: ReplyCtx): void {
-    void llmReply(rctx, result.rawText,
+    void llmReply(
+      rctx,
+      result.rawText,
       "The user wants to bridge assets between chains. Bridge execution is coming soon. Tell them what you CAN do now (trade on specific chains, research tokens across chains).",
-      "Bridge execution is coming soon. I can trade on specific chains right now — paste a contract address with the chain name.");
+      "Bridge execution is coming soon. I can trade on specific chains right now — paste a contract address with the chain name.",
+    );
   }
 
-  function handlePortfolio(result: RouterResult, rctx: ReplyCtx, walletMgr: WalletManager | null, userId: string): void {
+  function handlePortfolio(
+    result: RouterResult,
+    rctx: ReplyCtx,
+    walletMgr: WalletManager | null,
+    userId: string,
+  ): void {
     if (!walletMgr || !walletMgr.getWallet(userId)) {
-      void llmReply(rctx, result.rawText,
+      void llmReply(
+        rctx,
+        result.rawText,
         "The user wants portfolio info but has no wallet. Tell them to use /wallet to create one.",
-        "You need a wallet first. Use /wallet to create one, then I can track your positions.");
+        "You need a wallet first. Use /wallet to create one, then I can track your positions.",
+      );
       return;
     }
     const config = walletMgr.getWalletConfig(userId);
-    void llmReply(rctx, result.rawText,
+    void llmReply(
+      rctx,
+      result.rawText,
       `The user wants portfolio info. Their active wallet is ${config.activeAddress ?? "none"} (mode: ${config.mode}). Full portfolio tracking with live PnL is coming soon. Mention what you CAN do now.`,
-      `Active wallet: ${config.activeAddress ?? "none"} (${config.mode}). Full portfolio tracking is coming soon.`);
+      `Active wallet: ${config.activeAddress ?? "none"} (${config.mode}). Full portfolio tracking is coming soon.`,
+    );
   }
 
   function handleSettings(result: RouterResult, rctx: ReplyCtx): void {
-    void llmReply(rctx, result.rawText,
+    void llmReply(
+      rctx,
+      result.rawText,
       "The user wants to change a setting. Acknowledge what they want to set. Persistent settings are coming soon — for now it applies to current session only.",
-      "Settings update noted. Persistent settings are coming soon — applies to current session only.");
+      "Settings update noted. Persistent settings are coming soon — applies to current session only.",
+    );
   }
 
   function handleComingSoon(rctx: ReplyCtx, capability: string, rawText: string): void {
-    void llmReply(rctx, rawText,
+    void llmReply(
+      rctx,
+      rawText,
       `The user wants ${capability}. This feature is coming soon. Be honest about it, but mention what you CAN do right now (trading, token research, alpha scanning).`,
-      `${capability} is coming soon. I can help with trading, token research, and market questions right now.`);
+      `${capability} is coming soon. I can help with trading, token research, and market questions right now.`,
+    );
   }
 
   async function handleConversational(
@@ -507,15 +597,18 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
     llmClient: FallbackLlmClient | null,
   ): Promise<void> {
     if (!llmClient) {
-      void reply(rctx, [
-        `I'm running without my AI brain right now.`,
-        ``,
-        `I can still:`,
-        `  Paste a contract address — I'll trade or research it`,
-        `  Say "swap" — I'll guide you through a trade`,
-        `  Say "/wallet" — manage your wallet`,
-        `  Say "what's trending" — I'll scan for alpha`,
-      ].join("\n"));
+      void reply(
+        rctx,
+        [
+          `I'm running without my AI brain right now.`,
+          ``,
+          `I can still:`,
+          `  Paste a contract address — I'll trade or research it`,
+          `  Say "swap" — I'll guide you through a trade`,
+          `  Say "/wallet" — manage your wallet`,
+          `  Say "what's trending" — I'll scan for alpha`,
+        ].join("\n"),
+      );
       return;
     }
 
@@ -528,7 +621,10 @@ export async function startTelegramGateway(deps: TelegramGatewayDeps = {}): Prom
       });
       void reply(rctx, html(resp.text), "HTML");
     } catch {
-      void reply(rctx, "Having trouble right now. Try pasting a contract address, or say /help to see what I can do.");
+      void reply(
+        rctx,
+        "Having trouble right now. Try pasting a contract address, or say /help to see what I can do.",
+      );
     }
   }
 

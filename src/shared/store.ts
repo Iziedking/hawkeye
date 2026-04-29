@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 
 export type StoredWallet = {
@@ -46,7 +46,12 @@ export class JsonStore {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    writeFileSync(this.path, JSON.stringify(this.data, null, 2), "utf-8");
+    // Atomic write: writing to a sibling tmp file and then renaming guarantees
+    // readers never see a half-written users.json. A crash mid-write only
+    // leaves an orphan .tmp file behind.
+    const tmp = `${this.path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(this.data, null, 2), "utf-8");
+    renameSync(tmp, this.path);
   }
 
   getUser(userId: string): StoredUser | undefined {

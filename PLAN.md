@@ -8,37 +8,35 @@ The core infrastructure is built and live-tested via Telegram. The LLM router cl
 
 ### What's in this repo (Israel's deliverables)
 
-| Module | Path | Status |
-|--------|------|--------|
-| Event Bus | `src/shared/event-bus.ts` | Done |
-| Shared types | `src/shared/types.ts` | Done (includes LlmClient, chainHint, sepolia) |
-| Token resolver | `src/shared/tokens.ts` | Done (known tokens + DexScreener fallback) |
-| Wallet persistence | `src/shared/store.ts` | Done (JSON file store in data/users.json) |
-| Swarm tracer | `src/shared/swarm-tracer.ts` | Done (timestamps all bus events for parallel visibility) |
-| LLM Router | `src/gateway/llm-router.ts` | Done (degen shortcut + 0G/Claude LLM + regex fallback) |
-| Telegram Gateway | `src/gateway/telegram-gateway.ts` | Done (primary gateway, full UX) |
-| OpenClaw Adapter | `src/gateway/openclaw-adapter.ts` | Done (reference, not active) |
-| Claude LLM fallback | `src/integrations/claude/` | Done (FallbackLlmClient: 0G primary, Claude secondary) |
-| Privy wallets | `src/integrations/privy/` | Done (per-user agent wallets, external wallet connect) |
-| 0G Compute | `src/integrations/0g/compute.ts` | Done |
-| 0G Storage | `src/integrations/0g/storage.ts` | Done |
-| Main startup | `src/index.ts` | Done (central LLM, gateway, graceful shutdown) |
-| MCP servers | openclaw-docs, dexscreener, goplus, gensyn-axl, coingecko, keeperhub | Done |
+| Module              | Path                                                                 | Status                                                   |
+| ------------------- | -------------------------------------------------------------------- | -------------------------------------------------------- |
+| Event Bus           | `src/shared/event-bus.ts`                                            | Done                                                     |
+| Shared types        | `src/shared/types.ts`                                                | Done (includes LlmClient, chainHint, sepolia)            |
+| Token resolver      | `src/shared/tokens.ts`                                               | Done (known tokens + DexScreener fallback)               |
+| Wallet persistence  | `src/shared/store.ts`                                                | Done (JSON file store in data/users.json)                |
+| Swarm tracer        | `src/shared/swarm-tracer.ts`                                         | Done (timestamps all bus events for parallel visibility) |
+| LLM Router          | `src/gateway/llm-router.ts`                                          | Done (degen shortcut + 0G/Claude LLM + regex fallback)   |
+| Telegram Gateway    | `src/gateway/telegram-gateway.ts`                                    | Done (primary gateway, full UX)                          |
+| OpenClaw Adapter    | `src/gateway/openclaw-adapter.ts`                                    | Done (reference, not active)                             |
+| Claude LLM fallback | `src/integrations/claude/`                                           | Done (FallbackLlmClient: 0G primary, Claude secondary)   |
+| Privy wallets       | `src/integrations/privy/`                                            | Done (per-user agent wallets, external wallet connect)   |
+| 0G Compute          | `src/integrations/0g/compute.ts`                                     | Done                                                     |
+| 0G Storage          | `src/integrations/0g/storage.ts`                                     | Done                                                     |
+| Main startup        | `src/index.ts`                                                       | Done (central LLM, gateway, graceful shutdown)           |
+| MCP servers         | openclaw-docs, dexscreener, goplus, gensyn-axl, coingecko, keeperhub | Done                                                     |
 
 ### What's NOT in this repo yet (teammates build and PR these)
 
-| Module | Owner | Status |
-|--------|-------|--------|
-| Safety Agent | Samuel | Not submitted |
-| Quote Agent | Sunday | Not submitted |
-| Strategy Agent | Sunday/Israel | Not submitted |
-| Research Agent | Samuel | Not submitted |
-| Execution Agent | Sunday | Not submitted |
-| Monitor Agent | Joshua | Not submitted |
-| Copy Trade Agent | Joshua | Not built |
-| Frontend Dashboard | Stephanie | Not built |
-
-
+| Module             | Owner         | Status        |
+| ------------------ | ------------- | ------------- |
+| Safety Agent       | Samuel        | Not submitted |
+| Quote Agent        | Sunday        | Not submitted |
+| Strategy Agent     | Sunday/Israel | Not submitted |
+| Research Agent     | Samuel        | Not submitted |
+| Execution Agent    | Sunday        | Not submitted |
+| Monitor Agent      | Joshua        | Not submitted |
+| Copy Trade Agent   | Joshua        | Not built     |
+| Frontend Dashboard | Stephanie     | Not built     |
 
 ### Architecture changes since the original plan
 
@@ -72,6 +70,7 @@ You need to build and PR two agents: Quote and Execution.
 **Quote Agent** — Create `src/agents/quote/index.ts`
 
 The working version is in hawkeye-build. Your agent should:
+
 - Listen for `TRADE_REQUEST` on the bus
 - Fetch price via DexScreener (primary) + Uniswap Trading API (fallback)
 - Emit `QUOTE_RESULT` with price, slippage estimate, gas fee
@@ -80,6 +79,7 @@ The working version is in hawkeye-build. Your agent should:
 Dependencies available: `ethers`, DexScreener MCP. The `UNISWAP_API_KEY` env var is optional.
 
 Improvements to make on top of the lab version:
+
 - [ ] Replace rough gas fee estimates with real gas price fetches (e.g. via ethers.js provider)
 - [ ] Add Jupiter integration for Solana quotes
 - [ ] Improve slippage model with actual pool depth data
@@ -88,6 +88,7 @@ Improvements to make on top of the lab version:
 **Execution Agent** — Create `src/agents/execution/index.ts`
 
 The working version is in hawkeye-build. Your agent should:
+
 - Listen for `STRATEGY_DECISION` with decision=EXECUTE
 - Needs both the original `TradeIntent` (cache from `TRADE_REQUEST`) and the `Quote` (cache from `QUOTE_RESULT`)
 - Run Uniswap Trading API 3-step flow: check_approval, quote, swap
@@ -95,6 +96,7 @@ The working version is in hawkeye-build. Your agent should:
 - Export `startExecutionAgent()` that returns `{ stop() }`
 
 Improvements:
+
 - [ ] Wire real KeeperHub MCP for MEV-protected transaction submission (replace `keeperHubStub`)
 - [ ] Add transaction simulation before executing (dry-run for reverts)
 - [ ] Add Jupiter/Jito execution path for Solana
@@ -109,6 +111,7 @@ You need to build and PR two agents: Safety and Research.
 **Safety Agent** — Create `src/agents/safety/index.ts`
 
 The working version is in hawkeye-build. Your agent should:
+
 - Listen for `TRADE_REQUEST` on the bus
 - Run GoPlus + Honeypot (EVM) or GoPlus + RugCheck (Solana) in parallel
 - Emit `SAFETY_RESULT` with score (0-100) and flags array
@@ -117,6 +120,7 @@ The working version is in hawkeye-build. Your agent should:
 - Export `startSafetyAgent()` that returns a cleanup function
 
 Improvements:
+
 - [ ] Add more safety checks: contract age, holder concentration, deployer history
 - [ ] Weight safety scores by source reliability
 - [ ] Add Solana-specific checks beyond GoPlus + RugCheck
@@ -125,12 +129,14 @@ Improvements:
 **Research Agent** — Create `src/agents/research/index.ts`
 
 The working version is in hawkeye-build. Your agent should:
+
 - Reactive mode: listen for `RESEARCH_REQUEST`, gather DexScreener + GoPlus data, emit `RESEARCH_RESULT`
 - Proactive mode: poll DexScreener boosts/profiles every 30s, score alpha signals, emit `ALPHA_FOUND`
 - LLM-enhanced summaries when an LLM client is available (passed via deps)
 - Export `startResearchAgent(deps)` that returns `{ stop() }`
 
 Improvements:
+
 - [ ] Add holder analysis (top holders, whale movements)
 - [ ] Add social signals (Twitter mentions, Telegram group activity)
 - [ ] Add historical price context (not just 1h/24h change)
@@ -145,6 +151,7 @@ You need to build and PR two agents: Monitor and Copy Trade.
 **Monitor Agent** — Create `src/agents/monitor/index.ts`
 
 The working version is in hawkeye-build. Your agent should:
+
 - Listen for `TRADE_EXECUTED` to track open positions
 - Poll DexScreener prices for each open position
 - Emit `EXECUTE_SELL` when exit targets hit (stop loss, take profit, multiplier)
@@ -152,6 +159,7 @@ The working version is in hawkeye-build. Your agent should:
 - Export `startMonitorAgent()` that returns `{ stop() }`
 
 Improvements:
+
 - [ ] Add trailing stop loss (the `peakPriceUsd` tracking is there, but no trailing stop exit logic yet)
 - [ ] Add FDV and market cap exit targets (currently returns false — needs total supply data)
 - [ ] Add position alerting via bus events (e.g. significant PnL milestones)
@@ -160,6 +168,7 @@ Improvements:
 **Copy Trade Agent** — Create `src/agents/copy-trade/index.ts`
 
 This is NOT in hawkeye-build. You build it from scratch:
+
 - [ ] Listen for `COPY_TRADE_REQUEST` events from the bus
 - [ ] Track watched wallets via on-chain event monitoring (Etherscan API or direct RPC)
 - [ ] When a watched wallet swaps, emit `TRADE_REQUEST` with the same parameters
@@ -174,6 +183,7 @@ This is NOT in hawkeye-build. You build it from scratch:
 - [ ] Record the demo video (3 min max)
 
 All event types you need are in `src/shared/types.ts`. The key events to display:
+
 - `TRADE_EXECUTED` — new position opened
 - `POSITION_UPDATE` — live price + PnL
 - `EXECUTE_SELL` — exit triggered
@@ -185,6 +195,7 @@ All event types you need are in `src/shared/types.ts`. The key events to display
 Every user message hits the LLM Router, which classifies it into one of 10 intent categories. The router has a degen shortcut: bare contract addresses (with or without "ape"/"buy") skip the LLM entirely for sub-millisecond speed.
 
 **Degen snipe / Trade flow** (bare CA or explicit trade):
+
 ```
 0ms    LLM Router -> DEGEN_SNIPE/TRADE -> TRADE_REQUEST emitted
 0ms    Safety Agent starts checking the token
@@ -200,6 +211,7 @@ Every user message hits the LLM Router, which classifies it into one of 10 inten
 ```
 
 **Research flow** (CA + question like "is this safe?"):
+
 ```
 ~2s    LLM Router -> RESEARCH_TOKEN -> RESEARCH_REQUEST emitted
        Research Agent runs DexScreener + GoPlus + safety scan
@@ -207,6 +219,7 @@ Every user message hits the LLM Router, which classifies it into one of 10 inten
 ```
 
 **Conversational flow** (general questions, market queries, unknown):
+
 ```
 ~2s    LLM Router -> GENERAL_QUERY/UNKNOWN
        Second LLM call with conversational prompt
@@ -245,15 +258,15 @@ OPENCLAW_GATEWAY_TOKEN=   # Optional: OpenClaw (legacy gateway)
 
 ## Sponsors
 
-| Sponsor | What we use it for | Status |
-|---------|-------------------|--------|
-| 0G Compute | LLM router + conversational responses + agent analysis | Live on Galileo testnet |
-| 0G Storage | On-chain audit trail for every parsed intent | Live on Galileo testnet |
-| 0G Chain | Mainnet contract (required for submission) | Not deployed yet |
-| Gensyn AXL | P2P bus transport between agents | Node built, MCP wired |
-| KeeperHub | EVM transaction execution and gas management | MCP wired, stub in Execution Agent |
-| Uniswap | DEX integration for EVM swaps (Trading API) | Used in Quote + Execution agents |
-| Privy | Per-user agent wallets, signing, tx submission | Live in Telegram gateway |
+| Sponsor    | What we use it for                                     | Status                             |
+| ---------- | ------------------------------------------------------ | ---------------------------------- |
+| 0G Compute | LLM router + conversational responses + agent analysis | Live on Galileo testnet            |
+| 0G Storage | On-chain audit trail for every parsed intent           | Live on Galileo testnet            |
+| 0G Chain   | Mainnet contract (required for submission)             | Not deployed yet                   |
+| Gensyn AXL | P2P bus transport between agents                       | Node built, MCP wired              |
+| KeeperHub  | EVM transaction execution and gas management           | MCP wired, stub in Execution Agent |
+| Uniswap    | DEX integration for EVM swaps (Trading API)            | Used in Quote + Execution agents   |
+| Privy      | Per-user agent wallets, signing, tx submission         | Live in Telegram gateway           |
 
 ## Deadline
 

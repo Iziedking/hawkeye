@@ -11,10 +11,7 @@ type JsonRpcMessage = {
   error?: { code: number; message: string; data?: unknown };
 };
 
-const serverEntry = path.resolve(
-  process.cwd(),
-  "src/tools/gensyn-axl-mcp/index.ts",
-);
+const serverEntry = path.resolve(process.cwd(), "src/tools/gensyn-axl-mcp/index.ts");
 
 const tsxBin = path.resolve(
   process.cwd(),
@@ -74,9 +71,7 @@ async function run(): Promise<void> {
   }
 
   function notify(method: string, params?: unknown): void {
-    child.stdin.write(
-      JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n",
-    );
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
   }
 
   const results: Array<{ name: string; ok: boolean; detail: string }> = [];
@@ -103,16 +98,9 @@ async function run(): Promise<void> {
 
     // 2. tools/list
     const listResp = await request("tools/list");
-    const tools = (listResp.result as { tools?: Array<{ name: string }> })
-      ?.tools ?? [];
+    const tools = (listResp.result as { tools?: Array<{ name: string }> })?.tools ?? [];
     const names = tools.map((t) => t.name).sort();
-    const expected = [
-      "a2a_proxy",
-      "get_topology",
-      "mcp_proxy",
-      "recv_message",
-      "send_message",
-    ];
+    const expected = ["a2a_proxy", "get_topology", "mcp_proxy", "recv_message", "send_message"];
     record(
       "tools/list",
       JSON.stringify(names) === JSON.stringify(expected),
@@ -125,8 +113,7 @@ async function run(): Promise<void> {
       arguments: {},
     });
     const topoText =
-      (topoResp.result as { content?: Array<{ text?: string }> })
-        ?.content?.[0]?.text ?? "";
+      (topoResp.result as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "";
     let topoOk = false;
     try {
       const topo = JSON.parse(topoText);
@@ -149,15 +136,10 @@ async function run(): Promise<void> {
       arguments: {},
     });
     const recvText =
-      (recvResp.result as { content?: Array<{ text?: string }> })
-        ?.content?.[0]?.text ?? "";
+      (recvResp.result as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "";
     try {
       const recv = JSON.parse(recvText);
-      record(
-        "recv_message",
-        recv.status === 204 || recv.status === 200,
-        `status=${recv.status}`,
-      );
+      record("recv_message", recv.status === 204 || recv.status === 200, `status=${recv.status}`);
     } catch {
       record("recv_message", false, `parse error, text=${recvText.slice(0, 80)}`);
     }
@@ -166,9 +148,7 @@ async function run(): Promise<void> {
   }
 
   const failed = results.filter((r) => !r.ok);
-  process.stderr.write(
-    `\nSummary: ${results.length - failed.length}/${results.length} passed\n`,
-  );
+  process.stderr.write(`\nSummary: ${results.length - failed.length}/${results.length} passed\n`);
   if (stderrBuf.trim()) {
     process.stderr.write(`\n--- server stderr ---\n${stderrBuf}\n`);
   }
@@ -177,7 +157,7 @@ async function run(): Promise<void> {
 
 run().catch((err) => {
   process.stderr.write(
-    `smoke-test fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+    `smoke-test fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
   );
   process.exit(1);
 });

@@ -1,4 +1,3 @@
-
 import { Indexer, MemData } from "@0gfoundation/0g-ts-sdk";
 import { ethers } from "ethers";
 import { envOr, requireEnv } from "../../shared/env";
@@ -50,7 +49,6 @@ export class OgStorageClient {
     this.indexer = new Indexer(indexerUrl);
   }
 
-
   async writeJson(key: string, obj: unknown): Promise<OgStorageWriteResult> {
     const body = {
       key,
@@ -74,11 +72,7 @@ export class OgStorageClient {
       );
     }
     if (err !== null) {
-      throw new OgStorageError(
-        "UPLOAD_FAILED",
-        `upload error: ${err.message}`,
-        err,
-      );
+      throw new OgStorageError("UPLOAD_FAILED", `upload error: ${err.message}`, err);
     }
 
     if (isSingleUpload(tx)) {
@@ -96,9 +90,7 @@ export class OgStorageClient {
   }
 }
 
-function isSingleUpload(
-  tx: unknown,
-): tx is { rootHash: string; txHash: string; txSeq: number } {
+function isSingleUpload(tx: unknown): tx is { rootHash: string; txHash: string; txSeq: number } {
   if (tx === null || typeof tx !== "object") return false;
   const t = tx as Record<string, unknown>;
   return (

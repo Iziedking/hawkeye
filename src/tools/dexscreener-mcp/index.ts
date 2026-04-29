@@ -39,9 +39,7 @@ const chainSchema = z
 
 function respondJson(value: unknown): { content: Array<{ type: "text"; text: string }> } {
   return {
-    content: [
-      { type: "text", text: JSON.stringify(value, null, 2) },
-    ],
+    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
   };
 }
 
@@ -111,7 +109,12 @@ server.registerTool(
         return respondError(new Error(`invalid chain: ${args.chain}`));
       }
       const pairs = await getPairsByToken(args.chain, args.tokenAddress);
-      return respondJson({ chain: args.chain, tokenAddress: args.tokenAddress, count: pairs.length, pairs });
+      return respondJson({
+        chain: args.chain,
+        tokenAddress: args.tokenAddress,
+        count: pairs.length,
+        pairs,
+      });
     } catch (err) {
       return respondError(err);
     }
@@ -122,8 +125,7 @@ server.registerTool(
   "get_pair",
   {
     title: "Get a single DEX pair",
-    description:
-      "Fetch full details for a specific pair by (chain, pairAddress).",
+    description: "Fetch full details for a specific pair by (chain, pairAddress).",
     inputSchema: {
       chain: chainSchema,
       pairAddress: z.string().min(1).describe("DEX pair / pool address."),
@@ -242,7 +244,7 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(
-    `dexscreener-mcp fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+    `dexscreener-mcp fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
   );
   process.exit(1);
 });

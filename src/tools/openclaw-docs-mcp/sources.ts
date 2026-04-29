@@ -26,8 +26,7 @@ export const CURATED_INDEX: CuratedEntry[] = [
   {
     url: "https://raw.githubusercontent.com/openclaw/openclaw/main/README.md",
     title: "Official OpenClaw README (GitHub)",
-    summary:
-      "Canonical project overview: install, architecture, supported channels, gateway port.",
+    summary: "Canonical project overview: install, architecture, supported channels, gateway port.",
     tags: ["readme", "official", "github", "canonical", "overview"],
     authoritative: true,
   },
@@ -77,24 +76,21 @@ export const CURATED_INDEX: CuratedEntry[] = [
   {
     url: "https://openclaws.io/docs/platforms/macos",
     title: "macOS companion app",
-    summary:
-      "Menu-bar companion app: permissions, gateway attach, macOS-specific capabilities.",
+    summary: "Menu-bar companion app: permissions, gateway attach, macOS-specific capabilities.",
     tags: ["macos", "desktop", "companion-app"],
     authoritative: false,
   },
   {
     url: "https://openclaws.io/docs/cli",
     title: "CLI reference",
-    summary:
-      "Full CLI command reference: onboard, gateway, doctor, status, install-daemon.",
+    summary: "Full CLI command reference: onboard, gateway, doctor, status, install-daemon.",
     tags: ["cli", "commands", "reference"],
     authoritative: false,
   },
   {
     url: "https://openclaws.io/docs/gateway/configuration",
     title: "Gateway configuration",
-    summary:
-      "JSON5 config at ~/.openclaw/openclaw.json; safe defaults; channels; models.",
+    summary: "JSON5 config at ~/.openclaw/openclaw.json; safe defaults; channels; models.",
     tags: ["gateway", "config", "configuration", "json5"],
     authoritative: false,
   },
@@ -133,8 +129,7 @@ export const CURATED_INDEX: CuratedEntry[] = [
   {
     url: "https://openclaws.io/blog/openclaw-docker-deployment",
     title: "Running OpenClaw in Docker",
-    summary:
-      "Step-by-step Docker deployment with container-isolation security model.",
+    summary: "Step-by-step Docker deployment with container-isolation security model.",
     tags: ["docker", "deploy", "security", "isolation"],
     authoritative: false,
   },
