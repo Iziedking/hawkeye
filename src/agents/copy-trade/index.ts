@@ -172,15 +172,16 @@ async function handleSwapEvent(wallet: WatchedWallet, swap: RawSwapEvent): Promi
 function parseWsMessage(raw: string, wallet: WatchedWallet): RawSwapEvent | null {
   try {
     const msg: unknown = JSON.parse(raw);
-    if (typeof msg !== "object" || msg === null || (msg as any).type !== "pair_update") {
-      return null;
-    }
+    if (typeof msg !== "object" || msg === null) return null;
+    const rec = msg as Record<string, unknown>;
+    if (rec.type !== "pair_update") return null;
 
-    const txns: any[] = (msg as any).data?.txns ?? [];
+    const data = rec.data as Record<string, unknown> | undefined;
+    const txns = (Array.isArray(data?.txns) ? data.txns : []) as Record<string, unknown>[];
     const walletAddr = wallet.address.toLowerCase();
 
     const swapTx = txns.find(
-      (tx: any) =>
+      (tx) =>
         (tx.type === "buy" || tx.type === "sell") &&
         typeof tx.maker === "string" &&
         tx.maker.toLowerCase() === walletAddr,
@@ -188,22 +189,23 @@ function parseWsMessage(raw: string, wallet: WatchedWallet): RawSwapEvent | null
 
     if (!swapTx) return null;
 
-    const pairData = (msg as any).data;
+    const baseToken = data?.baseToken as Record<string, unknown> | undefined;
+    const quoteToken = data?.quoteToken as Record<string, unknown> | undefined;
 
     return {
-      txHash: swapTx.txHash ?? `synthetic-${Date.now()}`,
+      txHash: (swapTx.txHash as string) ?? `synthetic-${Date.now()}`,
       makerAddress: swapTx.maker as string,
       baseToken: {
-        address: pairData?.baseToken?.address ?? "",
-        symbol: pairData?.baseToken?.symbol ?? "UNKNOWN",
+        address: (baseToken?.address as string) ?? "",
+        symbol: (baseToken?.symbol as string) ?? "UNKNOWN",
       },
       quoteToken: {
-        address: pairData?.quoteToken?.address ?? "",
-        symbol: pairData?.quoteToken?.symbol ?? "UNKNOWN",
+        address: (quoteToken?.address as string) ?? "",
+        symbol: (quoteToken?.symbol as string) ?? "UNKNOWN",
       },
       type: swapTx.type as "buy" | "sell",
-      volumeUsd: parseFloat(swapTx.volumeUsd ?? "0"),
-      chainId: pairData?.chainId as ChainId,
+      volumeUsd: parseFloat((swapTx.volumeUsd as string) ?? "0"),
+      chainId: data?.chainId as ChainId,
     };
   } catch {
     return null;

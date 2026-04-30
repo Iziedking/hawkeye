@@ -18,15 +18,14 @@ import type {
   TradingMode,
   PositionUpdate,
   QuoteFailedPayload,
-  UserConfirmedPayload,
 } from "../shared/types";
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
 import { formatHealthForTelegram } from "../shared/health";
 import { getChainRpc, getChainExplorer, getChainName, EVM_CHAIN_CONFIG, fetchNativeBalance } from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
-import { getPositions, getPositionsByUser } from "../agents/execution/index";
-import { getWatchedWalletAddresses, addWalletDirectly } from "../agents/copy-trade/index";
+import { getPositionsByUser } from "../agents/execution/index";
+import { getWatchedWalletAddresses } from "../agents/copy-trade/index";
 
 loadEnvLocal();
 
@@ -1392,15 +1391,6 @@ export async function startTelegramGateway(
       result.rawText,
       `The user wants to copy trade. They need to provide a wallet address. Tell them to use /watch 0xABC... [label] to start copy trading a wallet. Mention they can use /watchlist to see watched wallets.`,
       `To start copy trading, use:\n  /watch 0xABC... [label]\n\nI'll automatically copy their buys through the safety pipeline. Use /watchlist to see your watched wallets.`,
-    );
-  }
-
-  function handleComingSoon(rctx: ReplyCtx, capability: string, rawText: string): void {
-    void llmReply(
-      rctx,
-      rawText,
-      `The user wants ${capability}. This feature is coming soon. Be honest about it, but mention what you CAN do right now (trading, token research, alpha scanning).`,
-      `${capability} is coming soon. I can help with trading, token research, and market questions right now.`,
     );
   }
 

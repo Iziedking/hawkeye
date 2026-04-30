@@ -141,7 +141,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
 
   async function getOrCreateWallet(userId: string): Promise<PrivyWallet> {
     let email = resolveEmail(userId);
-    let profile = email ? store.getUser(email) : undefined;
+    const profile = email ? store.getUser(email) : undefined;
 
     if (profile?.agentWallet) {
       return profile.agentWallet;

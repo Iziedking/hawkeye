@@ -869,7 +869,7 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
   const nowSec = Date.now() / 1000;
   const cutoff48h = nowSec - 48 * 3600;
 
-  async function processUrl(url: string, minUps: number, label: string): Promise<void> {
+  async function processUrl(url: string, minUps: number, _label: string): Promise<void> {
     try {
       const resp = await fetch(url, {
         headers: { "User-Agent": "hawkeye-research-agent/0.1" },
@@ -1270,7 +1270,7 @@ type DefiLlamaData = {
   chains: string[];
 };
 
-async function fetchDefiLlama(tokenName: string, ticker: string): Promise<DefiLlamaData | null> {
+async function _fetchDefiLlama(tokenName: string, ticker: string): Promise<DefiLlamaData | null> {
   const empty: DefiLlamaData = { tvl: null, tvlChange1d: null, mcapTvlRatio: null, category: null, chains: [] };
   try {
     const resp = await fetch("https://api.llama.fi/protocols", {

@@ -6,7 +6,6 @@ import type {
   StrategyDecision,
   Position,
   ExecuteSellPayload,
-  ChainId,
   TradeAmount,
 } from "../../shared/types";
 import type { WalletManager } from "../../integrations/privy/index";
