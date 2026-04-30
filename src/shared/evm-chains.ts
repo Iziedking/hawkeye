@@ -161,6 +161,15 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     explorerUrl: "https://celoscan.io",
     wrappedNative: "0x471EcE3750Da237f93B8E339c536989b8978a438",
   },
+  sepolia: {
+    chainId: "sepolia",
+    name: "Sepolia Testnet",
+    nativeCurrency: "ETH",
+    rpcUrl: envOr("EVM_RPC_SEPOLIA", "https://rpc.ankr.com/eth_sepolia"),
+    fallbackRpc: "https://rpc.sepolia.org",
+    explorerUrl: "https://sepolia.etherscan.io",
+    wrappedNative: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
+  },
 };
 
 /**

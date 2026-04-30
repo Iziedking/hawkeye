@@ -21,6 +21,7 @@ const CAIP2_MAP: Partial<Record<ChainId, string>> = {
   mantle: "eip155:5000",
   fantom: "eip155:250",
   cronos: "eip155:25",
+  sepolia: "eip155:11155111",
 };
 
 const CHAIN_NUMERIC_TO_ID: Record<number, ChainId> = {
@@ -39,6 +40,7 @@ const CHAIN_NUMERIC_TO_ID: Record<number, ChainId> = {
   5000: "mantle",
   250: "fantom",
   25: "cronos",
+  11155111: "sepolia",
 };
 
 export type PrivyWallet = {

@@ -169,6 +169,7 @@ export type AlphaFoundPayload = {
 export type IntentCategory =
   | "DEGEN_SNIPE"
   | "TRADE"
+  | "SEND_TOKEN"
   | "RESEARCH_TOKEN"
   | "RESEARCH_WALLET"
   | "COPY_TRADE"

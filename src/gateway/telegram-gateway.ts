@@ -20,6 +20,7 @@ import type {
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
 import { formatHealthForTelegram } from "../shared/health";
+import { getChainExplorer, getChainRpc } from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 
 loadEnvLocal();
@@ -69,6 +70,45 @@ function html(text: string): string {
 
 function codeAddr(addr: string): string {
   return `<code>${html(addr)}</code>`;
+}
+
+const CHAIN_ALIASES: Record<string, { name: string; id: number }> = {
+  ethereum: { name: "ethereum", id: 1 },
+  eth: { name: "ethereum", id: 1 },
+  base: { name: "base", id: 8453 },
+  arbitrum: { name: "arbitrum", id: 42161 },
+  arb: { name: "arbitrum", id: 42161 },
+  optimism: { name: "optimism", id: 10 },
+  op: { name: "optimism", id: 10 },
+  polygon: { name: "polygon", id: 137 },
+  matic: { name: "polygon", id: 137 },
+  poly: { name: "polygon", id: 137 },
+  bsc: { name: "bsc", id: 56 },
+  bnb: { name: "bsc", id: 56 },
+  avalanche: { name: "avalanche", id: 43114 },
+  avax: { name: "avalanche", id: 43114 },
+  sepolia: { name: "sepolia", id: 11155111 },
+  fantom: { name: "fantom", id: 250 },
+  ftm: { name: "fantom", id: 250 },
+  cronos: { name: "cronos", id: 25 },
+  cro: { name: "cronos", id: 25 },
+  blast: { name: "blast", id: 81457 },
+  scroll: { name: "scroll", id: 534352 },
+  linea: { name: "linea", id: 59144 },
+  mantle: { name: "mantle", id: 5000 },
+  zksync: { name: "zksync", id: 324 },
+  celo: { name: "celo", id: 42220 },
+};
+
+function resolveChainNumeric(input: string): { name: string; id: number } | null {
+  return CHAIN_ALIASES[input.toLowerCase()] ?? null;
+}
+
+function nativeToWei(amount: number): string {
+  const parts = amount.toFixed(18).split(".");
+  const whole = parts[0] ?? "0";
+  const frac = (parts[1] ?? "").padEnd(18, "0").slice(0, 18);
+  return (BigInt(whole) * BigInt("1000000000000000000") + BigInt(frac)).toString();
 }
 
 export async function startTelegramGateway(
@@ -229,16 +269,20 @@ export async function startTelegramGateway(
       [
         "<b>Commands</b>\n",
         "/wallet — Create or view your wallet",
+        "/send — Send native tokens to a wallet",
         "/status — System health and uptime",
         "/start — Welcome message\n",
         "<b>Wallet</b>",
         "<code>connect 0x...</code> — Link external wallet",
         "<code>use agent wallet</code> — Switch to HAWKEYE wallet",
         "<code>use external wallet</code> — Switch to your wallet\n",
+        "<b>Send</b>",
+        "<code>/send 0.01 0x... [chain]</code>",
+        "Default chain: ethereum. Supports: base, arb, op, polygon, bsc, sepolia\n",
         "<b>Trading</b>",
         "Paste a contract address to snipe",
         '"Swap 0.1 ETH to USDC on Base"',
-        '"Bridge 0.5 ETH to Arbitrum"\n',
+        '"Send 0.5 ETH to 0xABC on Base"\n',
         "<b>Research</b>",
         '"Is 0x... safe?"',
         '"Check this token"',
@@ -285,6 +329,46 @@ export async function startTelegramGateway(
     }
     lines.push(`\nActive: <b>${config.mode}</b>`);
     await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
+  // /send — direct native token transfer
+  bot.command("send", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    const rctx: ReplyCtx = { chatId: ctx.chat.id, userId };
+    const args = (ctx.match as string).trim().split(/\s+/);
+
+    if (!wm) {
+      await reply(rctx, "Wallet system not available.");
+      return;
+    }
+    if (!wm.getWallet(userId)) {
+      await reply(rctx, "You need a wallet first. Use /wallet to create one.");
+      return;
+    }
+    if (args.length < 2) {
+      await reply(rctx, "Usage: <code>/send &lt;amount&gt; &lt;recipient&gt; [chain]</code>\nExample: <code>/send 0.01 0xABC... base</code>");
+      return;
+    }
+
+    const amount = Number(args[0]);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      await reply(rctx, `Invalid amount: ${html(args[0] ?? "")}`);
+      return;
+    }
+    const recipient = args[1]!;
+    if (!/^0x[a-fA-F0-9]{40}$/.test(recipient)) {
+      await reply(rctx, "Invalid recipient address. Must be a 0x address (40 hex chars).");
+      return;
+    }
+
+    const chainInput = args[2] ?? "ethereum";
+    const chain = resolveChainNumeric(chainInput);
+    if (!chain) {
+      await reply(rctx, `Unknown chain: ${html(chainInput)}. Try: ethereum, base, arb, op, polygon, bsc, sepolia`);
+      return;
+    }
+
+    await executeSend(rctx, userId, recipient, amount, chain.name, chain.id);
   });
 
   // Message handler
@@ -352,6 +436,8 @@ export async function startTelegramGateway(
       case "DEGEN_SNIPE":
       case "TRADE":
         return handleTrade(result, rctx, storage, replyByRequestId, wm, userId);
+      case "SEND_TOKEN":
+        return handleSendToken(result, rctx, wm, userId);
       case "RESEARCH_TOKEN":
         return handleResearch(result, rctx, replyByRequestId);
       case "RESEARCH_WALLET":
@@ -372,6 +458,140 @@ export async function startTelegramGateway(
   });
 
   // --- Handlers ---
+
+  async function handleSendToken(
+    result: RouterResult,
+    rctx: ReplyCtx,
+    walletMgr: WalletManager | null,
+    userId: string,
+  ): Promise<void> {
+    if (!walletMgr || !walletMgr.getWallet(userId)) {
+      void llmReply(
+        rctx,
+        result.rawText,
+        "The user wants to send tokens but has no wallet. Tell them to use /wallet first.",
+        "You need a wallet first. Use /wallet to create one.",
+      );
+      return;
+    }
+
+    const d = result.data;
+    const recipient = typeof d["recipient"] === "string" ? d["recipient"] : null;
+    if (!recipient || !/^0x[a-fA-F0-9]{40}$/.test(recipient)) {
+      void llmReply(
+        rctx,
+        result.rawText,
+        "The user wants to send tokens but the recipient address is missing or invalid. Ask them for a valid 0x address. They can also use /send <amount> <address> [chain].",
+        "I need a valid recipient address. Try: /send 0.01 0xABC... base",
+      );
+      return;
+    }
+
+    const amountRaw = d["amount"] as Record<string, unknown> | null | undefined;
+    let amount = 0;
+    if (amountRaw && typeof amountRaw === "object") {
+      const v = typeof amountRaw["value"] === "number" ? amountRaw["value"] : 0;
+      amount = Number.isFinite(v) && v > 0 ? v : 0;
+    }
+    if (amount <= 0) {
+      void llmReply(
+        rctx,
+        result.rawText,
+        "The user wants to send tokens but didn't specify an amount. Ask how much they want to send.",
+        "How much do you want to send? Try: /send 0.01 0xABC... base",
+      );
+      return;
+    }
+
+    const chainHint = typeof d["chain"] === "string" ? d["chain"] : "ethereum";
+    const chain = resolveChainNumeric(chainHint);
+    if (!chain) {
+      void reply(rctx, `Unknown chain: ${html(chainHint)}. Try: ethereum, base, arb, op, polygon, bsc, sepolia`);
+      return;
+    }
+
+    await executeSend(rctx, userId, recipient, amount, chain.name, chain.id);
+  }
+
+  async function executeSend(
+    rctx: ReplyCtx,
+    userId: string,
+    recipient: string,
+    amount: number,
+    chainName: string,
+    chainId: number,
+  ): Promise<void> {
+    if (!wm) {
+      void reply(rctx, "Wallet system not available.");
+      return;
+    }
+
+    const explorer = getChainExplorer(chainName);
+    const weiValue = nativeToWei(amount);
+
+    // Check if recipient is a contract (not a wallet)
+    try {
+      const rpc = getChainRpc(chainName);
+      const codeResp = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_getCode",
+          params: [recipient, "latest"],
+        }),
+      });
+      const codeResult = (await codeResp.json()) as { result?: string };
+      if (codeResult.result && codeResult.result !== "0x" && codeResult.result.length > 2) {
+        void reply(
+          rctx,
+          [
+            `That address is a <b>contract</b>, not a wallet.`,
+            `Sending native tokens to a contract may result in permanent loss.`,
+            ``,
+            `If you meant to trade this token, just paste the address by itself.`,
+            `If you really want to send to this contract, use your wallet app directly.`,
+          ].join("\n"),
+        );
+        return;
+      }
+    } catch {
+      // RPC check failed — proceed with warning
+      console.warn(`[telegram] eth_getCode check failed for ${recipient} on ${chainName}`);
+    }
+
+    await reply(
+      rctx,
+      [
+        `<b>Sending transaction</b>`,
+        `To: ${codeAddr(recipient)}`,
+        `Amount: ${amount}`,
+        `Chain: ${html(chainName)} (${chainId})`,
+        `\nSubmitting...`,
+      ].join("\n"),
+    );
+
+    try {
+      const result = await wm.sendTransaction(userId, {
+        to: recipient,
+        value: weiValue,
+        chainId,
+        gasLimit: "21000",
+      });
+      void reply(
+        rctx,
+        [
+          `<b>Transaction Sent</b>`,
+          `Hash: ${codeAddr(result.hash)}`,
+          `Chain: ${html(chainName)}`,
+          `<a href="${explorer}/tx/${result.hash}">View on Explorer</a>`,
+        ].join("\n"),
+      );
+    } catch (err) {
+      void reply(rctx, `Transaction failed: ${html((err as Error).message)}`);
+    }
+  }
 
   async function llmReply(
     rctx: ReplyCtx,
