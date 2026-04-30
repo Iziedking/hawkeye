@@ -6,7 +6,7 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc -p src/shared/tsconfig.json --noEmit && tsc -p src/gateway/tsconfig.json --noEmit && tsc -p src/integrations/0g/tsconfig.json --noEmit && tsc -p src/integrations/claude/tsconfig.json --noEmit && tsc -p src/integrations/privy/tsconfig.json --noEmit",
+    "typecheck": "tsc -p src/shared/tsconfig.json --noEmit && tsc -p src/gateway/tsconfig.json --noEmit && tsc -p src/integrations/0g/tsconfig.json --noEmit && tsc -p src/integrations/claude/tsconfig.json --noEmit && tsc -p src/integrations/privy/tsconfig.json --noEmit && tsc -p src/agents/tsconfig.json --noEmit",
     "test": "node scripts/run-smoke-tests.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

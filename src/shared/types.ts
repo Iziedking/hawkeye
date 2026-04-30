@@ -266,6 +266,18 @@ export type UserSettings = {
   minSafetyScore: number;
 };
 
+export type QuoteFailedPayload = {
+  intentId: string;
+  address: string;
+  reason: string;
+};
+
+export type WatchedWallet = {
+  address: string;
+  label?: string;
+  chain?: ChainClass;
+};
+
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",
   SAFETY_RESULT: "SAFETY_RESULT",
@@ -281,6 +293,9 @@ export const EVENT_NAMES = {
   RESEARCH_RESULT: "RESEARCH_RESULT",
   GENERAL_QUERY_REQUEST: "GENERAL_QUERY_REQUEST",
   GENERAL_QUERY_RESULT: "GENERAL_QUERY_RESULT",
+  QUOTE_FAILED: "QUOTE_FAILED",
+  ADD_WATCHED_WALLET: "ADD_WATCHED_WALLET",
+  REMOVE_WATCHED_WALLET: "REMOVE_WATCHED_WALLET",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -309,4 +324,7 @@ export type BusEvents = {
   RESEARCH_RESULT: ResearchResult;
   GENERAL_QUERY_REQUEST: GeneralQueryRequest;
   GENERAL_QUERY_RESULT: GeneralQueryResult;
+  QUOTE_FAILED: QuoteFailedPayload;
+  ADD_WATCHED_WALLET: WatchedWallet;
+  REMOVE_WATCHED_WALLET: string;
 };

@@ -1,6 +1,3 @@
-// Main startup. Boots the Telegram gateway and shared infrastructure.
-// Agents are added by teammates via PRs — they subscribe to bus events.
-
 import process from "node:process";
 import { bus } from "./shared/event-bus";
 import { loadEnvLocal, validateEnv, assertRequiredEnv } from "./shared/env";
@@ -9,6 +6,14 @@ import { startTelegramGateway } from "./gateway/telegram-gateway";
 import { createWalletManager } from "./integrations/privy/index";
 import { OgComputeClient } from "./integrations/0g/compute";
 import { ClaudeLlmClient, FallbackLlmClient } from "./integrations/claude/index";
+
+import { startStrategyAgent } from "./agents/strategy/index";
+import { startSafetyAgent } from "./agents/safety/index";
+import { startQuoteAgent } from "./agents/quote/index";
+import { startExecutionAgent } from "./agents/execution/index";
+import { startResearchAgent } from "./agents/research/index";
+import { startMonitorAgent } from "./agents/monitor/index";
+import { startCopyTradeAgent } from "./agents/copy-trade/index";
 
 loadEnvLocal();
 
@@ -65,6 +70,17 @@ async function main(): Promise<void> {
 
   const stopTracer = startSwarmTracer();
 
+  // Strategy MUST start BEFORE Safety and Quote.
+  // It registers a TRADE_REQUEST handler to record the trade context before
+  // a safety cache hit emits SAFETY_RESULT synchronously in the same tick.
+  const stopStrategy = startStrategyAgent({ llm: llm ?? undefined });
+  const stopSafety = startSafetyAgent();
+  const stopQuote = startQuoteAgent();
+  const stopExecution = startExecutionAgent();
+  const stopResearch = startResearchAgent({ llm: llm ?? undefined });
+  const stopMonitor = startMonitorAgent();
+  const stopCopyTrade = startCopyTradeAgent();
+
   bus.on("ALPHA_FOUND", (alpha) => {
     console.log(
       `[bus] ALPHA_FOUND addr=${alpha.address} chain=${alpha.chainId} safety=${alpha.safetyScore} liq=$${alpha.liquidityUsd}`,
@@ -80,6 +96,9 @@ async function main(): Promise<void> {
       );
     }
   });
+  bus.on("QUOTE_FAILED", (qf) => {
+    console.log(`[bus] QUOTE_FAILED intent=${qf.intentId} reason=${qf.reason}`);
+  });
 
   let gateway: Awaited<ReturnType<typeof startTelegramGateway>> | null = null;
   try {
@@ -92,12 +111,23 @@ async function main(): Promise<void> {
     );
   }
 
-  console.log("[hawkeye] ready — waiting for agent PRs\n");
+  console.log("[hawkeye] swarm ready — all agents online\n");
+
+  const cleanups = [
+    stopTracer,
+    stopStrategy,
+    () => stopSafety.stop(),
+    stopQuote,
+    stopExecution,
+    () => stopResearch.stop(),
+    () => stopMonitor.stop(),
+    () => stopCopyTrade.stop(),
+    () => gateway?.stop(),
+  ];
 
   const shutdown = (): void => {
     console.log("\n[hawkeye] shutting down...");
-    stopTracer();
-    gateway?.stop();
+    for (const fn of cleanups) fn();
     process.exit(0);
   };
 
