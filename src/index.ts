@@ -2,6 +2,13 @@ import process from "node:process";
 import { bus } from "./shared/event-bus";
 import { loadEnvLocal, validateEnv, assertRequiredEnv } from "./shared/env";
 import { startSwarmTracer } from "./shared/swarm-tracer";
+import {
+  registerHealthCheck,
+  setAgentList,
+  incrementBusEvents,
+  startHealthServer,
+  stopHealthServer,
+} from "./shared/health";
 import { startTelegramGateway } from "./gateway/telegram-gateway";
 import { createWalletManager } from "./integrations/privy/index";
 import { OgComputeClient } from "./integrations/0g/compute";
@@ -81,15 +88,44 @@ async function main(): Promise<void> {
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
 
+  // Health subsystem registration
+  const agentNames = [
+    "Safety",
+    "Quote",
+    "Strategy",
+    "Execution",
+    "Research",
+    "Monitor",
+    "CopyTrade",
+  ];
+  setAgentList(agentNames);
+
+  registerHealthCheck(() => ({
+    name: "LLM",
+    ok: llm !== null,
+    detail: llm ? "0G+Claude fallback" : "regex-only",
+  }));
+  registerHealthCheck(() => ({
+    name: "Wallets",
+    ok: wm !== null,
+    detail: wm ? "Privy" : "unavailable",
+  }));
+
+  startHealthServer(Number(process.env["HEALTH_PORT"] ?? 8080));
+
+  // Bus event logging with health counter
   bus.on("ALPHA_FOUND", (alpha) => {
+    incrementBusEvents();
     console.log(
       `[bus] ALPHA_FOUND addr=${alpha.address} chain=${alpha.chainId} safety=${alpha.safetyScore} liq=$${alpha.liquidityUsd}`,
     );
   });
   bus.on("EXECUTE_SELL", (sell) => {
+    incrementBusEvents();
     console.log(`[bus] EXECUTE_SELL pos=${sell.positionId} fraction=${sell.fraction}`);
   });
   bus.on("POSITION_UPDATE", (u) => {
+    incrementBusEvents();
     if (u.pnlPct >= 50 || u.pnlPct <= -20) {
       console.log(
         `[bus] POSITION_UPDATE pos=${u.positionId} price=$${u.priceUsd} pnl=${u.pnlPct.toFixed(1)}%`,
@@ -97,8 +133,14 @@ async function main(): Promise<void> {
     }
   });
   bus.on("QUOTE_FAILED", (qf) => {
+    incrementBusEvents();
     console.log(`[bus] QUOTE_FAILED intent=${qf.intentId} reason=${qf.reason}`);
   });
+  bus.on("TRADE_REQUEST", () => incrementBusEvents());
+  bus.on("SAFETY_RESULT", () => incrementBusEvents());
+  bus.on("QUOTE_RESULT", () => incrementBusEvents());
+  bus.on("STRATEGY_DECISION", () => incrementBusEvents());
+  bus.on("TRADE_EXECUTED", () => incrementBusEvents());
 
   let gateway: Awaited<ReturnType<typeof startTelegramGateway>> | null = null;
   try {
@@ -123,6 +165,7 @@ async function main(): Promise<void> {
     () => stopMonitor.stop(),
     () => stopCopyTrade.stop(),
     () => gateway?.stop(),
+    stopHealthServer,
   ];
 
   const shutdown = (): void => {

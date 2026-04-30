@@ -19,6 +19,7 @@ import type {
 } from "../shared/types";
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
+import { formatHealthForTelegram } from "../shared/health";
 
 loadEnvLocal();
 
@@ -185,12 +186,19 @@ export async function startTelegramGateway(
     );
   });
 
+  // /status — health report
+  bot.command("status", async (ctx) => {
+    const report = formatHealthForTelegram();
+    await ctx.reply(`<pre>${html(report)}</pre>`, { parse_mode: "HTML" });
+  });
+
   // /help
   bot.command("help", async (ctx) => {
     await ctx.reply(
       [
         "<b>Commands</b>\n",
         "/wallet — Create or view your wallet",
+        "/status — System health and uptime",
         "/start — Welcome message\n",
         "<b>Wallet</b>",
         "<code>connect 0x...</code> — Link external wallet",
