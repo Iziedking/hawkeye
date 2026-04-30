@@ -20,10 +20,11 @@ import type {
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
 import { formatHealthForTelegram } from "../shared/health";
+import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 
 loadEnvLocal();
 
-type ReplyCtx = { chatId: number };
+type ReplyCtx = { chatId: number; userId: string };
 
 type PendingReply = {
   ctx: ReplyCtx;
@@ -84,11 +85,41 @@ export async function startTelegramGateway(
   const llm = deps.llm !== undefined ? deps.llm : await tryInitLlm();
   const storage = tryInitStorage();
 
+  type ConversationEntry = { role: "user" | "assistant"; content: string; at: number };
+  const conversations = new Map<string, ConversationEntry[]>();
+
+  function addMessage(uid: string, role: "user" | "assistant", content: string): void {
+    let history = conversations.get(uid);
+    if (!history) {
+      history = [];
+      conversations.set(uid, history);
+    }
+    history.push({ role, content: content.slice(0, 500), at: Date.now() });
+    const cutoff = Date.now() - CONVERSATION_TTL_MS;
+    while (history.length > 0 && history[0]!.at < cutoff) history.shift();
+    if (history.length > CONVERSATION_MAX_MESSAGES) {
+      history.splice(0, history.length - CONVERSATION_MAX_MESSAGES);
+    }
+  }
+
+  function recentHistory(uid: string): string {
+    const history = conversations.get(uid);
+    if (!history || history.length === 0) return "";
+    const cutoff = Date.now() - CONVERSATION_TTL_MS;
+    const valid = history.filter((e) => e.at > cutoff);
+    if (valid.length === 0) return "";
+    return (
+      "\n\nRecent conversation:\n" +
+      valid.map((e) => `${e.role === "user" ? "User" : "HAWKEYE"}: ${e.content}`).join("\n")
+    );
+  }
+
   async function reply(
     ctx: ReplyCtx,
     text: string,
     parseMode: "HTML" | undefined = "HTML",
   ): Promise<void> {
+    addMessage(ctx.userId, "assistant", text.replace(/<[^>]+>/g, ""));
     try {
       if (parseMode === "HTML") {
         await bot.api.sendMessage(ctx.chatId, text, { parse_mode: "HTML" });
@@ -260,8 +291,10 @@ export async function startTelegramGateway(
   bot.on("message:text", async (ctx) => {
     const userId = String(ctx.from?.id ?? "unknown");
     const text = ctx.message.text;
-    const rctx: ReplyCtx = { chatId: ctx.chat.id };
+    const rctx: ReplyCtx = { chatId: ctx.chat.id, userId };
     const lower = text.trim().toLowerCase();
+
+    addMessage(userId, "user", text);
 
     // Wallet connect command
     const connectMatch = text.trim().match(/^(?:connect|link)\s+(0x[a-fA-F0-9]{40})$/i);
@@ -351,8 +384,9 @@ export async function startTelegramGateway(
       return;
     }
     try {
+      const history = recentHistory(rctx.userId);
       const resp = await llm.infer({
-        system: CONVERSATIONAL_PROMPT + "\n\nContext for this reply: " + context,
+        system: CONVERSATIONAL_PROMPT + history + "\n\nContext for this reply: " + context,
         user: userMsg,
         temperature: 0.7,
         maxTokens: 300,
@@ -621,8 +655,9 @@ export async function startTelegramGateway(
     }
 
     try {
+      const history = recentHistory(rctx.userId);
       const resp = await llmClient.infer({
-        system: CONVERSATIONAL_PROMPT,
+        system: CONVERSATIONAL_PROMPT + history,
         user: result.rawText,
         temperature: 0.7,
         maxTokens: 300,

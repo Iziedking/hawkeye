@@ -24,6 +24,9 @@ export const LLM_MIN_CONFIDENCE = 0.3;
 export const API_TIMEOUT_MS = 8_000;
 export const HONEYPOT_TIMEOUT_MS = 6_000;
 
+export const CONVERSATION_MAX_MESSAGES = 10;
+export const CONVERSATION_TTL_MS = 30 * 60 * 1_000;
+
 export const OG_TESTNET_CHAIN_ID = 16602;
 export const OG_TESTNET_RPC = "https://evmrpc-testnet.0g.ai";
 export const OG_MAINNET_CHAIN_ID = 16661;
