@@ -59,9 +59,9 @@ const CONVERSATIONAL_PROMPT = [
   "Rules:",
   "- Be direct and concise. No fluff.",
   "- Never hallucinate token prices, safety scores, or on-chain data. If you don't have live data, say so.",
-  "- When relevant, mention your capabilities: \"Paste a contract address and I'll analyze or trade it for you.\"",
+  '- When relevant, mention your capabilities: "Paste a contract address and I\'ll analyze or trade it for you."',
   "- Stay crypto-native. You understand DeFi, DEXes, MEV, liquidity, tokenomics.",
-  "- If the user seems to want to trade, guide them: \"Send me the contract address to get started.\"",
+  '- If the user seems to want to trade, guide them: "Send me the contract address to get started."',
 ].join("\n");
 
 export async function startGateway(): Promise<GatewayHandle> {
@@ -148,7 +148,9 @@ async function handleInbound(
     routerDeps,
   );
 
-  console.log(`[gateway] routed: category=${result.category} confidence=${result.confidence.toFixed(2)}`);
+  console.log(
+    `[gateway] routed: category=${result.category} confidence=${result.confidence.toFixed(2)}`,
+  );
 
   switch (result.category) {
     case "DEGEN_SNIPE":
@@ -182,7 +184,6 @@ async function handleInbound(
   }
 }
 
-
 function handleTradeIntent(
   result: RouterResult,
   msg: InboundMessage,
@@ -196,7 +197,10 @@ function handleTradeIntent(
 
   if (address === null || chain === null) {
     void adapter
-      .sendReply(msg, "I detected a trade intent but couldn't extract a valid token address. Paste the contract address and I'll handle it.")
+      .sendReply(
+        msg,
+        "I detected a trade intent but couldn't extract a valid token address. Paste the contract address and I'll handle it.",
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
     return;
   }
@@ -246,7 +250,6 @@ function handleTradeIntent(
   }
 }
 
-
 function handleResearchToken(
   result: RouterResult,
   msg: InboundMessage,
@@ -275,15 +278,20 @@ function handleResearchToken(
 
   if (address !== null) {
     void adapter
-      .sendReply(msg, `Researching token ${address}... I'll analyze safety, liquidity, and price data.`)
+      .sendReply(
+        msg,
+        `Researching token ${address}... I'll analyze safety, liquidity, and price data.`,
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
   } else {
     void adapter
-      .sendReply(msg, `Looking into that for you. For the most detailed analysis, paste the contract address directly.`)
+      .sendReply(
+        msg,
+        `Looking into that for you. For the most detailed analysis, paste the contract address directly.`,
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
   }
 }
-
 
 function handleResearchWallet(
   result: RouterResult,
@@ -295,15 +303,20 @@ function handleResearchWallet(
 
   if (wallet !== null) {
     void adapter
-      .sendReply(msg, `Wallet tracking for ${wallet.slice(0, 8)}...${wallet.slice(-4)} is coming soon. I'll be able to show you their recent trades, PnL, and let you copy their moves.`)
+      .sendReply(
+        msg,
+        `Wallet tracking for ${wallet.slice(0, 8)}...${wallet.slice(-4)} is coming soon. I'll be able to show you their recent trades, PnL, and let you copy their moves.`,
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
   } else {
     void adapter
-      .sendReply(msg, `Wallet research is coming soon. Paste a wallet address and I'll be able to track their activity and let you copy their trades.`)
+      .sendReply(
+        msg,
+        `Wallet research is coming soon. Paste a wallet address and I'll be able to track their activity and let you copy their trades.`,
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
   }
 }
-
 
 function handleCopyTrade(
   result: RouterResult,
@@ -328,7 +341,10 @@ function handleCopyTrade(
 
   if (wallet !== null) {
     void adapter
-      .sendReply(msg, `Copy trading for ${wallet.slice(0, 8)}...${wallet.slice(-4)} is coming soon. You'll be able to auto-mirror their trades in real-time.`)
+      .sendReply(
+        msg,
+        `Copy trading for ${wallet.slice(0, 8)}...${wallet.slice(-4)} is coming soon. You'll be able to auto-mirror their trades in real-time.`,
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
   } else {
     void adapter
@@ -337,21 +353,18 @@ function handleCopyTrade(
   }
 }
 
-
-function handleSettings(
-  result: RouterResult,
-  msg: InboundMessage,
-  adapter: OpenClawAdapter,
-): void {
+function handleSettings(result: RouterResult, msg: InboundMessage, adapter: OpenClawAdapter): void {
   const d = result.data;
   const setting = typeof d["setting"] === "string" ? d["setting"] : "unknown";
   const value = typeof d["value"] === "string" ? d["value"] : "";
 
   void adapter
-    .sendReply(msg, `Settings update noted: ${setting} → ${value}. Persistent settings are coming soon — for now this applies to your current session.`)
+    .sendReply(
+      msg,
+      `Settings update noted: ${setting} → ${value}. Persistent settings are coming soon — for now this applies to your current session.`,
+    )
     .catch((err) => console.error("[gateway] reply failed:", err));
 }
-
 
 function handleComingSoon(
   _result: RouterResult,
@@ -360,10 +373,12 @@ function handleComingSoon(
   capability: string,
 ): void {
   void adapter
-    .sendReply(msg, `I understand you're looking for ${capability}. This is coming soon. For now, I can help you with trading (paste a contract address), token research, or market questions.`)
+    .sendReply(
+      msg,
+      `I understand you're looking for ${capability}. This is coming soon. For now, I can help you with trading (paste a contract address), token research, or market questions.`,
+    )
     .catch((err) => console.error("[gateway] reply failed:", err));
 }
-
 
 async function handleConversational(
   result: RouterResult,
@@ -373,7 +388,10 @@ async function handleConversational(
 ): Promise<void> {
   if (llm === null) {
     void adapter
-      .sendReply(msg, "I'm running in limited mode right now. Paste a contract address to trade, or try again in a moment for full capabilities.")
+      .sendReply(
+        msg,
+        "I'm running in limited mode right now. Paste a contract address to trade, or try again in a moment for full capabilities.",
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
     return;
   }
@@ -390,11 +408,13 @@ async function handleConversational(
       .catch((err) => console.error("[gateway] reply failed:", err));
   } catch {
     void adapter
-      .sendReply(msg, "I'm having trouble processing that right now. You can paste a contract address to trade, or ask me about any token.")
+      .sendReply(
+        msg,
+        "I'm having trouble processing that right now. You can paste a contract address to trade, or ask me about any token.",
+      )
       .catch((err) => console.error("[gateway] reply failed:", err));
   }
 }
-
 
 async function tryInitCompute(): Promise<OgComputeClient | null> {
   try {

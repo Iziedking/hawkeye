@@ -25,10 +25,7 @@ server.registerTool(
     description:
       "Keyword search across a curated index of OpenClaw pages plus the full AI-facing corpus at openclaws.io/llms-full.txt. Returns ranked hits with URL, title, snippet, and score. Prefer authoritative=true hits (GitHub README) when they appear.",
     inputSchema: {
-      query: z
-        .string()
-        .min(1)
-        .describe("Search terms, e.g. 'gateway configuration json5'"),
+      query: z.string().min(1).describe("Search terms, e.g. 'gateway configuration json5'"),
       limit: z
         .number()
         .int()
@@ -67,9 +64,7 @@ server.registerTool(
     });
 
     return {
-      content: [
-        { type: "text", text: lines.join("\n\n") },
-      ],
+      content: [{ type: "text", text: lines.join("\n\n") }],
     };
   },
 );
@@ -152,7 +147,7 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(
-    `openclaw-docs-mcp fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+    `openclaw-docs-mcp fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
   );
   process.exit(1);
 });

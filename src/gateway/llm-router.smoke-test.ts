@@ -64,7 +64,10 @@ async function main(): Promise<void> {
 
     const r1 = await routeMessage(input("0x6982508145454Ce325dDbE47a25d4ec3d2311933"), deps);
     assert(r1.category === "DEGEN_SNIPE", "bare EVM address → DEGEN_SNIPE");
-    assert(r1.data["address"] === "0x6982508145454Ce325dDbE47a25d4ec3d2311933", "address extracted");
+    assert(
+      r1.data["address"] === "0x6982508145454Ce325dDbE47a25d4ec3d2311933",
+      "address extracted",
+    );
     assert(r1.data["chain"] === "evm", "chain = evm");
     assert(r1.data["urgency"] === "INSTANT", "default urgency = INSTANT");
     assert(r1.confidence === 1.0, "confidence = 1.0");
@@ -86,8 +89,8 @@ async function main(): Promise<void> {
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
     const r3 = await routeMessage(input("ape 0x6982508145454Ce325dDbE47a25d4ec3d2311933"), deps);
-    assert(r3.category === "DEGEN_SNIPE", "\"ape\" + EVM → DEGEN_SNIPE");
-    assert(r3.data["urgency"] === "INSTANT", "\"ape\" triggers INSTANT");
+    assert(r3.category === "DEGEN_SNIPE", '"ape" + EVM → DEGEN_SNIPE');
+    assert(r3.data["urgency"] === "INSTANT", '"ape" triggers INSTANT');
     assert(llm.calls.length === 0, "LLM not called for degen keyword + address");
   }
 
@@ -95,9 +98,15 @@ async function main(): Promise<void> {
     const llm = new FakeLlm({ text: "should not be called" });
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
-    const r4 = await routeMessage(input("buy 0.5 eth 0x6982508145454Ce325dDbE47a25d4ec3d2311933"), deps);
-    assert(r4.category === "DEGEN_SNIPE", "\"buy 0.5 eth\" + address → DEGEN_SNIPE");
-    assert(r4.data["amount"] !== null && (r4.data["amount"] as Record<string, unknown>)["value"] === 0.5, "amount 0.5 extracted");
+    const r4 = await routeMessage(
+      input("buy 0.5 eth 0x6982508145454Ce325dDbE47a25d4ec3d2311933"),
+      deps,
+    );
+    assert(r4.category === "DEGEN_SNIPE", '"buy 0.5 eth" + address → DEGEN_SNIPE');
+    assert(
+      r4.data["amount"] !== null && (r4.data["amount"] as Record<string, unknown>)["value"] === 0.5,
+      "amount 0.5 extracted",
+    );
     assert(llm.calls.length === 0, "LLM not called for amount + address");
   }
 
@@ -142,7 +151,7 @@ async function main(): Promise<void> {
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
     const r = await routeMessage(input("bridge 0.5 ETH to Base"), deps);
-    assert(r.category === "BRIDGE", "\"bridge 0.5 ETH to Base\" → BRIDGE");
+    assert(r.category === "BRIDGE", '"bridge 0.5 ETH to Base" → BRIDGE');
     assert(llm.calls.length === 1, "LLM called for bridge intent");
   }
 
@@ -157,7 +166,7 @@ async function main(): Promise<void> {
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
     const r = await routeMessage(input("what's trending?"), deps);
-    assert(r.category === "GENERAL_QUERY", "\"what's trending?\" → GENERAL_QUERY");
+    assert(r.category === "GENERAL_QUERY", '"what\'s trending?" → GENERAL_QUERY');
   }
 
   {
@@ -171,7 +180,7 @@ async function main(): Promise<void> {
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
     const r = await routeMessage(input("set degen mode"), deps);
-    assert(r.category === "SETTINGS", "\"set degen mode\" → SETTINGS");
+    assert(r.category === "SETTINGS", '"set degen mode" → SETTINGS');
   }
 
   {
@@ -191,11 +200,16 @@ async function main(): Promise<void> {
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
     const r = await routeMessage(
-      input("I want to purchase exactly 100 USDC worth of the USDC token on ethereum 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+      input(
+        "I want to purchase exactly 100 USDC worth of the USDC token on ethereum 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      ),
       deps,
     );
     assert(r.category === "TRADE", "explicit trade with params → TRADE");
-    assert(r.data["address"] === "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", "trade address extracted");
+    assert(
+      r.data["address"] === "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "trade address extracted",
+    );
   }
 
   // === [3] Edge cases ===
@@ -216,9 +230,7 @@ async function main(): Promise<void> {
   }
 
   {
-    const llm = new FakeLlm(
-      new OgComputeError("LEDGER_LOW", "insufficient funds"),
-    );
+    const llm = new FakeLlm(new OgComputeError("LEDGER_LOW", "insufficient funds"));
     const deps: RouterDeps = { llm: llm as unknown as OgComputeClient };
 
     const r = await routeMessage(input("what's the best arbitrage opportunity right now?"), deps);
@@ -235,15 +247,15 @@ async function main(): Promise<void> {
 
     const r = await routeMessage(input("some random message that produces bad json"), deps);
     assert(r.category === "UNKNOWN", "malformed JSON → UNKNOWN");
-    assert(logs.some((l) => l.includes("not JSON")), "malformed JSON logged");
+    assert(
+      logs.some((l) => l.includes("not JSON")),
+      "malformed JSON logged",
+    );
   }
 
   {
     const deps: RouterDeps = {};
-    const r = await routeMessage(
-      input("0x6982508145454Ce325dDbE47a25d4ec3d2311933"),
-      deps,
-    );
+    const r = await routeMessage(input("0x6982508145454Ce325dDbE47a25d4ec3d2311933"), deps);
     assert(r.category === "DEGEN_SNIPE", "no LLM dep + address → DEGEN_SNIPE via shortcut");
   }
 

@@ -192,9 +192,12 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     if (tx.data) txObj.data = tx.data;
     if (tx.gasLimit) txObj.gas_limit = tx.gasLimit;
 
-    const result = await client.wallets().ethereum().signTransaction(w.walletId, {
-      params: { transaction: txObj as any },
-    });
+    const result = await client
+      .wallets()
+      .ethereum()
+      .signTransaction(w.walletId, {
+        params: { transaction: txObj as Record<string, unknown> },
+      });
 
     return result.signed_transaction;
   }
@@ -214,10 +217,13 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     if (tx.data) txObj.data = tx.data;
     if (tx.gasLimit) txObj.gas_limit = tx.gasLimit;
 
-    const result = await client.wallets().ethereum().sendTransaction(w.walletId, {
-      caip2,
-      params: { transaction: txObj as any },
-    });
+    const result = await client
+      .wallets()
+      .ethereum()
+      .sendTransaction(w.walletId, {
+        caip2,
+        params: { transaction: txObj as Record<string, unknown> },
+      });
 
     return { hash: result.hash, caip2: result.caip2 };
   }

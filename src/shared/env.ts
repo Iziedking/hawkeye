@@ -1,4 +1,3 @@
-
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -33,9 +32,7 @@ export function requireEnv(name: string): string {
   loadEnvLocal();
   const v = process.env[name];
   if (v === undefined || v === "") {
-    throw new Error(
-      `Missing required env var: ${name}. Set it in .env.local at repo root.`,
-    );
+    throw new Error(`Missing required env var: ${name}. Set it in .env.local at repo root.`);
   }
   return v;
 }
@@ -43,4 +40,70 @@ export function requireEnv(name: string): string {
 export function envOr(name: string, fallback: string): string {
   loadEnvLocal();
   return process.env[name] ?? fallback;
+}
+
+/**
+ * Snapshot of which env-driven subsystems are configured. Used at startup so
+ * we can fail fast on missing required vars and warn loudly about degraded modes.
+ */
+export type EnvCheck = {
+  required: { name: string; ok: boolean }[];
+  recommended: { name: string; ok: boolean; degrades: string }[];
+  optional: { name: string; ok: boolean; enables: string }[];
+};
+
+export function validateEnv(): EnvCheck {
+  loadEnvLocal();
+  const has = (name: string): boolean => {
+    const v = process.env[name];
+    return v !== undefined && v !== "";
+  };
+
+  return {
+    required: [
+      { name: "TELEGRAM_BOT_TOKEN", ok: has("TELEGRAM_BOT_TOKEN") },
+      { name: "HAWKEYE_EVM_PRIVATE_KEY", ok: has("HAWKEYE_EVM_PRIVATE_KEY") },
+    ],
+    recommended: [
+      {
+        name: "ANTHROPIC_API_KEY",
+        ok: has("ANTHROPIC_API_KEY"),
+        degrades: "no Claude fallback — 0G Compute outages drop us to regex-only routing",
+      },
+      {
+        name: "PRIVY_APP_ID/PRIVY_APP_SECRET",
+        ok: has("PRIVY_APP_ID") && has("PRIVY_APP_SECRET"),
+        degrades: "agent wallets disabled — users must connect external wallets",
+      },
+    ],
+    optional: [
+      {
+        name: "UNISWAP_API_KEY",
+        ok: has("UNISWAP_API_KEY"),
+        enables: "Uniswap Trading API quote fallback",
+      },
+      {
+        name: "GOPLUS_API_KEY",
+        ok: has("GOPLUS_API_KEY"),
+        enables: "GoPlus token safety scanning",
+      },
+      { name: "KH_API_KEY", ok: has("KH_API_KEY"), enables: "KeeperHub MEV-protected execution" },
+    ],
+  };
+}
+
+/**
+ * Throws if any required env var is missing. Returns warnings (one per
+ * missing recommended var) for the caller to print.
+ */
+export function assertRequiredEnv(check?: EnvCheck): string[] {
+  const c = check ?? validateEnv();
+  const missing = c.required.filter((r) => !r.ok).map((r) => r.name);
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required env vars: ${missing.join(", ")}. ` +
+        `Copy .env.example to .env.local and fill them in.`,
+    );
+  }
+  return c.recommended.filter((r) => !r.ok).map((r) => `${r.name} not set — ${r.degrades}`);
 }

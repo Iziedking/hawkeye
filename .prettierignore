@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+.agents/
+package-lock.json
+skills-lock.json
+
+# Vendored Go project — not our code
+src/integrations/gensyn/axl-src/

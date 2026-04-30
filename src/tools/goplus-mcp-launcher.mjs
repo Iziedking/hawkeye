@@ -48,18 +48,13 @@ if (!key || !secret) {
   process.exit(2);
 }
 
-const npxBin =
-  process.platform === "win32" ? "npx.cmd" : "npx";
+const npxBin = process.platform === "win32" ? "npx.cmd" : "npx";
 
-const child = spawn(
-  npxBin,
-  ["-y", "goplus-mcp@latest", "--key", key, "--secret", secret],
-  {
-    stdio: "inherit",
-    env: process.env,
-    shell: process.platform === "win32",
-  },
-);
+const child = spawn(npxBin, ["-y", "goplus-mcp@latest", "--key", key, "--secret", secret], {
+  stdio: "inherit",
+  env: process.env,
+  shell: process.platform === "win32",
+});
 
 child.on("exit", (code, signal) => {
   if (signal) process.kill(process.pid, signal);
