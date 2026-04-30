@@ -1,10 +1,7 @@
-// Deploy HawkeyeRegistry to 0G Chain mainnet.
-// Usage: npx tsx scripts/deploy-registry.ts
-//
-// Requires:
-//   HAWKEYE_EVM_PRIVATE_KEY in .env.local (funded with 0G tokens on mainnet)
-//
-// After deployment, registers all 7 HAWKEYE agents on-chain.
+// Deploy HawkeyeRegistry to 0G Chain.
+// Usage:
+//   npx tsx scripts/deploy-registry.ts              # mainnet
+//   npx tsx scripts/deploy-registry.ts --testnet    # Galileo testnet
 
 import { ethers } from "ethers";
 import { readFileSync } from "node:fs";
@@ -14,8 +11,11 @@ import { loadEnvLocal, requireEnv } from "../src/shared/env";
 
 loadEnvLocal();
 
-const OG_MAINNET_RPC = "https://evmrpc.0g.ai";
-const OG_MAINNET_CHAIN_ID = 16661;
+const isTestnet = process.argv.includes("--testnet");
+
+const net = isTestnet
+  ? { rpc: "https://evmrpc-testnet.0g.ai", chainId: 16602, explorer: "https://chainscan-galileo.0g.ai", label: "0G Galileo Testnet" }
+  : { rpc: "https://evmrpc.0g.ai", chainId: 16661, explorer: "https://chainscan.0g.ai", label: "0G Mainnet" };
 
 const AGENTS = [
   { name: "Safety Agent", role: "Token security scanner (GoPlus, Honeypot.is, RugCheck)" },
@@ -30,8 +30,8 @@ const AGENTS = [
 async function main(): Promise<void> {
   const pk = requireEnv("HAWKEYE_EVM_PRIVATE_KEY");
 
-  console.log("[deploy] connecting to 0G mainnet...");
-  const provider = new ethers.JsonRpcProvider(OG_MAINNET_RPC, OG_MAINNET_CHAIN_ID);
+  console.log(`[deploy] connecting to ${net.label}...`);
+  const provider = new ethers.JsonRpcProvider(net.rpc, net.chainId);
   const wallet = new ethers.Wallet(pk, provider);
 
   const balance = await provider.getBalance(wallet.address);
@@ -43,32 +43,32 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Compile with solc
+  // Compile with solc into build-artifacts/
   console.log("[deploy] compiling HawkeyeRegistry.sol...");
   const solPath = resolve(__dirname, "../contracts/HawkeyeRegistry.sol");
+  const outDir = resolve(__dirname, "../build-artifacts");
+  execSync(`mkdir -p ${outDir}`, { encoding: "utf8" });
 
-  let solcOutput: string;
   try {
-    solcOutput = execSync(
-      `npx solcjs --optimize --bin --abi ${solPath} --base-path ${resolve(__dirname, "../contracts")}`,
+    execSync(
+      `npx solcjs --optimize --bin --abi ${solPath} --base-path ${resolve(__dirname, "../contracts")} --output-dir ${outDir}`,
       { encoding: "utf8", cwd: resolve(__dirname, "..") },
     );
     console.log("[deploy] compilation done");
-  } catch (err) {
+  } catch {
     console.error("[deploy] solc compilation failed. Installing solc...");
     execSync("npm install -g solc@0.8.28", { stdio: "inherit" });
-    solcOutput = execSync(
-      `npx solcjs --optimize --bin --abi ${solPath} --base-path ${resolve(__dirname, "../contracts")}`,
+    execSync(
+      `npx solcjs --optimize --bin --abi ${solPath} --base-path ${resolve(__dirname, "../contracts")} --output-dir ${outDir}`,
       { encoding: "utf8", cwd: resolve(__dirname, "..") },
     );
   }
 
   // Find compiled artifacts
-  const cwd = resolve(__dirname, "..");
-  const binFile = execSync(`find ${cwd} -name "*HawkeyeRegistry.bin" -newer ${solPath} | head -1`, {
+  const binFile = execSync(`find ${outDir} -name "*HawkeyeRegistry.bin" | head -1`, {
     encoding: "utf8",
   }).trim();
-  const abiFile = execSync(`find ${cwd} -name "*HawkeyeRegistry.abi" -newer ${solPath} | head -1`, {
+  const abiFile = execSync(`find ${outDir} -name "*HawkeyeRegistry.abi" | head -1`, {
     encoding: "utf8",
   }).trim();
 
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   const contractAddress = await contract.getAddress();
   console.log(`[deploy] deployed at: ${contractAddress}`);
   console.log(`[deploy] tx hash: ${receipt!.hash}`);
-  console.log(`[deploy] explorer: https://chainscan.0g.ai/address/${contractAddress}`);
+  console.log(`[deploy] explorer: ${net.explorer}/address/${contractAddress}`);
 
   // Register all agents
   console.log("[deploy] registering agents...");
@@ -108,10 +108,14 @@ async function main(): Promise<void> {
   console.log(`[deploy] ${count} agents registered on-chain`);
 
   console.log("\n=== DEPLOYMENT COMPLETE ===");
+  console.log(`Network: ${net.label} (${net.chainId})`);
   console.log(`Contract: ${contractAddress}`);
-  console.log(`Explorer: https://chainscan.0g.ai/address/${contractAddress}`);
-  console.log(`Chain: 0G Mainnet (${OG_MAINNET_CHAIN_ID})`);
-  console.log("\nAdd this to README.md and submission form.");
+  console.log(`Explorer: ${net.explorer}/address/${contractAddress}`);
+  if (isTestnet) {
+    console.log("\nTestnet verified. Re-run without --testnet for mainnet.");
+  } else {
+    console.log("\nAdd this to README.md and submission form.");
+  }
 }
 
 main().catch((err) => {

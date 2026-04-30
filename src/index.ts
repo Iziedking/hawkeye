@@ -1,6 +1,8 @@
 import process from "node:process";
 import { bus } from "./shared/event-bus";
-import { loadEnvLocal, validateEnv, assertRequiredEnv } from "./shared/env";
+import { AxlEventBus } from "./shared/axl-bus";
+import type { BusEvents } from "./shared/types";
+import { loadEnvLocal, validateEnv, assertRequiredEnv, envOr } from "./shared/env";
 import { startSwarmTracer } from "./shared/swarm-tracer";
 import {
   registerHealthCheck,
@@ -12,6 +14,9 @@ import {
 import { startTelegramGateway } from "./gateway/telegram-gateway";
 import { createWalletManager } from "./integrations/privy/index";
 import { OgComputeClient } from "./integrations/0g/compute";
+import { OgStorageClient } from "./integrations/0g/storage";
+import { RegistryClient } from "./integrations/0g/registry-client";
+import { startAuditTrail } from "./integrations/0g/audit-trail";
 import { ClaudeLlmClient, FallbackLlmClient } from "./integrations/claude/index";
 
 import { startStrategyAgent } from "./agents/strategy/index";
@@ -58,11 +63,67 @@ async function initLlm(): Promise<FallbackLlmClient | null> {
   return client;
 }
 
+function initStorage(): OgStorageClient | null {
+  try {
+    return new OgStorageClient();
+  } catch (err) {
+    console.warn("[hawkeye] 0G Storage unavailable:", (err as Error).message);
+    return null;
+  }
+}
+
+function initRegistry(): RegistryClient | null {
+  try {
+    return new RegistryClient();
+  } catch (err) {
+    console.warn("[hawkeye] 0G Registry unavailable:", (err as Error).message);
+    return null;
+  }
+}
+
+async function initAxlBus(): Promise<AxlEventBus<BusEvents> | null> {
+  if (!envOr("AXL_API_URL", "")) {
+    console.log("[hawkeye] AXL_API_URL not set — using local EventEmitter bus");
+    return null;
+  }
+  const axl = new AxlEventBus<BusEvents>();
+  await axl.start();
+  if (!axl.isConnected()) return null;
+
+  // Bridge: forward local bus events to AXL peers, and AXL events to local bus
+  const bridgedEvents: Array<keyof BusEvents> = [
+    "TRADE_REQUEST",
+    "SAFETY_RESULT",
+    "QUOTE_RESULT",
+    "STRATEGY_DECISION",
+    "TRADE_EXECUTED",
+    "EXECUTE_SELL",
+    "ALPHA_FOUND",
+    "RESEARCH_REQUEST",
+    "RESEARCH_RESULT",
+    "POSITION_UPDATE",
+  ];
+
+  for (const event of bridgedEvents) {
+    bus.on(event, ((payload: BusEvents[typeof event]) => {
+      axl.emit(event, payload);
+    }) as never);
+
+    axl.on(event, ((payload: BusEvents[typeof event]) => {
+      bus.emit(event, payload);
+    }) as never);
+  }
+
+  return axl;
+}
+
 async function main(): Promise<void> {
   console.log("[hawkeye] booting...");
   reportEnv();
 
   const llm = await initLlm();
+  const storage = initStorage();
+  const registry = initRegistry();
 
   let wm: ReturnType<typeof createWalletManager> | null = null;
   try {
@@ -77,9 +138,13 @@ async function main(): Promise<void> {
 
   const stopTracer = startSwarmTracer();
 
+  // 0G audit trail: writes to Storage + Chain on every bus event
+  const stopAudit = startAuditTrail({ storage, registry });
+
+  // Gensyn AXL P2P bus (bridges events to remote nodes)
+  const axl = await initAxlBus();
+
   // Strategy MUST start BEFORE Safety and Quote.
-  // It registers a TRADE_REQUEST handler to record the trade context before
-  // a safety cache hit emits SAFETY_RESULT synchronously in the same tick.
   const stopStrategy = startStrategyAgent({ llm: llm ?? undefined });
   const stopSafety = startSafetyAgent();
   const stopQuote = startQuoteAgent();
@@ -109,6 +174,21 @@ async function main(): Promise<void> {
     name: "Wallets",
     ok: wm !== null,
     detail: wm ? "Privy" : "unavailable",
+  }));
+  registerHealthCheck(() => ({
+    name: "0G Storage",
+    ok: storage !== null,
+    detail: storage ? "active" : "unavailable",
+  }));
+  registerHealthCheck(() => ({
+    name: "0G Registry",
+    ok: registry !== null,
+    detail: registry ? registry.address.slice(0, 10) + "..." : "unavailable",
+  }));
+  registerHealthCheck(() => ({
+    name: "Gensyn AXL",
+    ok: axl !== null && axl.isConnected(),
+    detail: axl?.isConnected() ? `${axl.getPeerCount()} peers` : "local-only",
   }));
 
   startHealthServer(Number(process.env["HEALTH_PORT"] ?? 8080));
@@ -157,6 +237,7 @@ async function main(): Promise<void> {
 
   const cleanups = [
     stopTracer,
+    stopAudit,
     stopStrategy,
     () => stopSafety.stop(),
     stopQuote,
@@ -165,6 +246,7 @@ async function main(): Promise<void> {
     () => stopMonitor.stop(),
     () => stopCopyTrade.stop(),
     () => gateway?.stop(),
+    () => axl?.stop(),
     stopHealthServer,
   ];
 
