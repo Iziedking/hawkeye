@@ -1,12 +1,12 @@
 {
   "name": "hawkeye",
   "version": "1.0.0",
-  "description": "Autonomous crypto trading agent swarm — 0G APAC Hackathon Track 2",
+  "description": "Autonomous crypto trading agent swarm — OpenAgent Hackathon by ethGlobal",
   "main": "dist/index.js",
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p src/shared/tsconfig.json --noEmit && tsc -p src/gateway/tsconfig.json --noEmit && tsc -p src/integrations/0g/tsconfig.json --noEmit && tsc -p src/integrations/claude/tsconfig.json --noEmit && tsc -p src/integrations/privy/tsconfig.json --noEmit",
     "test": "node scripts/run-smoke-tests.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
