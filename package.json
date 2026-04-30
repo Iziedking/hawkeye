@@ -1,10 +1,17 @@
 {
-  "name": "hawkeye-build",
+  "name": "hawkeye",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Autonomous crypto trading agent swarm — 0G APAC Hackathon Track 2",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-smoke-tests.mjs",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "keywords": [],
   "author": "",
@@ -14,10 +21,14 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^25.6.0",
     "@types/turndown": "^5.0.6",
+    "eslint": "^9.20.0",
+    "eslint-config-prettier": "^10.0.1",
     "grammy": "^1.42.0",
+    "prettier": "^3.4.2",
     "tsx": "^4.21.0",
     "turndown": "^7.2.4",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.20.0",
     "zod": "^4.3.6"
   },
   "dependencies": {

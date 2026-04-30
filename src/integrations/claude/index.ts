@@ -1,9 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { envOr } from "../../shared/env";
-import type {
-  OgInferenceRequest,
-  OgInferenceResponse,
-} from "../0g/compute";
+import type { OgInferenceRequest, OgInferenceResponse } from "../0g/compute";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -58,11 +55,7 @@ export class FallbackLlmClient {
   private primaryHealthy = true;
   private log: (msg: string) => void;
 
-  constructor(
-    primary: LlmLike | null,
-    fallback: LlmLike | null,
-    log?: (msg: string) => void,
-  ) {
+  constructor(primary: LlmLike | null, fallback: LlmLike | null, log?: (msg: string) => void) {
     this.primary = primary;
     this.fallback = fallback;
     this.log = log ?? ((m) => console.log(`[fallback-llm] ${m}`));

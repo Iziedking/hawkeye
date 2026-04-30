@@ -33,25 +33,18 @@ export type TradeAmount = {
   unit: AmountUnit;
 };
 
-
-
 export type ExitTarget =
-  | { kind: "multiplier"; value: number }    // e.g. 3x
-  | { kind: "price"; usd: number }           // e.g. $0.42
-  | { kind: "fdv"; usd: number }             // e.g. FDV $10M
-  | { kind: "marketcap"; usd: number };      // e.g. MC $5M
+  | { kind: "multiplier"; value: number } // e.g. 3x
+  | { kind: "price"; usd: number } // e.g. $0.42
+  | { kind: "fdv"; usd: number } // e.g. FDV $10M
+  | { kind: "marketcap"; usd: number }; // e.g. MC $5M
 
 export type PartialExit = {
-
   percent: number;
   target: ExitTarget;
 };
 
-
-
 export type TradingMode = "INSTANT" | "NORMAL" | "CAREFUL";
-
-
 
 export type MessageChannel =
   | "whatsapp"
@@ -75,7 +68,6 @@ export type TradeIntent = {
   createdAt: number;
   chainHint?: ChainId;
 };
-
 
 export type SafetyFlag =
   | "HONEYPOT"
@@ -103,7 +95,6 @@ export type SafetyReport = {
   completedAt: number;
 };
 
-
 export type Quote = {
   intentId: string;
   address: string;
@@ -116,7 +107,6 @@ export type Quote = {
   route: string;
   completedAt: number;
 };
-
 
 export type StrategyDecision =
   | {
@@ -175,7 +165,6 @@ export type AlphaFoundPayload = {
   reason: string;
   foundAt: number;
 };
-
 
 export type IntentCategory =
   | "DEGEN_SNIPE"
@@ -276,7 +265,6 @@ export type UserSettings = {
   };
   minSafetyScore: number;
 };
-
 
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",

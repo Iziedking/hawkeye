@@ -1,5 +1,3 @@
-
-
 import { EventEmitter } from "node:events";
 import type { BusEvents } from "./types";
 
@@ -11,7 +9,6 @@ export class EventBus<E extends EventMap> {
   private readonly emitter = new EventEmitter();
 
   constructor() {
-   
     this.emitter.setMaxListeners(32);
   }
 
@@ -40,7 +37,6 @@ export class EventBus<E extends EventMap> {
     else this.emitter.removeAllListeners(event);
   }
 }
-
 
 export const bus = new EventBus<BusEvents>();
 
