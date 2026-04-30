@@ -53,6 +53,7 @@ export type OgComputeClientOptions = {
 
 export class OgComputeClient {
   private readonly wallet: ethers.Wallet;
+  private readonly provider: ethers.JsonRpcProvider;
   readonly providerAddress: string;
   readonly model: string;
 
@@ -67,8 +68,28 @@ export class OgComputeClient {
       opts.providerAddress ?? envOr("OG_PROVIDER_ADDRESS", DEFAULT_PROVIDER_ADDRESS);
     this.model = opts.model ?? envOr("OG_MODEL", DEFAULT_MODEL);
 
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    this.wallet = new ethers.Wallet(privateKey, provider);
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.wallet = new ethers.Wallet(privateKey, this.provider);
+  }
+
+  async waitForPendingTxs(): Promise<void> {
+    try {
+      const addr = this.wallet.address;
+      const pending = await this.provider.getTransactionCount(addr, "pending");
+      const confirmed = await this.provider.getTransactionCount(addr, "latest");
+      if (pending > confirmed) {
+        console.log(`[0g-compute] waiting for ${pending - confirmed} pending tx(s)...`);
+        const start = Date.now();
+        while (Date.now() - start < 30_000) {
+          const current = await this.provider.getTransactionCount(addr, "latest");
+          if (current >= pending) return;
+          await new Promise((r) => setTimeout(r, 2_000));
+        }
+        console.warn("[0g-compute] pending txs did not confirm in 30s, proceeding anyway");
+      }
+    } catch {
+      // best effort
+    }
   }
 
   private async getBroker(): Promise<Broker> {

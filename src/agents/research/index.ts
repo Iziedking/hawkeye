@@ -1262,6 +1262,130 @@ async function searchBrave(query: string): Promise<BraveResult[]> {
   }
 }
 
+type DefiLlamaData = {
+  tvl: number | null;
+  tvlChange1d: number | null;
+  mcapTvlRatio: number | null;
+  category: string | null;
+  chains: string[];
+};
+
+async function fetchDefiLlama(tokenName: string, ticker: string): Promise<DefiLlamaData | null> {
+  const empty: DefiLlamaData = { tvl: null, tvlChange1d: null, mcapTvlRatio: null, category: null, chains: [] };
+  try {
+    const resp = await fetch("https://api.llama.fi/protocols", {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!resp.ok) return empty;
+    const protocols = (await resp.json()) as Array<{
+      name: string;
+      symbol: string;
+      tvl: number;
+      change_1d: number | null;
+      mcap: number | null;
+      category: string;
+      chains: string[];
+    }>;
+    const lower = ticker.toLowerCase();
+    const nameLower = tokenName.toLowerCase();
+    const match = protocols.find(
+      (p) => p.symbol?.toLowerCase() === lower || p.name?.toLowerCase() === nameLower,
+    );
+    if (!match) return empty;
+    const ratio = match.mcap && match.tvl > 0 ? match.mcap / match.tvl : null;
+    return {
+      tvl: match.tvl,
+      tvlChange1d: match.change_1d,
+      mcapTvlRatio: ratio,
+      category: match.category,
+      chains: match.chains ?? [],
+    };
+  } catch {
+    return empty;
+  }
+}
+
+type DefiLlamaTrending = {
+  name: string;
+  symbol: string;
+  tvl: number;
+  change1d: number | null;
+  category: string;
+  chains: string[];
+};
+
+async function fetchDefiLlamaTrending(chain?: string, limit = 10): Promise<DefiLlamaTrending[]> {
+  try {
+    const resp = await fetch("https://api.llama.fi/protocols", {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!resp.ok) return [];
+    const protocols = (await resp.json()) as Array<{
+      name: string;
+      symbol: string;
+      tvl: number;
+      change_1d: number | null;
+      category: string;
+      chains: string[];
+    }>;
+
+    let filtered = protocols.filter(
+      (p) => p.tvl > 100_000 && p.category !== "CEX" && p.category !== "Exchange",
+    );
+    if (chain) {
+      const cl = chain.toLowerCase();
+      filtered = filtered.filter((p) =>
+        p.chains?.some((c) => c.toLowerCase() === cl),
+      );
+    }
+    filtered.sort((a, b) => (b.change_1d ?? 0) - (a.change_1d ?? 0));
+    return filtered.slice(0, limit).map((p) => ({
+      name: p.name,
+      symbol: p.symbol ?? "",
+      tvl: p.tvl,
+      change1d: p.change_1d,
+      category: p.category,
+      chains: p.chains ?? [],
+    }));
+  } catch {
+    return [];
+  }
+}
+
+type DuneSmartMoneyFlow = {
+  token: string;
+  netFlow: number;
+  txCount: number;
+};
+
+async function fetchDuneSmartMoney(chain?: string): Promise<DuneSmartMoneyFlow[]> {
+  const key = process.env["DUNE_API_KEY"];
+  if (!key) return [];
+  // Public Dune query for smart money token flows (community query)
+  // Query 3521429 = "Smart Money Token Inflows Last 24h"
+  const queryId = chain === "solana" ? "3521430" : "3521429";
+  try {
+    const resp = await fetch(
+      `https://api.dune.com/api/v1/query/${queryId}/results?limit=10`,
+      {
+        headers: { "X-Dune-Api-Key": key },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!resp.ok) return [];
+    const body = (await resp.json()) as {
+      result?: { rows?: Array<{ token_symbol?: string; net_flow_usd?: number; tx_count?: number }> };
+    };
+    return (body.result?.rows ?? []).map((r) => ({
+      token: r.token_symbol ?? "?",
+      netFlow: r.net_flow_usd ?? 0,
+      txCount: r.tx_count ?? 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ─── LLM synthesis ────────────────────────────────────────────────────────────
 // Prefers the injected LlmClient (Israel's FallbackLlmClient at startup).
 // Falls back to direct OgComputeClient if no client is injected (standalone/smoke-test).
@@ -1426,8 +1550,135 @@ function buildTemplateSummary(d: ResearchData): string {
 }
 
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
+async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
+  const q = (req.question ?? req.rawText ?? "").toLowerCase();
+  const isTrending = /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
+  if (!isTrending) return false;
+
+  console.log(`[research] trending query: chain=${req.chain ?? "all"} text="${q.slice(0, 60)}"`);
+
+  try {
+    const [profiles, boosts] = await Promise.all([getLatestTokenProfiles(), getLatestBoosts()]);
+
+    const chainFilter = req.chain === "solana" ? "solana" : req.chain === "evm" ? null : null;
+    const solanaKeywords = /\bsolana\b|sol\b/i.test(req.rawText);
+    const filterChain = chainFilter ?? (solanaKeywords ? "solana" : null);
+
+    const seen = new Set<string>();
+    const candidates: Array<{ address: string; chainId: string }> = [];
+    for (const item of [...boosts, ...profiles]) {
+      if (!isValidChain(item.chainId)) continue;
+      if (filterChain && item.chainId !== filterChain) continue;
+      const key = item.tokenAddress.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push({ address: item.tokenAddress, chainId: item.chainId });
+    }
+
+    const top = candidates.slice(0, 8);
+    if (top.length === 0) {
+      bus.emit("RESEARCH_RESULT", {
+        requestId: req.requestId,
+        address: "trending",
+        chain: req.chain ?? "evm",
+        summary: `No trending tokens found${filterChain ? ` on ${filterChain}` : ""}. Try again in a few minutes.`,
+        safetyScore: null,
+        priceUsd: null,
+        liquidityUsd: null,
+        flags: [],
+        completedAt: Date.now(),
+      });
+      return true;
+    }
+
+    const llamaChain = filterChain === "solana" ? "Solana" : filterChain === "ethereum" ? "Ethereum" : undefined;
+    const [pairResults, llamaTrending, smartMoney] = await Promise.all([
+      Promise.all(top.map(async (t) => {
+        const pairs = await getPairsByToken(t.chainId as DexScreenerChain, t.address).catch(() => [] as DexPair[]);
+        const best = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+        return { ...t, pair: best ?? null };
+      })),
+      fetchDefiLlamaTrending(llamaChain, 5),
+      fetchDuneSmartMoney(filterChain ?? undefined),
+    ]);
+
+    const lines: string[] = [];
+    const chainLabel = filterChain ?? "all chains";
+    lines.push(`Trending on ${chainLabel}:\n`);
+    let rank = 0;
+    for (const r of pairResults) {
+      if (!r.pair) continue;
+      rank++;
+      const sym = r.pair.baseToken?.symbol ?? "???";
+      const name = r.pair.baseToken?.name ?? "";
+      const price = r.pair.priceUsd ? `$${parseFloat(r.pair.priceUsd).toPrecision(4)}` : "n/a";
+      const liq = r.pair.liquidity?.usd ? `$${(r.pair.liquidity.usd / 1000).toFixed(0)}k` : "n/a";
+      const h24 = r.pair.priceChange?.h24 != null ? `${r.pair.priceChange.h24 > 0 ? "+" : ""}${r.pair.priceChange.h24.toFixed(1)}%` : "";
+      const vol = r.pair.volume?.h24 ? `$${(r.pair.volume.h24 / 1000).toFixed(0)}k` : "";
+      lines.push(`${rank}. ${sym} (${name})`);
+      lines.push(`   ${r.chainId} | ${price} | liq ${liq} | 24h ${h24}${vol ? ` | vol ${vol}` : ""}`);
+      lines.push(`   ${r.address}`);
+    }
+    if (rank === 0) {
+      lines.push("No pairs with liquidity data found.");
+    }
+
+    if (llamaTrending.length > 0) {
+      lines.push(`\nTop TVL movers (DeFiLlama):`);
+      for (const p of llamaTrending) {
+        const tvl = `$${(p.tvl / 1_000_000).toFixed(1)}M`;
+        const chg = p.change1d != null ? ` | 1d ${p.change1d > 0 ? "+" : ""}${p.change1d.toFixed(1)}%` : "";
+        lines.push(`  ${p.name} (${p.symbol}) | TVL ${tvl}${chg} | ${p.category}`);
+      }
+    }
+
+    if (smartMoney.length > 0) {
+      lines.push(`\nSmart money flows (Dune):`);
+      for (const s of smartMoney) {
+        const flow = s.netFlow > 0 ? `+$${(s.netFlow / 1000).toFixed(0)}k` : `-$${(Math.abs(s.netFlow) / 1000).toFixed(0)}k`;
+        lines.push(`  ${s.token} | net ${flow} | ${s.txCount} txs`);
+      }
+    }
+
+    if (rank > 0) {
+      lines.push(`\nPaste any address above to research or trade.`);
+    }
+
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "trending",
+      chain: req.chain ?? "evm",
+      summary: lines.join("\n"),
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+    });
+  } catch (err) {
+    console.error("[research] trending query failed:", err);
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "trending",
+      chain: req.chain ?? "evm",
+      summary: "Trending scan failed. DexScreener may be rate-limited. Try again shortly.",
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+    });
+  }
+  return true;
+}
+
 async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Promise<void> {
   console.log(`[research] RESEARCH_REQUEST for ${req.address ?? req.tokenName ?? "unknown"}`);
+
+  if (!req.address && !req.tokenName) {
+    const handled = await handleTrendingRequest(req);
+    if (handled) return;
+  }
 
   let address = req.address;
   let resolvedChainId: DexScreenerChain = "ethereum";

@@ -16,8 +16,10 @@ import { createWalletManager } from "./integrations/privy/index";
 import { OgComputeClient } from "./integrations/0g/compute";
 import { OgStorageClient } from "./integrations/0g/storage";
 import { RegistryClient } from "./integrations/0g/registry-client";
+import { checkOgBalance } from "./integrations/0g/shared-signer";
 import { startAuditTrail } from "./integrations/0g/audit-trail";
 import { ClaudeLlmClient, FallbackLlmClient } from "./integrations/claude/index";
+import { OpenRouterClient } from "./integrations/openrouter/index";
 
 import { startStrategyAgent } from "./agents/strategy/index";
 import { startSafetyAgent } from "./agents/safety/index";
@@ -39,7 +41,7 @@ function reportEnv(): void {
   }
 }
 
-async function initLlm(): Promise<FallbackLlmClient | null> {
+async function initLlm(): Promise<{ llm: FallbackLlmClient | null; compute: OgComputeClient | null }> {
   let ogClient: OgComputeClient | null = null;
   try {
     ogClient = new OgComputeClient();
@@ -47,21 +49,27 @@ async function initLlm(): Promise<FallbackLlmClient | null> {
     console.warn("[hawkeye] 0G Compute failed to construct:", (err as Error).message);
   }
 
-  let claudeClient: ClaudeLlmClient | null = null;
+  let fallbackClient: ClaudeLlmClient | OpenRouterClient | null = null;
   try {
-    claudeClient = new ClaudeLlmClient();
-  } catch (err) {
-    console.warn("[hawkeye] Claude fallback unavailable:", (err as Error).message);
+    fallbackClient = new OpenRouterClient();
+    console.log(`[hawkeye] OpenRouter ready (model: ${fallbackClient.model})`);
+  } catch {
+    try {
+      fallbackClient = new ClaudeLlmClient();
+      console.log("[hawkeye] Claude fallback ready");
+    } catch (err) {
+      console.warn("[hawkeye] No LLM fallback available:", (err as Error).message);
+    }
   }
 
-  if (!claudeClient && !ogClient) {
+  if (!fallbackClient && !ogClient) {
     console.warn("[hawkeye] No LLM available — regex-only mode");
-    return null;
+    return { llm: null, compute: null };
   }
 
-  const client = new FallbackLlmClient(ogClient, claudeClient);
+  const client = new FallbackLlmClient(ogClient, fallbackClient);
   await client.ready();
-  return client;
+  return { llm: client, compute: ogClient };
 }
 
 function initStorage(): OgStorageClient | null {
@@ -147,7 +155,10 @@ async function main(): Promise<void> {
   console.log("[hawkeye] booting...");
   reportEnv();
 
-  const llm = await initLlm();
+  await checkOgBalance();
+
+  const { llm, compute } = await initLlm();
+  if (compute) await compute.waitForPendingTxs();
   const storage = initStorage();
   const registry = initRegistry();
 

@@ -69,11 +69,11 @@ export class FallbackLlmClient {
         this.log("0G Compute ready (primary)");
       } catch {
         this.primaryHealthy = false;
-        this.log("0G Compute unavailable" + (this.fallback ? ", Claude is primary" : ""));
+        this.log("0G Compute unavailable" + (this.fallback ? ", fallback LLM is primary" : ""));
       }
     } else {
       this.primaryHealthy = false;
-      this.log("No 0G client" + (this.fallback ? ", Claude is primary" : ""));
+      this.log("No 0G client" + (this.fallback ? ", fallback LLM is primary" : ""));
     }
   }
 

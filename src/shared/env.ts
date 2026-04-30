@@ -66,9 +66,9 @@ export function validateEnv(): EnvCheck {
     ],
     recommended: [
       {
-        name: "ANTHROPIC_API_KEY",
-        ok: has("ANTHROPIC_API_KEY"),
-        degrades: "no Claude fallback — 0G Compute outages drop us to regex-only routing",
+        name: "OPENROUTER_API_KEY or ANTHROPIC_API_KEY",
+        ok: has("OPENROUTER_API_KEY") || has("ANTHROPIC_API_KEY"),
+        degrades: "no LLM fallback — 0G Compute outages drop to regex-only routing",
       },
       {
         name: "PRIVY_APP_ID/PRIVY_APP_SECRET",

@@ -30,8 +30,8 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "ethereum",
     name: "Ethereum",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_ETHEREUM", "https://rpc.ankr.com/eth"),
-    fallbackRpc: "https://eth.llamarpc.com",
+    rpcUrl: envOr("EVM_RPC_ETHEREUM", "https://ethereum-rpc.publicnode.com"),
+    fallbackRpc: "https://cloudflare-eth.com",
     explorerUrl: "https://etherscan.io",
     wrappedNative: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
   },
@@ -39,7 +39,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "base",
     name: "Base",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_BASE", "https://rpc.ankr.com/base"),
+    rpcUrl: envOr("EVM_RPC_BASE", "https://base-rpc.publicnode.com"),
     fallbackRpc: "https://mainnet.base.org",
     explorerUrl: "https://basescan.org",
     wrappedNative: "0x4200000000000000000000000000000000000006",
@@ -48,7 +48,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "polygon",
     name: "Polygon PoS",
     nativeCurrency: "MATIC",
-    rpcUrl: envOr("EVM_RPC_POLYGON", "https://rpc.ankr.com/polygon"),
+    rpcUrl: envOr("EVM_RPC_POLYGON", "https://polygon-bor-rpc.publicnode.com"),
     fallbackRpc: "https://polygon-rpc.com",
     explorerUrl: "https://polygonscan.com",
     wrappedNative: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
@@ -57,7 +57,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "arbitrum",
     name: "Arbitrum One",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_ARBITRUM", "https://rpc.ankr.com/arbitrum"),
+    rpcUrl: envOr("EVM_RPC_ARBITRUM", "https://arbitrum-one-rpc.publicnode.com"),
     fallbackRpc: "https://arb1.arbitrum.io/rpc",
     explorerUrl: "https://arbiscan.io",
     wrappedNative: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
@@ -66,7 +66,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "optimism",
     name: "Optimism",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_OPTIMISM", "https://rpc.ankr.com/optimism"),
+    rpcUrl: envOr("EVM_RPC_OPTIMISM", "https://optimism-rpc.publicnode.com"),
     fallbackRpc: "https://mainnet.optimism.io",
     explorerUrl: "https://optimistic.etherscan.io",
     wrappedNative: "0x4200000000000000000000000000000000000006",
@@ -75,7 +75,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "bsc",
     name: "BNB Smart Chain",
     nativeCurrency: "BNB",
-    rpcUrl: envOr("EVM_RPC_BSC", "https://rpc.ankr.com/bsc"),
+    rpcUrl: envOr("EVM_RPC_BSC", "https://bsc-rpc.publicnode.com"),
     fallbackRpc: "https://bsc-dataseed.binance.org",
     explorerUrl: "https://bscscan.com",
     wrappedNative: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
@@ -84,7 +84,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "avalanche",
     name: "Avalanche C-Chain",
     nativeCurrency: "AVAX",
-    rpcUrl: envOr("EVM_RPC_AVALANCHE", "https://rpc.ankr.com/avalanche"),
+    rpcUrl: envOr("EVM_RPC_AVALANCHE", "https://avalanche-c-chain-rpc.publicnode.com"),
     fallbackRpc: "https://api.avax.network/ext/bc/C/rpc",
     explorerUrl: "https://snowtrace.io",
     wrappedNative: "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",
@@ -93,7 +93,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "fantom",
     name: "Fantom Opera",
     nativeCurrency: "FTM",
-    rpcUrl: envOr("EVM_RPC_FANTOM", "https://rpc.ankr.com/fantom"),
+    rpcUrl: envOr("EVM_RPC_FANTOM", "https://fantom-rpc.publicnode.com"),
     fallbackRpc: "https://rpc.ftm.tools",
     explorerUrl: "https://ftmscan.com",
     wrappedNative: "0x21be370D5312f44cB42ce377BC9b8a0cEF1A4C83",
@@ -111,7 +111,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "zksync",
     name: "zkSync Era",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_ZKSYNC", "https://rpc.ankr.com/zksync_era"),
+    rpcUrl: envOr("EVM_RPC_ZKSYNC", "https://mainnet.era.zksync.io"),
     fallbackRpc: "https://mainnet.era.zksync.io",
     explorerUrl: "https://explorer.zksync.io",
     wrappedNative: "0x5AEa5775959fBC2557Cc8789bC1bf90A239D9a91",
@@ -120,7 +120,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "linea",
     name: "Linea",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_LINEA", "https://rpc.ankr.com/linea"),
+    rpcUrl: envOr("EVM_RPC_LINEA", "https://rpc.linea.build"),
     fallbackRpc: "https://rpc.linea.build",
     explorerUrl: "https://lineascan.build",
     wrappedNative: "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",
@@ -129,7 +129,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "blast",
     name: "Blast",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_BLAST", "https://rpc.ankr.com/blast"),
+    rpcUrl: envOr("EVM_RPC_BLAST", "https://rpc.blast.io"),
     fallbackRpc: "https://rpc.blast.io",
     explorerUrl: "https://blastscan.io",
     wrappedNative: "0x4300000000000000000000000000000000000004",
@@ -138,7 +138,7 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "scroll",
     name: "Scroll",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_SCROLL", "https://rpc.ankr.com/scroll"),
+    rpcUrl: envOr("EVM_RPC_SCROLL", "https://scroll-rpc.publicnode.com"),
     fallbackRpc: "https://rpc.scroll.io",
     explorerUrl: "https://scrollscan.com",
     wrappedNative: "0x5300000000000000000000000000000000000004",
@@ -165,19 +165,60 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     chainId: "sepolia",
     name: "Sepolia Testnet",
     nativeCurrency: "ETH",
-    rpcUrl: envOr("EVM_RPC_SEPOLIA", "https://rpc.ankr.com/eth_sepolia"),
-    fallbackRpc: "https://rpc.sepolia.org",
+    rpcUrl: envOr("EVM_RPC_SEPOLIA", "https://ethereum-sepolia-rpc.publicnode.com"),
+    fallbackRpc: "https://rpc2.sepolia.org",
     explorerUrl: "https://sepolia.etherscan.io",
     wrappedNative: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
   },
 };
 
 /**
- * Get the RPC URL for a chain, trying primary then fallback.
+ * Get the primary RPC URL for a chain.
  */
 export function getChainRpc(chainId: string): string {
   const cfg = EVM_CHAIN_CONFIG[chainId];
-  return cfg?.rpcUrl ?? cfg?.fallbackRpc ?? "https://rpc.ankr.com/eth";
+  return cfg?.rpcUrl ?? cfg?.fallbackRpc ?? "https://ethereum-rpc.publicnode.com";
+}
+
+/**
+ * Get the fallback RPC URL for a chain.
+ */
+export function getChainFallbackRpc(chainId: string): string {
+  const cfg = EVM_CHAIN_CONFIG[chainId];
+  return cfg?.fallbackRpc ?? cfg?.rpcUrl ?? "https://ethereum-rpc.publicnode.com";
+}
+
+/**
+ * Fetch native balance with automatic fallback to secondary RPC on failure.
+ */
+export async function fetchNativeBalance(
+  chainId: string,
+  address: string,
+  timeoutMs = 5_000,
+): Promise<{ balance: bigint; chain: string; error?: string }> {
+  const rpcs = [getChainRpc(chainId), getChainFallbackRpc(chainId)];
+  for (const rpc of rpcs) {
+    try {
+      const resp = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_getBalance",
+          params: [address, "latest"],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = (await resp.json()) as { result?: string; error?: { message?: string } };
+      if (data.error) continue;
+      if (!data.result) continue;
+      return { balance: BigInt(data.result), chain: chainId };
+    } catch {
+      continue;
+    }
+  }
+  return { balance: 0n, chain: chainId, error: "rpc_failed" };
 }
 
 /**

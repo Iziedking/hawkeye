@@ -23,7 +23,7 @@ import type {
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
 import { formatHealthForTelegram } from "../shared/health";
-import { getChainRpc, getChainExplorer, getChainName, EVM_CHAIN_CONFIG } from "../shared/evm-chains";
+import { getChainRpc, getChainExplorer, getChainName, EVM_CHAIN_CONFIG, fetchNativeBalance } from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 import { getPositions, getPositionsByUser } from "../agents/execution/index";
 import { getWatchedWalletAddresses, addWalletDirectly } from "../agents/copy-trade/index";
@@ -386,33 +386,16 @@ export async function startTelegramGateway(
     await ctx.reply(`Fetching balances for ${codeAddr(addr)}...`, { parse_mode: "HTML" });
 
     const chains = ["ethereum", "sepolia", "base", "arbitrum", "optimism", "polygon", "bsc"];
-    const results: string[] = [];
 
     const fetches = chains.map(async (chain) => {
-      try {
-        const rpc = getChainRpc(chain);
-        const cfg = EVM_CHAIN_CONFIG[chain];
-        const resp = await fetch(rpc, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "eth_getBalance",
-            params: [addr, "latest"],
-          }),
-          signal: AbortSignal.timeout(5_000),
-        });
-        const data = (await resp.json()) as { result?: string };
-        const wei = BigInt(data.result ?? "0");
-        const ethVal = Number(wei) / 1e18;
-        if (ethVal > 0.00001) {
-          return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${cfg?.nativeCurrency ?? "ETH"}`;
-        }
-        return `  ${getChainName(chain)}: 0`;
-      } catch {
-        return `  ${getChainName(chain)}: error`;
+      const cfg = EVM_CHAIN_CONFIG[chain];
+      const { balance, error } = await fetchNativeBalance(chain, addr);
+      if (error) return `  ${getChainName(chain)}: error`;
+      const ethVal = Number(balance) / 1e18;
+      if (ethVal > 0.00001) {
+        return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${cfg?.nativeCurrency ?? "ETH"}`;
       }
+      return `  ${getChainName(chain)}: 0`;
     });
 
     const balanceLines = await Promise.all(fetches);
@@ -1224,16 +1207,17 @@ export async function startTelegramGateway(
       createdAt: Date.now(),
     });
 
+    const isTrending = /\b(trending|trend|hot|alpha|movers?|pumping|top tokens?)\b/i.test(result.rawText);
     if (address) {
       void reply(
         rctx,
         `Researching ${codeAddr(address)}...\nAnalyzing safety, liquidity, and price data.`,
       );
+    } else if (isTrending) {
+      void reply(rctx, "Scanning DexScreener for trending tokens...");
     } else {
-      void llmReply(
+      void reply(
         rctx,
-        result.rawText,
-        "The user wants to research a token but didn't provide a contract address. Acknowledge their question and ask for the contract address for deeper analysis.",
         "Looking into that. For detailed analysis, paste the contract address.",
       );
     }
@@ -1285,29 +1269,14 @@ export async function startTelegramGateway(
 
     const chains = ["ethereum", "sepolia", "base", "arbitrum", "optimism", "polygon", "bsc"];
     const fetches = chains.map(async (chain) => {
-      try {
-        const rpc = getChainRpc(chain);
-        const cfg = EVM_CHAIN_CONFIG[chain];
-        const resp = await fetch(rpc, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0", id: 1,
-            method: "eth_getBalance",
-            params: [addr, "latest"],
-          }),
-          signal: AbortSignal.timeout(5_000),
-        });
-        const data = (await resp.json()) as { result?: string };
-        const wei = BigInt(data.result ?? "0");
-        const ethVal = Number(wei) / 1e18;
-        if (ethVal > 0.00001) {
-          return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${cfg?.nativeCurrency ?? "ETH"}`;
-        }
-        return null;
-      } catch {
-        return null;
+      const cfg = EVM_CHAIN_CONFIG[chain];
+      const { balance, error } = await fetchNativeBalance(chain, addr);
+      if (error) return null;
+      const ethVal = Number(balance) / 1e18;
+      if (ethVal > 0.00001) {
+        return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${cfg?.nativeCurrency ?? "ETH"}`;
       }
+      return null;
     });
 
     const balanceLines = (await Promise.all(fetches)).filter((l): l is string => l !== null);
