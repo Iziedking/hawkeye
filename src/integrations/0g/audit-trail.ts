@@ -15,27 +15,35 @@ type AuditDeps = {
   registry: RegistryClient | null;
 };
 
+let writeQueue: Promise<void> = Promise.resolve();
+
 function writeStorage(storage: OgStorageClient, key: string, payload: unknown): void {
   if (storage.circuitOpen) return;
-  storage.writeJson(key, payload).then(
-    (res) => console.log(`[audit] 0G: ${key} → ${res.rootHash.slice(0, 12)}...`),
-    (err) => {
+  writeQueue = writeQueue.then(async () => {
+    try {
+      const res = await storage.writeJson(key, payload);
+      console.log(`[audit] 0G: ${key} → ${res.rootHash.slice(0, 12)}...`);
+    } catch (err) {
       if (!storage.circuitOpen) {
         const msg = (err as Error).message ?? "";
         console.warn(`[audit] 0G write failed (${key}): ${msg.slice(0, 80)}`);
       }
-    },
-  );
+    }
+  });
 }
 
+let chainQueue: Promise<void> = Promise.resolve();
+
 function writeChain(registry: RegistryClient, label: string, fn: () => Promise<string>): void {
-  fn().then(
-    (hash) => console.log(`[audit] chain: ${label} → ${hash.slice(0, 14)}...`),
-    (err) => {
+  chainQueue = chainQueue.then(async () => {
+    try {
+      const hash = await fn();
+      console.log(`[audit] chain: ${label} → ${hash.slice(0, 14)}...`);
+    } catch (err) {
       const msg = (err as Error).message ?? "";
       console.warn(`[audit] chain write failed (${label}): ${msg.slice(0, 80)}`);
-    },
-  );
+    }
+  });
 }
 
 const safetyByIntent = new Map<string, SafetyReport>();

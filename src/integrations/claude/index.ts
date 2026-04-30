@@ -58,7 +58,7 @@ export class FallbackLlmClient {
   constructor(primary: LlmLike | null, fallback: LlmLike | null, log?: (msg: string) => void) {
     this.primary = primary;
     this.fallback = fallback;
-    this.log = log ?? ((m) => console.log(`[fallback-llm] ${m}`));
+    this.log = log ?? ((m) => console.log(`[llm] ${m}`));
   }
 
   async ready(): Promise<void> {

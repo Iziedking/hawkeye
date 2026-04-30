@@ -308,8 +308,44 @@ export async function startTelegramGateway(
   bus.on("QUOTE_FAILED", onQuoteFailed);
   bus.on("POSITION_UPDATE", onPositionUpdate);
 
-  // /start — welcome message
+  // Per-user settings (in-memory, session-scoped)
+  const userSettings = new Map<string, { mode: TradingMode }>();
+
+  // /start — smart welcome: returning users get a dynamic LLM greeting
   bot.command("start", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    const hasWallet = wm ? wm.getWallet(userId) !== null : false;
+
+    if (hasWallet && llm) {
+      const wallet = wm!.getWallet(userId)!;
+      const positions = getPositionsByUser(userId);
+      const config = wm!.getFullWalletConfig(userId);
+      const mode = userSettings.get(userId)?.mode ?? "NORMAL";
+
+      const context = [
+        `Returning user. Wallet: ${wallet.address.slice(0, 8)}...`,
+        `Mode: ${mode}. Open positions: ${positions.length}.`,
+        config && config.externalWallets.length > 0
+          ? `External wallets: ${config.externalWallets.length}.`
+          : "",
+        "Greet them warmly but briefly. Mention what they can do right now.",
+        "Don't list commands. Be conversational, 2-3 sentences max.",
+      ].filter(Boolean).join(" ");
+
+      try {
+        const resp = await llm.infer({
+          system: CONVERSATIONAL_PROMPT + "\n\nContext: " + context,
+          user: "User just opened the bot.",
+          temperature: 0.8,
+          maxTokens: 150,
+        });
+        await ctx.reply(html(resp.text), { parse_mode: "HTML" });
+        return;
+      } catch (err) {
+        console.warn("[telegram] LLM greeting failed:", (err as Error).message);
+      }
+    }
+
     await ctx.reply(
       [
         "<b>HAWKEYE</b> — Autonomous On-Chain Agent\n",
@@ -551,8 +587,6 @@ export async function startTelegramGateway(
     await executeSend(rctx, userId, recipient, amount, chain.name, chain.id);
   });
 
-  // Per-user settings (in-memory, session-scoped)
-  const userSettings = new Map<string, { mode: TradingMode }>();
   const pendingEmailPrompts = new Map<string, { chatId: number; action: "create" | "link" }>();
 
   const MODE_MAP: Record<string, TradingMode> = {
@@ -1375,37 +1409,48 @@ export async function startTelegramGateway(
     rctx: ReplyCtx,
     llmClient: FallbackLlmClient | null,
   ): Promise<void> {
+    const hasWallet = wm ? wm.getWallet(rctx.userId) !== null : false;
+    const positions = getPositionsByUser(rctx.userId);
+
     if (!llmClient) {
-      void reply(
-        rctx,
-        [
-          `I'm running without my AI brain right now.`,
-          ``,
-          `I can still:`,
-          `  Paste a contract address — I'll trade or research it`,
-          `  Say "swap" — I'll guide you through a trade`,
-          `  Say "/wallet" — manage your wallet`,
-          `  Say "what's trending" — I'll scan for alpha`,
-        ].join("\n"),
-      );
+      void reply(rctx, smartFallback(result.rawText, hasWallet, positions.length));
       return;
     }
 
     try {
       const history = recentHistory(rctx.userId);
+      const userContext = hasWallet
+        ? `\nUser has a wallet set up. ${positions.length} open positions.`
+        : "\nNew user, no wallet yet.";
       const resp = await llmClient.infer({
-        system: CONVERSATIONAL_PROMPT + history,
+        system: CONVERSATIONAL_PROMPT + userContext + history,
         user: result.rawText,
         temperature: 0.7,
         maxTokens: 300,
       });
       void reply(rctx, html(resp.text), "HTML");
-    } catch {
-      void reply(
-        rctx,
-        "Having trouble right now. Try pasting a contract address, or say /help to see what I can do.",
-      );
+    } catch (err) {
+      console.warn("[telegram] conversational LLM failed:", (err as Error).message);
+      void reply(rctx, smartFallback(result.rawText, hasWallet, positions.length));
     }
+  }
+
+  function smartFallback(text: string, hasWallet: boolean, posCount: number): string {
+    const lower = text.toLowerCase().trim();
+    const isGreeting = /^(hi|hey|hello|yo|sup|gm|good\s*(morning|evening|afternoon))[\s!.]*$/i.test(lower);
+
+    if (isGreeting && hasWallet) {
+      return posCount > 0
+        ? `Hey! You have ${posCount} open position${posCount > 1 ? "s" : ""}. Paste a contract address to trade, or ask "what's trending?" to scan for alpha.`
+        : "Hey! Your wallet is ready. Paste a contract address to trade, or ask me what's trending.";
+    }
+    if (isGreeting) {
+      return "Hey! I'm HAWKEYE, your on-chain trading agent. Say /wallet to get started, or paste a contract address to trade.";
+    }
+    if (hasWallet) {
+      return "I can help with that. Try pasting a contract address, asking about a token, or say /help for all commands.";
+    }
+    return "I'm HAWKEYE. Set up your wallet with /wallet first, or paste a contract address to research a token.";
   }
 
   await bot.init();
