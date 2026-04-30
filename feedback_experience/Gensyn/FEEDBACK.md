@@ -12,36 +12,37 @@ Agents run identically on local or distributed mode.
 
 ## What worked
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Pain points
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Bugs encountered
 
-- 
-- 
+-
+-
 
 ## Documentation gaps
 
-- 
-- 
+-
+-
 
 ## Feature requests
 
-- 
-- 
+-
+-
 
 ## SDK feedback
 
-- 
+-
 
-## Overall rating (1-10): 
+## Overall rating (1-10):
 
 ---
-Last updated: 
+
+Last updated:

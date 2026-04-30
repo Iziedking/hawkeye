@@ -10,38 +10,38 @@ and 0G Chain. Gensyn AXL bus transport built. FEEDBACK.md verified against live 
 
 ### What's in this repo
 
-| Module | Path | Status |
-|---|---|---|
-| Event Bus | `src/shared/event-bus.ts` | Done |
-| AXL Bus Transport | `src/shared/axl-bus.ts` | Done (bridges to Gensyn P2P) |
-| Shared types | `src/shared/types.ts` | Done |
-| Constants | `src/shared/constants.ts` | Done |
-| Health system | `src/shared/health.ts` | Done (HTTP + Telegram /status) |
-| Token resolver | `src/shared/tokens.ts` | Done |
-| Wallet persistence | `src/shared/store.ts` | Done |
-| Swarm tracer | `src/shared/swarm-tracer.ts` | Done |
-| EVM chains | `src/shared/evm-chains.ts` | Done (15 chains, Ankr RPCs) |
-| LLM Router | `src/gateway/llm-router.ts` | Done |
-| Telegram Gateway | `src/gateway/telegram-gateway.ts` | Done (primary, /status command) |
-| OpenClaw Adapter | `src/gateway/openclaw-adapter.ts` | Done (reference, not active) |
-| Claude LLM fallback | `src/integrations/claude/` | Done (FallbackLlmClient) |
-| Privy wallets | `src/integrations/privy/` | Done |
-| 0G Compute | `src/integrations/0g/compute.ts` | Done |
-| 0G Storage | `src/integrations/0g/storage.ts` | Done |
-| 0G Registry Client | `src/integrations/0g/registry-client.ts` | Done (runtime logTrade) |
-| 0G Audit Trail | `src/integrations/0g/audit-trail.ts` | Done (6 bus events) |
-| Safety Agent | `src/agents/safety/` | Done (Samuel) |
-| Quote Agent | `src/agents/quote/` | Done (Sunday) |
-| Strategy Agent | `src/agents/strategy/` | Done |
-| Execution Agent | `src/agents/execution/` | Done (Sunday) |
-| Research Agent | `src/agents/research/` | Done (Samuel) |
-| Monitor Agent | `src/agents/monitor/` | Done (Joshua) |
-| Copy Trade Agent | `src/agents/copy-trade/` | Done (Joshua) |
-| HawkeyeRegistry | `contracts/HawkeyeRegistry.sol` | Deployed to testnet |
-| Deploy script | `scripts/deploy-registry.ts` | Done (--testnet flag) |
-| FEEDBACK.md | `FEEDBACK.md` | Done (verified against live docs) |
-| MCP servers | openclaw-docs, dexscreener, goplus, gensyn-axl, coingecko, keeperhub | Done |
-| Main startup | `src/index.ts` | Done (all wiring complete) |
+| Module              | Path                                                                 | Status                            |
+| ------------------- | -------------------------------------------------------------------- | --------------------------------- |
+| Event Bus           | `src/shared/event-bus.ts`                                            | Done                              |
+| AXL Bus Transport   | `src/shared/axl-bus.ts`                                              | Done (bridges to Gensyn P2P)      |
+| Shared types        | `src/shared/types.ts`                                                | Done                              |
+| Constants           | `src/shared/constants.ts`                                            | Done                              |
+| Health system       | `src/shared/health.ts`                                               | Done (HTTP + Telegram /status)    |
+| Token resolver      | `src/shared/tokens.ts`                                               | Done                              |
+| Wallet persistence  | `src/shared/store.ts`                                                | Done                              |
+| Swarm tracer        | `src/shared/swarm-tracer.ts`                                         | Done                              |
+| EVM chains          | `src/shared/evm-chains.ts`                                           | Done (15 chains, Ankr RPCs)       |
+| LLM Router          | `src/gateway/llm-router.ts`                                          | Done                              |
+| Telegram Gateway    | `src/gateway/telegram-gateway.ts`                                    | Done (primary, /status command)   |
+| OpenClaw Adapter    | `src/gateway/openclaw-adapter.ts`                                    | Done (reference, not active)      |
+| Claude LLM fallback | `src/integrations/claude/`                                           | Done (FallbackLlmClient)          |
+| Privy wallets       | `src/integrations/privy/`                                            | Done                              |
+| 0G Compute          | `src/integrations/0g/compute.ts`                                     | Done                              |
+| 0G Storage          | `src/integrations/0g/storage.ts`                                     | Done                              |
+| 0G Registry Client  | `src/integrations/0g/registry-client.ts`                             | Done (runtime logTrade)           |
+| 0G Audit Trail      | `src/integrations/0g/audit-trail.ts`                                 | Done (6 bus events)               |
+| Safety Agent        | `src/agents/safety/`                                                 | Done (Samuel)                     |
+| Quote Agent         | `src/agents/quote/`                                                  | Done (Sunday)                     |
+| Strategy Agent      | `src/agents/strategy/`                                               | Done                              |
+| Execution Agent     | `src/agents/execution/`                                              | Done (Sunday)                     |
+| Research Agent      | `src/agents/research/`                                               | Done (Samuel)                     |
+| Monitor Agent       | `src/agents/monitor/`                                                | Done (Joshua)                     |
+| Copy Trade Agent    | `src/agents/copy-trade/`                                             | Done (Joshua)                     |
+| HawkeyeRegistry     | `contracts/HawkeyeRegistry.sol`                                      | Deployed to testnet               |
+| Deploy script       | `scripts/deploy-registry.ts`                                         | Done (--testnet flag)             |
+| FEEDBACK.md         | `FEEDBACK.md`                                                        | Done (verified against live docs) |
+| MCP servers         | openclaw-docs, dexscreener, goplus, gensyn-axl, coingecko, keeperhub | Done                              |
+| Main startup        | `src/index.ts`                                                       | Done (all wiring complete)        |
 
 ### Architecture
 
@@ -86,10 +86,10 @@ Requires AXL node running (`AXL_API_URL` env var). Falls back to local-only Even
 
 ### On-chain deployments
 
-| Network | Contract | Chain ID | Explorer |
-|---|---|---|---|
-| 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602 | chainscan-galileo.0g.ai |
-| 0G Mainnet | Not deployed yet | 16661 | chainscan.0g.ai |
+| Network            | Contract                                     | Chain ID | Explorer                |
+| ------------------ | -------------------------------------------- | -------- | ----------------------- |
+| 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602    | chainscan-galileo.0g.ai |
+| 0G Mainnet         | Not deployed yet                             | 16661    | chainscan.0g.ai         |
 
 ## Remaining work
 
@@ -155,15 +155,15 @@ KH_API_KEY=                   # Optional: KeeperHub MCP
 
 ## Sponsors
 
-| Sponsor | What we use it for | Integration depth |
-|---|---|---|
-| 0G Compute | LLM router + conversational replies + agent analysis | Deep: core brain, every message |
-| 0G Storage | Immutable audit trail at 6 lifecycle points | Deep: every trade fully logged |
-| 0G Chain | On-chain agent registry + trade execution proofs | Deep: runtime logTrade calls |
-| Gensyn AXL | P2P bus transport between agent nodes | Medium: built, needs cross-node demo |
-| KeeperHub | EVM tx execution and gas management | Shallow: MCP wired, stub in agent |
-| Uniswap | DEX integration for EVM swaps (Trading API) | Deep: 3-step flow in Execution Agent |
-| Privy | Per-user agent wallets, signing | Deep: live in Telegram gateway |
+| Sponsor    | What we use it for                                   | Integration depth                    |
+| ---------- | ---------------------------------------------------- | ------------------------------------ |
+| 0G Compute | LLM router + conversational replies + agent analysis | Deep: core brain, every message      |
+| 0G Storage | Immutable audit trail at 6 lifecycle points          | Deep: every trade fully logged       |
+| 0G Chain   | On-chain agent registry + trade execution proofs     | Deep: runtime logTrade calls         |
+| Gensyn AXL | P2P bus transport between agent nodes                | Medium: built, needs cross-node demo |
+| KeeperHub  | EVM tx execution and gas management                  | Shallow: MCP wired, stub in agent    |
+| Uniswap    | DEX integration for EVM swaps (Trading API)          | Deep: 3-step flow in Execution Agent |
+| Privy      | Per-user agent wallets, signing                      | Deep: live in Telegram gateway       |
 
 ## Deadline
 

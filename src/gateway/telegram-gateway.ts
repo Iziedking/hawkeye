@@ -346,7 +346,10 @@ export async function startTelegramGateway(
       return;
     }
     if (args.length < 2) {
-      await reply(rctx, "Usage: <code>/send &lt;amount&gt; &lt;recipient&gt; [chain]</code>\nExample: <code>/send 0.01 0xABC... base</code>");
+      await reply(
+        rctx,
+        "Usage: <code>/send &lt;amount&gt; &lt;recipient&gt; [chain]</code>\nExample: <code>/send 0.01 0xABC... base</code>",
+      );
       return;
     }
 
@@ -364,7 +367,10 @@ export async function startTelegramGateway(
     const chainInput = args[2] ?? "ethereum";
     const chain = resolveChainNumeric(chainInput);
     if (!chain) {
-      await reply(rctx, `Unknown chain: ${html(chainInput)}. Try: ethereum, base, arb, op, polygon, bsc, sepolia`);
+      await reply(
+        rctx,
+        `Unknown chain: ${html(chainInput)}. Try: ethereum, base, arb, op, polygon, bsc, sepolia`,
+      );
       return;
     }
 
@@ -506,7 +512,10 @@ export async function startTelegramGateway(
     const chainHint = typeof d["chain"] === "string" ? d["chain"] : "ethereum";
     const chain = resolveChainNumeric(chainHint);
     if (!chain) {
-      void reply(rctx, `Unknown chain: ${html(chainHint)}. Try: ethereum, base, arb, op, polygon, bsc, sepolia`);
+      void reply(
+        rctx,
+        `Unknown chain: ${html(chainHint)}. Try: ethereum, base, arb, op, polygon, bsc, sepolia`,
+      );
       return;
     }
 

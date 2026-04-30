@@ -14,8 +14,18 @@ loadEnvLocal();
 const isTestnet = process.argv.includes("--testnet");
 
 const net = isTestnet
-  ? { rpc: "https://evmrpc-testnet.0g.ai", chainId: 16602, explorer: "https://chainscan-galileo.0g.ai", label: "0G Galileo Testnet" }
-  : { rpc: "https://evmrpc.0g.ai", chainId: 16661, explorer: "https://chainscan.0g.ai", label: "0G Mainnet" };
+  ? {
+      rpc: "https://evmrpc-testnet.0g.ai",
+      chainId: 16602,
+      explorer: "https://chainscan-galileo.0g.ai",
+      label: "0G Galileo Testnet",
+    }
+  : {
+      rpc: "https://evmrpc.0g.ai",
+      chainId: 16661,
+      explorer: "https://chainscan.0g.ai",
+      label: "0G Mainnet",
+    };
 
 const AGENTS = [
   { name: "Safety Agent", role: "Token security scanner (GoPlus, Honeypot.is, RugCheck)" },

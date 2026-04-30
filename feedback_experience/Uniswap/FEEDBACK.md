@@ -10,36 +10,37 @@ Integration: Execution Agent uses the Uniswap Trading API for all EVM swap execu
 
 ## What worked
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Pain points
 
-- 
-- 
-- 
+-
+-
+-
 
 ## Bugs encountered
 
-- 
-- 
+-
+-
 
 ## Documentation gaps
 
-- 
-- 
+-
+-
 
 ## Feature requests
 
-- 
-- 
+-
+-
 
 ## SDK feedback
 
-- 
+-
 
-## Overall rating (1-10): 
+## Overall rating (1-10):
 
 ---
-Last updated: 
+
+Last updated:
