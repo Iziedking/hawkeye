@@ -1,6 +1,6 @@
 # HAWKEYE Build Plan
 
-Autonomous crypto trading agent swarm for the 0G APAC Hackathon, Track 2 (Agentic Trading Arena).
+Autonomous crypto trading agent swarm for the OpenAgent Hackathon by ethGlobal.
 
 ## Current status (as of 2026-04-29)
 
