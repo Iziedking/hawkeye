@@ -23,6 +23,8 @@
   "dependencies": {
     "@0gfoundation/0g-ts-sdk": "^1.2.2",
     "@0glabs/0g-serving-broker": "^0.7.5",
-    "ethers": "^6.16.0"
+    "@anthropic-ai/sdk": "^0.91.1",
+    "@privy-io/node": "^0.16.0",
+    "ethers": "6.13.1"
   }
 }
