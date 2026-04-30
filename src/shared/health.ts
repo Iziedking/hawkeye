@@ -68,7 +68,7 @@ export function formatHealthForTelegram(): string {
   ];
 
   for (const s of h.subsystems) {
-    lines.push(`${s.ok ? "+" : "-"} ${s.name}${s.detail ? ` (${s.detail})` : ""}`);
+    lines.push(`${s.ok ? "✓" : "✗"} ${s.name}${s.detail ? ` (${s.detail})` : ""}`);
   }
 
   return lines.join("\n");

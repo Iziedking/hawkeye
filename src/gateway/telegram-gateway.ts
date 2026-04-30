@@ -313,19 +313,12 @@ export async function startTelegramGateway(
     await ctx.reply(
       [
         "<b>HAWKEYE</b> — Autonomous On-Chain Agent\n",
-        "I can help you with:",
-        "  Swap tokens across DEXes",
-        "  Research token safety and data",
-        "  Bridge assets between chains",
-        "  Provide or manage liquidity",
-        "  Track your portfolio and positions",
-        "  Find alpha: trending tokens, smart money\n",
-        "Get started:",
-        "  /wallet — Create or view your agent wallet",
+        "I can help you trade, research tokens, track portfolios, copy wallets, and find alpha across chains.\n",
+        "Quick start:",
+        "  /wallet — Create your agent wallet",
         "  /balance — Check balances across chains",
-        "  Paste a contract address to trade",
-        "  Ask me anything about crypto\n",
-        "<i>Type /help for all commands</i>",
+        "  Paste a contract address to trade\n",
+        "Use /help for the full command guide.",
       ].join("\n"),
       { parse_mode: "HTML" },
     );
@@ -392,7 +385,7 @@ export async function startTelegramGateway(
 
     await ctx.reply(`Fetching balances for ${codeAddr(addr)}...`, { parse_mode: "HTML" });
 
-    const chains = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc"];
+    const chains = ["ethereum", "sepolia", "base", "arbitrum", "optimism", "polygon", "bsc"];
     const results: string[] = [];
 
     const fetches = chains.map(async (chain) => {
@@ -870,7 +863,7 @@ export async function startTelegramGateway(
       return;
     }
 
-    // Route through LLM router (0G primary, Claude fallback, regex last resort)
+    // Route through LLM router
     const routerDeps = llm !== null ? { llm: llm as unknown as OgComputeClient } : {};
     const result = await routeMessage(
       { text, userId, channel: "telegram" as MessageChannel },
@@ -1290,7 +1283,7 @@ export async function startTelegramGateway(
       return;
     }
 
-    const chains = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc"];
+    const chains = ["ethereum", "sepolia", "base", "arbitrum", "optimism", "polygon", "bsc"];
     const fetches = chains.map(async (chain) => {
       try {
         const rpc = getChainRpc(chain);

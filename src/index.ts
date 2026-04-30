@@ -196,7 +196,7 @@ async function main(): Promise<void> {
   registerHealthCheck(() => ({
     name: "LLM",
     ok: llm !== null,
-    detail: llm ? "0G+Claude fallback" : "regex-only",
+    detail: llm ? "0G Compute" : "regex-only",
   }));
   registerHealthCheck(() => ({
     name: "Wallets",
