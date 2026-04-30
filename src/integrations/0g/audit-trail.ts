@@ -16,9 +16,14 @@ type AuditDeps = {
 };
 
 function writeStorage(storage: OgStorageClient, key: string, payload: unknown): void {
+  if (storage.circuitOpen) return;
   storage.writeJson(key, payload).then(
     (res) => console.log(`[audit] 0G Storage: ${key} → root=${res.rootHash}`),
-    (err) => console.error(`[audit] 0G Storage write failed (${key}):`, err),
+    (err) => {
+      if (!storage.circuitOpen) {
+        console.error(`[audit] 0G Storage write failed (${key}):`, (err as Error).message);
+      }
+    },
   );
 }
 

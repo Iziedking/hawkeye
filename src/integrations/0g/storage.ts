@@ -34,10 +34,16 @@ export type OgStorageClientOptions = {
   indexerUrl?: string;
 };
 
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1_000;
+
 export class OgStorageClient {
   private readonly signer: ethers.Wallet;
   private readonly indexer: Indexer;
   private readonly rpcUrl: string;
+
+  private consecutiveFailures = 0;
+  private circuitOpenSince = 0;
 
   constructor(opts: OgStorageClientOptions = {}) {
     const privateKey = opts.privateKey ?? requireEnv("HAWKEYE_EVM_PRIVATE_KEY");
@@ -49,7 +55,25 @@ export class OgStorageClient {
     this.indexer = new Indexer(indexerUrl);
   }
 
+  get circuitOpen(): boolean {
+    if (this.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return false;
+    const elapsed = Date.now() - this.circuitOpenSince;
+    if (elapsed >= CIRCUIT_BREAKER_COOLDOWN_MS) {
+      this.consecutiveFailures = 0;
+      this.circuitOpenSince = 0;
+      console.log("[0g-storage] circuit half-open — retrying writes");
+      return false;
+    }
+    return true;
+  }
+
   async writeJson(key: string, obj: unknown): Promise<OgStorageWriteResult> {
+    if (this.circuitOpen) {
+      throw new OgStorageError(
+        "INDEXER_UNREACHABLE",
+        `circuit open — skipping write for "${key}" (will retry in ${Math.ceil((CIRCUIT_BREAKER_COOLDOWN_MS - (Date.now() - this.circuitOpenSince)) / 1000)}s)`,
+      );
+    }
     const body = {
       key,
       writtenAt: Date.now(),
@@ -65,6 +89,7 @@ export class OgStorageClient {
     try {
       [tx, err] = await this.indexer.upload(mem, this.rpcUrl, this.signer);
     } catch (e) {
+      this.recordFailure();
       throw new OgStorageError(
         "INDEXER_UNREACHABLE",
         `indexer.upload threw: ${(e as Error)?.message ?? String(e)}`,
@@ -72,10 +97,12 @@ export class OgStorageClient {
       );
     }
     if (err !== null) {
+      this.recordFailure();
       throw new OgStorageError("UPLOAD_FAILED", `upload error: ${err.message}`, err);
     }
 
     if (isSingleUpload(tx)) {
+      this.consecutiveFailures = 0;
       return {
         rootHash: tx.rootHash,
         txHash: tx.txHash,
@@ -83,10 +110,21 @@ export class OgStorageClient {
         byteLength: bytes.byteLength,
       };
     }
+    this.recordFailure();
     throw new OgStorageError(
       "FRAGMENTED_UNEXPECTED",
       `upload returned fragmented result (${String((tx as { rootHashes?: string[] }).rootHashes?.length)} parts) — payload too large for single-chunk write`,
     );
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures === CIRCUIT_BREAKER_THRESHOLD) {
+      this.circuitOpenSince = Date.now();
+      console.warn(
+        `[0g-storage] circuit OPEN after ${CIRCUIT_BREAKER_THRESHOLD} consecutive failures — suppressing writes for ${CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`,
+      );
+    }
   }
 }
 

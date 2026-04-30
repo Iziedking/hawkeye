@@ -738,14 +738,18 @@ export async function startTelegramGateway(
         .join("\n"),
     );
 
-    if (storage) {
+    if (storage && !storage.circuitOpen) {
       void storage
         .writeJson(intent.intentId, intent)
         .then((res) => {
           pending.rootHash = res.rootHash;
           console.log(`[telegram] 0G audit: intent=${intent.intentId} root=${res.rootHash}`);
         })
-        .catch((err) => console.error("[telegram] 0G storage failed:", err));
+        .catch((err) => {
+          if (!storage.circuitOpen) {
+            console.error("[telegram] 0G storage failed:", (err as Error).message);
+          }
+        });
     }
   }
 
