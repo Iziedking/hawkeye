@@ -535,17 +535,10 @@ async function checkEtherscan(
         }
         distributingWallets = [...sellsByWallet.values()].filter((n) => n >= 6).length;
 
-        if (whaleAlert)
-          console.log(
-            `[research] ${address}: whale alert — single ERC-20 transfer >= 1% of supply`,
-          );
+        if (whaleAlert) console.log(`[research] ${address.slice(0, 10)}: whale alert`);
         else if (distributingWallets)
           console.log(
-            `[research] ${address}: ${distributingWallets} distributing wallet(s) detected`,
-          );
-        else
-          console.log(
-            `[research] ${address.slice(0, 8)}: EVM whale scan clean (${txns.length} txns checked)`,
+            `[research] ${address.slice(0, 10)}: ${distributingWallets} distributing wallet(s)`,
           );
       }
     }
@@ -777,14 +770,10 @@ async function checkGdelt(terms: string[]): Promise<boolean> {
           { signal: AbortSignal.timeout(8_000) },
         );
         if (!resp.ok) {
-          console.log(`[research] GDELT "${term}": HTTP ${resp.status}`);
           return false;
         }
         const body = (await resp.json()) as { articles?: unknown[] };
         const count = body.articles?.length ?? 0;
-        if (count > 0 || process.env["DEBUG_TREND"]) {
-          console.log(`[research] GDELT "${term}": ${count} article(s)`);
-        }
         return count > 0;
       } catch {
         return false;
@@ -887,7 +876,6 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
         signal: AbortSignal.timeout(8_000),
       });
       if (!resp.ok) {
-        console.log(`[research] Reddit "${label}": HTTP ${resp.status}`);
         return;
       }
       const body = (await resp.json()) as {
@@ -909,9 +897,6 @@ async function checkReddit(ticker: string, tokenName: string): Promise<string[]>
         seenPostIds.add(post.name);
         if (post.created_utc > cutoff48h && post.ups >= minUps) {
           matchedSubs.add(post.subreddit);
-          console.log(
-            `[research] Reddit hit r/${post.subreddit} ups=${post.ups} [q="${label}"]: "${post.title.slice(0, 60)}"`,
-          );
         }
       }
     } catch {
@@ -1061,8 +1046,8 @@ async function runPollingCycle(): Promise<void> {
       }
     }
 
-    if (candidates.size > 0) {
-      console.log(`[research] poll: ${candidates.size} new candidate(s)`);
+    if (candidates.size > 20) {
+      console.log(`[research] scanning ${candidates.size} candidates...`);
     }
 
     for (const [key, candidate] of candidates) {
@@ -1096,23 +1081,14 @@ async function processCandidate(address: string, chainId: DexScreenerChain): Pro
     )
       return;
 
-    console.log(
-      `[research] candidate: ${ticker} (${chainId})` +
-        ` liq=$${liquidityUsd.toFixed(0)} vol24h=$${volume24h.toFixed(0)}`,
-    );
+    // verbose candidate log removed — only log tokens that pass all filters
 
     // Stage 2: security scan
     const chainClass = detectChainClass(address);
     const security = await runSecurityScan(address, chainClass, chainId);
 
-    if (security.flags.includes("HONEYPOT")) {
-      console.log(`[research] drop ${ticker}: HONEYPOT`);
-      return;
-    }
-    if (security.flags.includes("KNOWN_RUGGER")) {
-      console.log(`[research] drop ${ticker}: KNOWN_RUGGER`);
-      return;
-    }
+    if (security.flags.includes("HONEYPOT")) return;
+    if (security.flags.includes("KNOWN_RUGGER")) return;
 
     const safetyScore = security.score;
 
@@ -1120,10 +1096,7 @@ async function processCandidate(address: string, chainId: DexScreenerChain): Pro
     // Etherscan is never touched here; the rate limiter queue is reserved for research requests.
     const pairCreatedAt = best.pairCreatedAt;
     const pairAgeHours = pairCreatedAt ? (Date.now() - pairCreatedAt) / 3_600_000 : null;
-    if (pairAgeHours !== null && pairAgeHours < 1) {
-      console.log(`[research] drop ${ticker}: pair too new (${pairAgeHours.toFixed(1)}h old)`);
-      return;
-    }
+    if (pairAgeHours !== null && pairAgeHours < 1) return;
 
     const adjustedSafetyScore = safetyScore;
 
@@ -1141,23 +1114,18 @@ async function processCandidate(address: string, chainId: DexScreenerChain): Pro
     const multiplier = computeNarrativeMultiplier(trend);
     const opportunityScore = Math.min(100, Math.round(adjustedSafetyScore * multiplier));
 
-    console.log(
-      `[research] ${ticker} opportunity=${opportunityScore}` +
-        ` (safety=${safetyScore}→${adjustedSafetyScore}×${multiplier.toFixed(2)}) trend=[${trend.sources.join(",")}]`,
-    );
-
     if (opportunityScore < ALPHA_THRESHOLD) return;
 
     // Require at least one trend signal — unless fundamentals are strong enough to stand alone.
     // holderCount not available in polling (no Etherscan); liquidity + volume gate is sufficient.
     const fundamentalsOverride = liquidityUsd > 100_000 && volume24h > 200_000;
 
-    if (trend.sources.length === 0 && !fundamentalsOverride) {
-      console.log(
-        `[research] skip ${ticker}: no trend signal, fundamentals below override threshold`,
-      );
-      return;
-    }
+    if (trend.sources.length === 0 && !fundamentalsOverride) return;
+
+    console.log(
+      `[research] ALPHA: ${ticker} (${chainId}) score=${opportunityScore}` +
+        ` safety=${safetyScore} liq=$${(liquidityUsd / 1000).toFixed(0)}k trend=[${trend.sources.join(",")}]`,
+    );
 
     const whaleWarn = "";
     const distWarn = "";

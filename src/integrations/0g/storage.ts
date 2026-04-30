@@ -41,18 +41,49 @@ export class OgStorageClient {
   private readonly signer: ethers.Wallet;
   private readonly indexer: Indexer;
   private readonly rpcUrl: string;
+  private readonly indexerUrl: string;
 
   private consecutiveFailures = 0;
   private circuitOpenSince = 0;
+  private preflight: Promise<boolean> | null = null;
 
   constructor(opts: OgStorageClientOptions = {}) {
     const privateKey = opts.privateKey ?? requireEnv("HAWKEYE_EVM_PRIVATE_KEY");
     this.rpcUrl = opts.rpcUrl ?? envOr("OG_RPC_URL", DEFAULT_RPC_URL);
-    const indexerUrl = opts.indexerUrl ?? envOr("OG_INDEXER_URL", DEFAULT_INDEXER_URL);
+    this.indexerUrl = opts.indexerUrl ?? envOr("OG_INDEXER_URL", DEFAULT_INDEXER_URL);
 
     const provider = new ethers.JsonRpcProvider(this.rpcUrl);
     this.signer = new ethers.Wallet(privateKey, provider);
-    this.indexer = new Indexer(indexerUrl);
+    this.indexer = new Indexer(this.indexerUrl);
+
+    this.preflight = this.checkIndexerHealth();
+  }
+
+  private async checkIndexerHealth(): Promise<boolean> {
+    try {
+      const resp = await fetch(this.indexerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "indexer_getStatus", params: [], id: 1 }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!resp.ok) {
+        console.warn(
+          `[0g-storage] indexer health check failed: HTTP ${resp.status} — disabling writes`,
+        );
+        this.consecutiveFailures = CIRCUIT_BREAKER_THRESHOLD;
+        this.circuitOpenSince = Date.now();
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn(
+        `[0g-storage] indexer unreachable: ${(err as Error).message} — disabling writes`,
+      );
+      this.consecutiveFailures = CIRCUIT_BREAKER_THRESHOLD;
+      this.circuitOpenSince = Date.now();
+      return false;
+    }
   }
 
   get circuitOpen(): boolean {
@@ -68,6 +99,10 @@ export class OgStorageClient {
   }
 
   async writeJson(key: string, obj: unknown): Promise<OgStorageWriteResult> {
+    if (this.preflight !== null) {
+      await this.preflight;
+      this.preflight = null;
+    }
     if (this.circuitOpen) {
       throw new OgStorageError(
         "INDEXER_UNREACHABLE",
@@ -86,9 +121,15 @@ export class OgStorageClient {
 
     let tx: unknown;
     let err: Error | null;
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = () => {};
+    console.error = () => {};
     try {
       [tx, err] = await this.indexer.upload(mem, this.rpcUrl, this.signer);
     } catch (e) {
+      console.log = origLog;
+      console.error = origErr;
       this.recordFailure();
       throw new OgStorageError(
         "INDEXER_UNREACHABLE",
@@ -96,6 +137,8 @@ export class OgStorageClient {
         e,
       );
     }
+    console.log = origLog;
+    console.error = origErr;
     if (err !== null) {
       this.recordFailure();
       throw new OgStorageError("UPLOAD_FAILED", `upload error: ${err.message}`, err);

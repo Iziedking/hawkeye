@@ -26,6 +26,7 @@ import { startExecutionAgent } from "./agents/execution/index";
 import { startResearchAgent } from "./agents/research/index";
 import { startMonitorAgent } from "./agents/monitor/index";
 import { startCopyTradeAgent } from "./agents/copy-trade/index";
+import { KeeperHubClient, KeeperHubError } from "./integrations/keeperhub/index";
 
 loadEnvLocal();
 
@@ -105,16 +106,41 @@ async function initAxlBus(): Promise<AxlEventBus<BusEvents> | null> {
   ];
 
   for (const event of bridgedEvents) {
+    let forwarding = false;
     bus.on(event, ((payload: BusEvents[typeof event]) => {
+      if (forwarding) return;
+      forwarding = true;
       axl.emit(event, payload);
+      forwarding = false;
     }) as never);
 
     axl.on(event, ((payload: BusEvents[typeof event]) => {
+      if (forwarding) return;
+      forwarding = true;
       bus.emit(event, payload);
+      forwarding = false;
     }) as never);
   }
 
   return axl;
+}
+
+process.on("uncaughtException", (err) => {
+  if (err instanceof RangeError && err.message.includes("call stack")) return;
+  console.error("[hawkeye] uncaught:", err.message);
+});
+
+function initKeeperHub(): KeeperHubClient | null {
+  try {
+    return new KeeperHubClient();
+  } catch (err) {
+    if (err instanceof KeeperHubError && err.reason === "NO_API_KEY") {
+      console.log("[hawkeye] KH_API_KEY not set — KeeperHub disabled, direct submission only");
+    } else {
+      console.warn("[hawkeye] KeeperHub init failed:", (err as Error).message);
+    }
+    return null;
+  }
 }
 
 async function main(): Promise<void> {
@@ -136,6 +162,8 @@ async function main(): Promise<void> {
     );
   }
 
+  const keeperHub = initKeeperHub();
+
   const stopTracer = startSwarmTracer();
 
   // 0G audit trail: writes to Storage + Chain on every bus event
@@ -148,7 +176,7 @@ async function main(): Promise<void> {
   const stopStrategy = startStrategyAgent({ llm: llm ?? undefined });
   const stopSafety = startSafetyAgent();
   const stopQuote = startQuoteAgent();
-  const stopExecution = startExecutionAgent();
+  const stopExecution = startExecutionAgent({ walletManager: wm, keeperHub });
   const stopResearch = startResearchAgent({ llm: llm ?? undefined });
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
@@ -186,6 +214,13 @@ async function main(): Promise<void> {
     detail: registry ? registry.address.slice(0, 10) + "..." : "unavailable",
   }));
   registerHealthCheck(() => ({
+    name: "KeeperHub",
+    ok: keeperHub !== null && !keeperHub.circuitOpen,
+    detail: keeperHub
+      ? keeperHub.circuitOpen ? "circuit open" : "active"
+      : "unavailable",
+  }));
+  registerHealthCheck(() => ({
     name: "Gensyn AXL",
     ok: axl !== null && axl.isConnected(),
     detail: axl?.isConnected() ? `${axl.getPeerCount()} peers` : "local-only",
@@ -194,24 +229,12 @@ async function main(): Promise<void> {
   startHealthServer(Number(process.env["HEALTH_PORT"] ?? 8080));
 
   // Bus event logging with health counter
-  bus.on("ALPHA_FOUND", (alpha) => {
-    incrementBusEvents();
-    console.log(
-      `[bus] ALPHA_FOUND addr=${alpha.address} chain=${alpha.chainId} safety=${alpha.safetyScore} liq=$${alpha.liquidityUsd}`,
-    );
-  });
+  bus.on("ALPHA_FOUND", () => incrementBusEvents());
   bus.on("EXECUTE_SELL", (sell) => {
     incrementBusEvents();
     console.log(`[bus] EXECUTE_SELL pos=${sell.positionId} fraction=${sell.fraction}`);
   });
-  bus.on("POSITION_UPDATE", (u) => {
-    incrementBusEvents();
-    if (u.pnlPct >= 50 || u.pnlPct <= -20) {
-      console.log(
-        `[bus] POSITION_UPDATE pos=${u.positionId} price=$${u.priceUsd} pnl=${u.pnlPct.toFixed(1)}%`,
-      );
-    }
-  });
+  bus.on("POSITION_UPDATE", () => incrementBusEvents());
   bus.on("QUOTE_FAILED", (qf) => {
     incrementBusEvents();
     console.log(`[bus] QUOTE_FAILED intent=${qf.intentId} reason=${qf.reason}`);

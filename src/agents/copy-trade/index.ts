@@ -283,8 +283,26 @@ function disconnectWallet(address: string): void {
 export function startCopyTradeAgent(): { stop(): void } {
   console.log("[copy-trade] agent started");
 
+  const onAddWallet = (wallet: WatchedWallet): void => {
+    const addr = wallet.address.toLowerCase();
+    if (!watchedWallets.has(addr)) {
+      watchedWallets.set(addr, wallet);
+      connectWallet(wallet);
+      console.log(`[copy-trade] wallet added via bus: ${addr}`);
+    }
+  };
+
+  const onRemoveWallet = (address: string): void => {
+    disconnectWallet(address);
+  };
+
+  bus.on("ADD_WATCHED_WALLET", onAddWallet);
+  bus.on("REMOVE_WATCHED_WALLET", onRemoveWallet);
+
   return {
     stop(): void {
+      bus.off("ADD_WATCHED_WALLET", onAddWallet);
+      bus.off("REMOVE_WATCHED_WALLET", onRemoveWallet);
       for (const addr of watchedWallets.keys()) {
         disconnectWallet(addr);
       }

@@ -279,6 +279,13 @@ export type WatchedWallet = {
   chain?: ChainClass;
 };
 
+export type UserConfirmedPayload = {
+  intentId: string;
+  confirmed: boolean;
+  userId: string;
+  at: number;
+};
+
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",
   SAFETY_RESULT: "SAFETY_RESULT",
@@ -297,6 +304,7 @@ export const EVENT_NAMES = {
   QUOTE_FAILED: "QUOTE_FAILED",
   ADD_WATCHED_WALLET: "ADD_WATCHED_WALLET",
   REMOVE_WATCHED_WALLET: "REMOVE_WATCHED_WALLET",
+  USER_CONFIRMED: "USER_CONFIRMED",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -328,4 +336,5 @@ export type BusEvents = {
   QUOTE_FAILED: QuoteFailedPayload;
   ADD_WATCHED_WALLET: WatchedWallet;
   REMOVE_WATCHED_WALLET: string;
+  USER_CONFIRMED: UserConfirmedPayload;
 };

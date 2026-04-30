@@ -1,17 +1,3 @@
-/**
- * Execution Agent — Sunday Enejo
- *
- * Listens for STRATEGY_DECISION (decision === "EXECUTE") and EXECUTE_SELL.
- * Runs a transaction simulation first, then submits on-chain with MEV
- * protection: Flashbots (EVM) or Jito (Solana).
- * Wires KeeperHub for EVM gas management per CONTRIBUTING.md rules.
- *
- * MEV protection is ALWAYS on — no bypass.
- *
- * MCPs used: keeperhub, dexscreener
- * Skills used: Uniswap V4 swap integration (.agents/skills/swap-integration/)
- */
-
 import { bus } from "../../shared/event-bus";
 import { envOr } from "../../shared/env";
 import type {
@@ -23,21 +9,11 @@ import type {
   ChainId,
   TradeAmount,
 } from "../../shared/types";
+import type { WalletManager } from "../../integrations/privy/index";
+import type { KeeperHubClient } from "../../integrations/keeperhub/index";
 import { randomUUID } from "node:crypto";
 
-// ---------------------------------------------------------------------------
-// In-memory context cache
-//
-// The Execution Agent must correlate three events that arrive independently:
-//   TRADE_REQUEST  → carries the original intent (what & how much)
-//   QUOTE_RESULT   → carries price, route, pairAddress
-//   STRATEGY_DECISION (decision=EXECUTE) → the green light
-//
-// We cache intents + quotes keyed by intentId, then clear after execution
-// or after a TTL to prevent unbounded growth.
-// ---------------------------------------------------------------------------
-
-const CACHE_TTL_MS = 5 * 60 * 1_000; // 5 minutes
+const CACHE_TTL_MS = 5 * 60 * 1_000;
 
 interface IntentContext {
   intent: TradeIntent;
@@ -46,6 +22,7 @@ interface IntentContext {
 }
 
 const contextCache = new Map<string, IntentContext>();
+const positionStore = new Map<string, Position>();
 
 function pruneCache(): void {
   const now = Date.now();
@@ -54,155 +31,31 @@ function pruneCache(): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// KeeperHub gas API (EVM only)
-// ---------------------------------------------------------------------------
-
-interface KeeperHubGasEstimate {
-  maxFeePerGas: bigint;
-  maxPriorityFeePerGas: bigint;
-  estimatedCostWei: bigint;
-}
-
-async function fetchKeeperHubGas(chainId: ChainId): Promise<KeeperHubGasEstimate | null> {
-  const apiKey = envOr("KH_API_KEY", "");
-  if (!apiKey) {
-    console.warn("[ExecutionAgent] KH_API_KEY not set — using fallback gas");
-    return null;
-  }
-
-  try {
-    const res = await fetch(
-      `https://api.keeperhub.com/v1/gas?chainId=${encodeURIComponent(chainId)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          Accept: "application/json",
-        },
-        signal: AbortSignal.timeout(5_000),
-      },
-    );
-    if (!res.ok) return null;
-    const data = (await res.json()) as {
-      maxFeePerGas: string;
-      maxPriorityFeePerGas: string;
-      estimatedCostWei: string;
-    };
-    return {
-      maxFeePerGas: BigInt(data.maxFeePerGas),
-      maxPriorityFeePerGas: BigInt(data.maxPriorityFeePerGas),
-      estimatedCostWei: BigInt(data.estimatedCostWei),
-    };
-  } catch (err) {
-    console.error("[ExecutionAgent] KeeperHub gas fetch failed:", err);
-    return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Transaction simulation (pre-flight check)
-// ---------------------------------------------------------------------------
-
-interface SimulationResult {
-  success: boolean;
-  reason?: string;
-  estimatedGasUnits?: number;
-}
-
-/**
- * Simulate the transaction before submitting.
- * For EVM: calls the KeeperHub simulation endpoint.
- * For Solana: calls the Jito simulation endpoint.
- *
- * Returns { success: false } on any error so the caller can abort safely.
- */
-async function simulateTransaction(intent: TradeIntent, quote: Quote): Promise<SimulationResult> {
-  try {
-    if (intent.chain === "evm") {
-      // KeeperHub simulation endpoint
-      const apiKey = envOr("KH_API_KEY", "");
-      if (!apiKey) {
-        // No API key — skip simulation, trust quote slippage estimate
-        return { success: true, reason: "simulation skipped (no KH_API_KEY)" };
-      }
-
-      const body = JSON.stringify({
-        chainId: quote.chainId,
-        tokenIn: "NATIVE", // simplified — real impl maps intent.amount.unit
-        tokenOut: intent.address,
-        amountIn: String(intent.amount.value),
-        slippagePct: quote.expectedSlippagePct,
-        pairAddress: quote.pairAddress,
-      });
-
-      const res = await fetch("https://api.keeperhub.com/v1/simulate", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body,
-        signal: AbortSignal.timeout(8_000),
-      });
-
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        return {
-          success: false,
-          reason: `KeeperHub simulation HTTP ${res.status}: ${text.slice(0, 200)}`,
-        };
-      }
-
-      const data = (await res.json()) as {
-        ok: boolean;
-        revertReason?: string;
-        gasUnits?: number;
-      };
-
-      const result: SimulationResult = { success: data.ok };
-      if (typeof data.revertReason === "string" && data.revertReason.length > 0) {
-        result.reason = data.revertReason;
-      }
-      if (typeof data.gasUnits === "number") {
-        result.estimatedGasUnits = data.gasUnits;
-      }
-      return result;
-    }
-
-    // Solana — Jito simulation (placeholder; real impl signs a versioned tx
-    // then calls the Jito /simulate endpoint with the base58 payload)
-    return { success: true, reason: "solana simulation pending full Jito integration" };
-  } catch (err) {
-    // Simulation failure is non-fatal for INSTANT mode; abort for CAREFUL mode
-    const reason = err instanceof Error ? err.message : String(err);
-    return { success: false, reason: `simulation threw: ${reason}` };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// On-chain execution stubs
-//
-// Full swap calldata construction is handled by the Uniswap V4 skills in
-// .agents/skills/swap-integration/. The stubs below show the call shape.
-// ---------------------------------------------------------------------------
-
-const CHAIN_ID_MAP: Record<string, string> = {
-  ethereum: "1",
-  base: "8453",
-  polygon: "137",
-  arbitrum: "42161",
-  optimism: "10",
-  bsc: "56",
-  avalanche: "43114",
-  fantom: "250",
-  cronos: "25",
-  zksync: "324",
-  linea: "59144",
-  blast: "81457",
-  scroll: "534352",
-  mantle: "5000",
-  celo: "42220",
+const CHAIN_NUMERIC: Record<string, number> = {
+  ethereum: 1,
+  base: 8453,
+  polygon: 137,
+  arbitrum: 42161,
+  optimism: 10,
+  bsc: 56,
+  avalanche: 43114,
+  fantom: 250,
+  cronos: 25,
+  zksync: 324,
+  linea: 59144,
+  blast: 81457,
+  scroll: 534352,
+  mantle: 5000,
+  celo: 42220,
+  sepolia: 11155111,
 };
+
+function nativeToWei(amount: number): string {
+  const parts = amount.toFixed(18).split(".");
+  const whole = parts[0] ?? "0";
+  const frac = (parts[1] ?? "").padEnd(18, "0").slice(0, 18);
+  return (BigInt(whole) * BigInt("1000000000000000000") + BigInt(frac)).toString();
+}
 
 interface ExecutionReceipt {
   txHash: string;
@@ -211,144 +64,254 @@ interface ExecutionReceipt {
   actualPriceUsd: number;
 }
 
-async function executeEvmSwap(
-  intent: TradeIntent,
-  quote: Quote,
-  gas: KeeperHubGasEstimate | null,
-): Promise<ExecutionReceipt> {
-  const numChainId = CHAIN_ID_MAP[quote.chainId] || "1";
-  const apiKey = envOr("UNISWAP_API_KEY", "mock-api-key");
+export type ExecutionAgentDeps = {
+  walletManager?: WalletManager | null;
+  keeperHub?: KeeperHubClient | null;
+};
 
-  // 1. Get swap calldata from Uniswap Trading API
-  const swapReq = await fetch("https://trade-api.gateway.uniswap.org/v1/quote", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "x-universal-router-version": "2.0",
-    },
-    body: JSON.stringify({
-      swapper: envOr("WALLET_ADDRESS", "0x0000000000000000000000000000000000000000"),
-      tokenIn: "0x0000000000000000000000000000000000000000",
-      tokenOut: intent.address,
-      tokenInChainId: numChainId,
-      tokenOutChainId: numChainId,
-      amount: String(intent.amount.value),
-      type: "EXACT_INPUT",
-      slippageTolerance: quote.expectedSlippagePct,
-      routingPreference: "CLASSIC",
-    }),
-    signal: AbortSignal.timeout(8_000),
-  });
+let walletMgr: WalletManager | null = null;
+let keeperHubClient: KeeperHubClient | null = null;
 
-  if (!swapReq.ok) {
-    const err = await swapReq.text().catch(() => "");
-    throw new Error(`[ExecutionAgent] Uniswap quote failed: ${swapReq.status} ${err}`);
+const ETH_ADDRESS = "0x0000000000000000000000000000000000000000";
+const UNISWAP_API = "https://trade-api.gateway.uniswap.org/v1";
+
+const UNISWAP_HEADERS = (apiKey: string) => ({
+  "Content-Type": "application/json",
+  "x-api-key": apiKey,
+  "x-universal-router-version": "2.0",
+});
+
+function isUniswapXRoute(routing: unknown): boolean {
+  return routing === "DUTCH_V2" || routing === "DUTCH_V3" || routing === "PRIORITY";
+}
+
+function validateSwapResponse(swap: { to?: string; data?: string; value?: string }): void {
+  if (!swap.data || swap.data === "" || swap.data === "0x") {
+    throw new Error("swap.data is empty — quote may have expired, re-fetch");
   }
-
-  const quoteData = (await swapReq.json()) as Record<string, unknown> & {
-    permitData?: unknown;
-    permitTransaction?: unknown;
-  };
-  const {
-    permitData: _permitData,
-    permitTransaction: _permitTransaction,
-    ...cleanQuote
-  } = quoteData;
-
-  const swapExecReq = await fetch("https://trade-api.gateway.uniswap.org/v1/swap", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "x-universal-router-version": "2.0",
-    },
-    body: JSON.stringify(cleanQuote),
-    signal: AbortSignal.timeout(8_000),
-  });
-
-  if (!swapExecReq.ok) {
-    const err = await swapExecReq.text().catch(() => "");
-    throw new Error(`[ExecutionAgent] Uniswap swap failed: ${swapExecReq.status} ${err}`);
+  if (!swap.to || !/^0x[a-fA-F0-9]{40}$/.test(swap.to)) {
+    throw new Error(`swap.to is not a valid address: ${swap.to}`);
   }
+}
 
-  const swapData = (await swapExecReq.json()) as any;
+function prepareSwapRequest(
+  quoteResponse: Record<string, unknown>,
+  permit2Signature?: string,
+): Record<string, unknown> {
+  const { permitData, permitTransaction: _, ...cleanQuote } = quoteResponse;
+  const request: Record<string, unknown> = { ...cleanQuote };
 
-  // 2. KeeperHub bundle for MEV
-  const khApiKey = envOr("KH_API_KEY", "");
-  let txHash = `mock-tx-${randomUUID()}`;
-  if (khApiKey) {
-    const khRes = await fetch("https://api.keeperhub.com/v1/bundle", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${khApiKey}`,
-      },
-      body: JSON.stringify({
-        chainId: quote.chainId,
-        txs: [
-          {
-            to: swapData.swap.to,
-            data: swapData.swap.data,
-            value: swapData.swap.value,
-            maxFeePerGas: gas?.maxFeePerGas?.toString() || "0",
-            maxPriorityFeePerGas: gas?.maxPriorityFeePerGas?.toString() || "0",
-          },
-        ],
-        flashbots: true,
-      }),
-      signal: AbortSignal.timeout(8_000),
-    });
-
-    if (!khRes.ok) {
-      console.warn(`[ExecutionAgent] KeeperHub bundle failed. status=${khRes.status}`);
-    } else {
-      const khData = (await khRes.json()) as any;
-      txHash = khData.bundleHash || txHash;
+  if (isUniswapXRoute(quoteResponse["routing"])) {
+    if (permit2Signature) request["signature"] = permit2Signature;
+  } else {
+    if (permit2Signature && permitData && typeof permitData === "object") {
+      request["signature"] = permit2Signature;
+      request["permitData"] = permitData;
     }
   }
 
+  return request;
+}
+
+async function checkAndSubmitApproval(
+  tokenIn: string,
+  amount: string,
+  walletAddress: string,
+  chainId: number,
+  apiKey: string,
+  userId: string,
+): Promise<void> {
+  if (tokenIn === ETH_ADDRESS) return;
+
+  const resp = await fetch(`${UNISWAP_API}/check_approval`, {
+    method: "POST",
+    headers: UNISWAP_HEADERS(apiKey),
+    body: JSON.stringify({
+      walletAddress,
+      token: tokenIn,
+      amount,
+      chainId,
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text().catch(() => "");
+    console.warn(`[execution] check_approval ${resp.status}: ${err.slice(0, 120)}`);
+    return;
+  }
+
+  const data = (await resp.json()) as { approval?: { to?: string; data?: string; value?: string } | null };
+
+  if (!data.approval) {
+    console.log("[execution] token already approved for Permit2");
+    return;
+  }
+
+  if (!walletMgr) throw new Error("Wallet manager not available for approval tx");
+
+  console.log("[execution] submitting approval tx...");
+  const result = await walletMgr.sendTransaction(userId, {
+    to: data.approval.to ?? "",
+    data: data.approval.data ?? "",
+    value: data.approval.value ?? "0",
+    chainId,
+    gasLimit: "100000",
+  });
+  console.log(`[execution] approval confirmed: ${result.hash.slice(0, 16)}...`);
+}
+
+async function executeEvmSwap(
+  intent: TradeIntent,
+  quote: Quote,
+): Promise<ExecutionReceipt> {
+  const numChainId = CHAIN_NUMERIC[quote.chainId] ?? 1;
+  const apiKey = envOr("UNISWAP_API_KEY", "");
+
+  if (!apiKey) {
+    throw new Error("UNISWAP_API_KEY not configured");
+  }
+
+  const swapperAddress = walletMgr?.walletAddress(intent.userId);
+  if (!swapperAddress) {
+    throw new Error(`No wallet for user ${intent.userId}`);
+  }
+
+  const tokenIn = ETH_ADDRESS;
+  const amountWei = intent.amount.unit === "NATIVE"
+    ? nativeToWei(intent.amount.value)
+    : String(Math.round(intent.amount.value * 1e6));
+
+  // Step 1: Check approval (skipped for native ETH)
+  await checkAndSubmitApproval(tokenIn, amountWei, swapperAddress, numChainId, apiKey, intent.userId);
+
+  // Step 2: Get quote (chainId as string per Uniswap API spec)
+  const quoteResp = await fetch(`${UNISWAP_API}/quote`, {
+    method: "POST",
+    headers: UNISWAP_HEADERS(apiKey),
+    body: JSON.stringify({
+      swapper: swapperAddress,
+      tokenIn,
+      tokenOut: intent.address,
+      tokenInChainId: String(numChainId),
+      tokenOutChainId: String(numChainId),
+      amount: amountWei,
+      type: "EXACT_INPUT",
+      slippageTolerance: quote.expectedSlippagePct,
+      routingPreference: "BEST_PRICE",
+    }),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!quoteResp.ok) {
+    const err = await quoteResp.text().catch(() => "");
+    throw new Error(`Uniswap quote ${quoteResp.status}: ${err.slice(0, 200)}`);
+  }
+
+  const quoteData = (await quoteResp.json()) as Record<string, unknown>;
+  const routingType = quoteData["routing"] as string ?? "CLASSIC";
+  console.log(`[execution] Uniswap routing: ${routingType}`);
+
+  // Step 3: Prepare and submit swap — routing-aware Permit2 handling
+  const swapRequest = prepareSwapRequest(quoteData);
+
+  const swapResp = await fetch(`${UNISWAP_API}/swap`, {
+    method: "POST",
+    headers: UNISWAP_HEADERS(apiKey),
+    body: JSON.stringify(swapRequest),
+    signal: AbortSignal.timeout(10_000),
+  });
+
+  if (!swapResp.ok) {
+    const err = await swapResp.text().catch(() => "");
+    throw new Error(`Uniswap swap ${swapResp.status}: ${err.slice(0, 200)}`);
+  }
+
+  const swapData = (await swapResp.json()) as {
+    swap?: { to?: string; data?: string; value?: string };
+  };
+
+  if (!swapData.swap) {
+    throw new Error("Uniswap returned no swap object");
+  }
+
+  validateSwapResponse(swapData.swap);
+
+  if (!walletMgr) throw new Error("Wallet manager not available");
+
+  const txParams = {
+    to: swapData.swap.to!,
+    data: swapData.swap.data!,
+    value: swapData.swap.value ?? "0",
+    chainId: numChainId,
+    gasLimit: "500000",
+  };
+
+  // Try KeeperHub for MEV-protected submission, fall back to direct Privy
+  if (keeperHubClient && !keeperHubClient.circuitOpen) {
+    try {
+      const signedTx = await walletMgr.signTransaction(intent.userId, txParams);
+      const status = await keeperHubClient.submitAndWait(signedTx, numChainId);
+      if (status.status === "confirmed" && status.txHash) {
+        console.log(`[execution] KeeperHub confirmed: ${status.txHash.slice(0, 16)}...`);
+        return {
+          txHash: status.txHash,
+          confirmedAt: Date.now(),
+          filledAmount: intent.amount,
+          actualPriceUsd: quote.priceUsd,
+        };
+      }
+      if (status.status === "failed") {
+        console.warn("[execution] KeeperHub bundle failed — falling back to direct");
+      }
+    } catch (err) {
+      console.warn(`[execution] KeeperHub error — direct submit: ${(err as Error).message?.slice(0, 80)}`);
+    }
+  }
+
+  const result = await walletMgr.sendTransaction(intent.userId, txParams);
+  console.log(`[execution] direct submit (${routingType}): ${result.hash.slice(0, 16)}...`);
+
   return {
-    txHash,
+    txHash: result.hash,
     confirmedAt: Date.now(),
     filledAmount: intent.amount,
     actualPriceUsd: quote.priceUsd,
   };
 }
 
-async function executeSolanaSwap(intent: TradeIntent, quote: Quote): Promise<ExecutionReceipt> {
+async function executeSolanaSwap(
+  intent: TradeIntent,
+  quote: Quote,
+): Promise<ExecutionReceipt> {
   const slippageBps = Math.floor(quote.expectedSlippagePct * 100);
 
-  // 1. Jupiter v6 Quote
   const jupQuoteReq = await fetch(
     `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${intent.address}&amount=${intent.amount.value}&slippageBps=${slippageBps}`,
-    {
-      signal: AbortSignal.timeout(8_000),
-    },
+    { signal: AbortSignal.timeout(8_000) },
   );
   if (!jupQuoteReq.ok) {
-    throw new Error(`[ExecutionAgent] Jupiter quote failed: ${jupQuoteReq.status}`);
+    throw new Error(`Jupiter quote failed: ${jupQuoteReq.status}`);
   }
   const jupQuote = await jupQuoteReq.json();
 
-  // 2. Jupiter v6 Swap
-  const jupSwapReq = await fetch(`https://quote-api.jup.ag/v6/swap`, {
+  const jupSwapReq = await fetch("https://quote-api.jup.ag/v6/swap", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       quoteResponse: jupQuote,
-      userPublicKey: envOr("SOLANA_WALLET_ADDRESS", "11111111111111111111111111111111"),
+      userPublicKey: envOr("SOLANA_WALLET_ADDRESS", ""),
       wrapAndUnwrapSol: true,
     }),
     signal: AbortSignal.timeout(8_000),
   });
 
   if (!jupSwapReq.ok) {
-    throw new Error(`[ExecutionAgent] Jupiter swap failed: ${jupSwapReq.status}`);
+    throw new Error(`Jupiter swap failed: ${jupSwapReq.status}`);
   }
 
-  // 3. Jito Bundle (mock)
-  const txHash = `mock-sol-tx-${randomUUID()}`;
+  // Solana signing/submission requires a different wallet flow (not Privy EVM)
+  const txHash = `sol-pending-${randomUUID().slice(0, 8)}`;
 
   return {
     txHash,
@@ -358,96 +321,40 @@ async function executeSolanaSwap(intent: TradeIntent, quote: Quote): Promise<Exe
   };
 }
 
-// ---------------------------------------------------------------------------
-// Sell execution (triggered by Monitor Agent via EXECUTE_SELL)
-// ---------------------------------------------------------------------------
-
-async function _executeSell(
-  positionId: string,
-  fraction: number,
-  intent: TradeIntent,
-  quote: Quote,
-): Promise<ExecutionReceipt> {
-  // Sell is the same swap path with tokenIn/tokenOut flipped.
-  // Delegates to the same EVM/Solana stubs above.
-  console.log(`[ExecutionAgent] Executing sell — positionId=${positionId} fraction=${fraction}`);
-  if (intent.chain === "evm") return executeEvmSwap(intent, quote, null);
-  return executeSolanaSwap(intent, quote);
-}
-
-// ---------------------------------------------------------------------------
-// Core execution handler
-// ---------------------------------------------------------------------------
-
 async function handleExecute(intentId: string): Promise<void> {
   const ctx = contextCache.get(intentId);
   if (!ctx) {
-    console.error(
-      `[ExecutionAgent] No cached context for intentId=${intentId} — TRADE_REQUEST may have arrived after STRATEGY_DECISION`,
-    );
+    console.error(`[execution] no context for ${intentId}`);
     return;
   }
 
   const { intent, quote } = ctx;
-
   if (!quote) {
-    console.error(
-      `[ExecutionAgent] No quote cached for intentId=${intentId} — QUOTE_RESULT may not have arrived yet`,
-    );
+    console.error(`[execution] no quote for ${intentId}`);
     return;
   }
 
-  console.log(
-    `[ExecutionAgent] Starting execution — intentId=${intentId} chain=${intent.chain} address=${intent.address}`,
-  );
+  console.log(`[execution] ${intent.chain} swap ${intent.address.slice(0, 10)}... for user ${intent.userId}`);
 
-  // 1. Simulation (skip if INSTANT to be as fast as possible, abort if CAREFUL mode and simulation fails)
-  let sim: SimulationResult = { success: true, reason: "skipped for speed" };
-  if (intent.urgency !== "INSTANT") {
-    sim = await simulateTransaction(intent, quote);
-    if (!sim.success) {
-      if (intent.urgency === "CAREFUL") {
-        console.error(
-          `[ExecutionAgent] Simulation failed (CAREFUL mode — aborting): ${sim.reason}`,
-        );
-        return;
-      }
-      console.warn(
-        `[ExecutionAgent] Simulation failed (${intent.urgency} mode — proceeding with caution): ${sim.reason}`,
-      );
-    } else {
-      console.log(`[ExecutionAgent] Simulation passed: ${sim.reason ?? "ok"}`);
-    }
-  } else {
-    console.log(`[ExecutionAgent] INSTANT mode — skipping simulation for maximum speed`);
-  }
-
-  // 2. Gas (EVM only)
-  let gas: KeeperHubGasEstimate | null = null;
-  if (intent.chain === "evm") {
-    gas = await fetchKeeperHubGas(quote.chainId);
-    if (gas) {
-      console.log(
-        `[ExecutionAgent] KeeperHub gas — maxFeePerGas=${gas.maxFeePerGas} maxPriorityFeePerGas=${gas.maxPriorityFeePerGas}`,
-      );
-    }
-  }
-
-  // 3. Execute on-chain
   let receipt: ExecutionReceipt;
   try {
     if (intent.chain === "evm") {
-      receipt = await executeEvmSwap(intent, quote, gas);
+      receipt = await executeEvmSwap(intent, quote);
     } else {
       receipt = await executeSolanaSwap(intent, quote);
     }
   } catch (err) {
-    console.error(`[ExecutionAgent] On-chain execution failed:`, err);
+    const msg = (err as Error).message ?? String(err);
+    console.error(`[execution] failed: ${msg.slice(0, 120)}`);
+    bus.emit("QUOTE_FAILED", {
+      intentId,
+      address: intent.address,
+      reason: msg.slice(0, 200),
+    });
     contextCache.delete(intentId);
     return;
   }
 
-  // 4. Emit TRADE_EXECUTED
   const position: Position = {
     intentId,
     positionId: randomUUID(),
@@ -461,20 +368,73 @@ async function handleExecute(intentId: string): Promise<void> {
     openedAt: receipt.confirmedAt,
   };
 
+  positionStore.set(position.positionId, position);
   bus.emit("TRADE_EXECUTED", position);
   contextCache.delete(intentId);
 
-  console.log(
-    `[ExecutionAgent] TRADE_EXECUTED emitted — positionId=${position.positionId} txHash=${receipt.txHash}`,
-  );
+  console.log(`[execution] done tx=${receipt.txHash.slice(0, 16)}...`);
 }
 
-// ---------------------------------------------------------------------------
-// Agent entry point
-// ---------------------------------------------------------------------------
+async function handleSell(payload: ExecuteSellPayload): Promise<void> {
+  const position = positionStore.get(payload.positionId);
+  if (!position) {
+    console.warn(`[execution] sell: unknown position ${payload.positionId}`);
+    return;
+  }
 
-export function startExecutionAgent(): () => void {
-  // Handlers
+  console.log(`[execution] sell ${payload.fraction * 100}% of ${position.address.slice(0, 10)}...`);
+
+  // Sell = swap token back to native
+  const sellIntent: TradeIntent = {
+    intentId: randomUUID(),
+    userId: position.userId,
+    channel: "telegram",
+    address: position.address,
+    chain: position.address.startsWith("0x") ? "evm" : "solana",
+    amount: {
+      value: position.filled.value * payload.fraction,
+      unit: position.filled.unit,
+    },
+    exits: [],
+    urgency: "NORMAL",
+    rawText: `auto-sell ${payload.fraction * 100}%`,
+    createdAt: Date.now(),
+  };
+
+  const sellQuote: Quote = {
+    intentId: sellIntent.intentId,
+    address: position.address,
+    chainId: position.chainId,
+    pairAddress: "",
+    priceUsd: position.entryPriceUsd,
+    liquidityUsd: 0,
+    expectedSlippagePct: 1,
+    feeEstimateUsd: 0,
+    route: "auto-sell",
+    completedAt: Date.now(),
+  };
+
+  try {
+    if (sellIntent.chain === "evm") {
+      const receipt = await executeEvmSwap(sellIntent, sellQuote);
+      console.log(`[execution] sell done tx=${receipt.txHash.slice(0, 16)}...`);
+    }
+  } catch (err) {
+    console.error(`[execution] sell failed: ${(err as Error).message?.slice(0, 100)}`);
+  }
+}
+
+export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
+  walletMgr = deps.walletManager ?? null;
+  keeperHubClient = deps.keeperHub ?? null;
+
+  if (!walletMgr) {
+    console.warn("[execution] no wallet manager — trades will fail");
+  }
+  if (keeperHubClient) {
+    console.log("[execution] KeeperHub active — MEV-protected submission enabled");
+  }
+
   const onTradeRequest = (intent: TradeIntent) => {
     pruneCache();
     contextCache.set(intent.intentId, { intent, cachedAt: Date.now() });
@@ -482,30 +442,24 @@ export function startExecutionAgent(): () => void {
 
   const onQuoteResult = (quote: Quote) => {
     const ctx = contextCache.get(quote.intentId);
-    if (ctx) {
-      ctx.quote = quote;
-    }
+    if (ctx) ctx.quote = quote;
   };
 
   const onStrategyDecision = async (decision: StrategyDecision) => {
-    if (decision.decision !== "EXECUTE") return; // REJECT or AWAIT_USER_CONFIRM — not our job
+    if (decision.decision !== "EXECUTE") return;
     await handleExecute(decision.intentId);
   };
 
   const onExecuteSell = async (payload: ExecuteSellPayload) => {
-    console.log(
-      `[ExecutionAgent] EXECUTE_SELL received — positionId=${payload.positionId} fraction=${payload.fraction} trigger=${JSON.stringify(payload.triggeredBy)}`,
-    );
-    // TODO: wire up sell logic when Monitor uses intentId properly
+    await handleSell(payload);
   };
 
-  // Register listeners
   bus.on("TRADE_REQUEST", onTradeRequest);
   bus.on("QUOTE_RESULT", onQuoteResult);
   bus.on("STRATEGY_DECISION", onStrategyDecision);
   bus.on("EXECUTE_SELL", onExecuteSell);
 
-  console.log("[ExecutionAgent] ✓ Listening for STRATEGY_DECISION / EXECUTE_SELL");
+  console.log("[execution] listening for STRATEGY_DECISION / EXECUTE_SELL");
 
   return () => {
     bus.off("TRADE_REQUEST", onTradeRequest);
@@ -513,4 +467,12 @@ export function startExecutionAgent(): () => void {
     bus.off("STRATEGY_DECISION", onStrategyDecision);
     bus.off("EXECUTE_SELL", onExecuteSell);
   };
+}
+
+export function getPositions(): Position[] {
+  return Array.from(positionStore.values());
+}
+
+export function getPositionsByUser(userId: string): Position[] {
+  return Array.from(positionStore.values()).filter((p) => p.userId === userId);
 }

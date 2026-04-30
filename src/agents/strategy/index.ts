@@ -5,6 +5,7 @@ import type {
   StrategyDecision,
   TradeIntent,
   LlmClient,
+  UserConfirmedPayload,
 } from "../../shared/types";
 
 type PendingTrade = {
@@ -14,8 +15,11 @@ type PendingTrade = {
 };
 
 const pending = new Map<string, PendingTrade>();
+const awaitingConfirm = new Map<string, PendingTrade>();
+const confirmTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const MERGE_TIMEOUT_MS = 10_000;
+const CONFIRM_TIMEOUT_MS = 60_000;
 
 export type StrategyDeps = {
   llm?: LlmClient;
@@ -54,15 +58,65 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
     });
   };
 
+  const onUserConfirmed = (payload: UserConfirmedPayload): void => {
+    const entry = awaitingConfirm.get(payload.intentId);
+    if (!entry) return;
+    awaitingConfirm.delete(payload.intentId);
+    const timer = confirmTimers.get(payload.intentId);
+    if (timer) {
+      clearTimeout(timer);
+      confirmTimers.delete(payload.intentId);
+    }
+
+    const { intent, quote } = entry;
+    if (!quote) return;
+
+    if (payload.confirmed) {
+      const reason = `User confirmed. ${buildReason(entry.safety!, quote)}`;
+      emitDecision({
+        intentId: intent.intentId,
+        decision: "EXECUTE",
+        reason,
+        approvedAt: Date.now(),
+      });
+      bus.emit("EXECUTE_TRADE", {
+        intentId: intent.intentId,
+        positionId: `pos-${intent.intentId}`,
+        userId: intent.userId,
+        address: intent.address,
+        chainId: quote.chainId,
+        filled: intent.amount,
+        entryPriceUsd: quote.priceUsd,
+        txHash: "",
+        remainingExits: intent.exits,
+        openedAt: Date.now(),
+      });
+      console.log(`[strategy] ${intent.intentId} — user confirmed, executing`);
+    } else {
+      emitDecision({
+        intentId: intent.intentId,
+        decision: "REJECT",
+        reason: "User rejected the trade",
+        rejectedAt: Date.now(),
+      });
+      console.log(`[strategy] ${intent.intentId} — user rejected`);
+    }
+  };
+
   bus.on("TRADE_REQUEST", onRequest);
   bus.on("SAFETY_RESULT", onSafety);
   bus.on("QUOTE_RESULT", onQuote);
+  bus.on("USER_CONFIRMED", onUserConfirmed);
   console.log("[strategy] agent started");
 
   return () => {
     bus.off("TRADE_REQUEST", onRequest);
     bus.off("SAFETY_RESULT", onSafety);
     bus.off("QUOTE_RESULT", onQuote);
+    bus.off("USER_CONFIRMED", onUserConfirmed);
+    for (const timer of confirmTimers.values()) clearTimeout(timer);
+    confirmTimers.clear();
+    awaitingConfirm.clear();
   };
 }
 
@@ -104,6 +158,22 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
       remainingExits: intent.exits,
       openedAt: Date.now(),
     });
+  } else if (decision.decision === "AWAIT_USER_CONFIRM") {
+    awaitingConfirm.set(intent.intentId, entry);
+    const timer = setTimeout(() => {
+      if (awaitingConfirm.has(intent.intentId)) {
+        awaitingConfirm.delete(intent.intentId);
+        confirmTimers.delete(intent.intentId);
+        emitDecision({
+          intentId: intent.intentId,
+          decision: "REJECT",
+          reason: "Confirmation timed out (60s)",
+          rejectedAt: Date.now(),
+        });
+        console.log(`[strategy] ${intent.intentId} — confirmation expired`);
+      }
+    }, CONFIRM_TIMEOUT_MS);
+    confirmTimers.set(intent.intentId, timer);
   }
 
   console.log(

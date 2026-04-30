@@ -18,10 +18,11 @@ type AuditDeps = {
 function writeStorage(storage: OgStorageClient, key: string, payload: unknown): void {
   if (storage.circuitOpen) return;
   storage.writeJson(key, payload).then(
-    (res) => console.log(`[audit] 0G Storage: ${key} → root=${res.rootHash}`),
+    (res) => console.log(`[audit] 0G: ${key} → ${res.rootHash.slice(0, 12)}...`),
     (err) => {
       if (!storage.circuitOpen) {
-        console.error(`[audit] 0G Storage write failed (${key}):`, (err as Error).message);
+        const msg = (err as Error).message ?? "";
+        console.warn(`[audit] 0G write failed (${key}): ${msg.slice(0, 80)}`);
       }
     },
   );
@@ -29,8 +30,11 @@ function writeStorage(storage: OgStorageClient, key: string, payload: unknown): 
 
 function writeChain(registry: RegistryClient, label: string, fn: () => Promise<string>): void {
   fn().then(
-    (hash) => console.log(`[audit] 0G Chain: ${label} → tx=${hash}`),
-    (err) => console.error(`[audit] 0G Chain write failed (${label}):`, err),
+    (hash) => console.log(`[audit] chain: ${label} → ${hash.slice(0, 14)}...`),
+    (err) => {
+      const msg = (err as Error).message ?? "";
+      console.warn(`[audit] chain write failed (${label}): ${msg.slice(0, 80)}`);
+    },
   );
 }
 

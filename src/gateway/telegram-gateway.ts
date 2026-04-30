@@ -1,7 +1,7 @@
 // Direct Telegram gateway via grammY. Full control over UX.
 
 import { randomUUID } from "node:crypto";
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import { bus } from "../shared/event-bus";
 import { OgComputeClient } from "../integrations/0g/compute";
 import { OgStorageClient } from "../integrations/0g/storage";
@@ -16,12 +16,17 @@ import type {
   ChainClass,
   ChainId,
   TradingMode,
+  PositionUpdate,
+  QuoteFailedPayload,
+  UserConfirmedPayload,
 } from "../shared/types";
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
 import { formatHealthForTelegram } from "../shared/health";
-import { getChainExplorer, getChainRpc } from "../shared/evm-chains";
+import { getChainRpc, getChainExplorer, getChainName, EVM_CHAIN_CONFIG } from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
+import { getPositions, getPositionsByUser } from "../agents/execution/index";
+import { getWatchedWalletAddresses, addWalletDirectly } from "../agents/copy-trade/index";
 
 loadEnvLocal();
 
@@ -187,6 +192,9 @@ export async function startTelegramGateway(
     );
   };
 
+  type PendingConfirmation = { ctx: ReplyCtx; intentId: string; messageId?: number; timer: ReturnType<typeof setTimeout> };
+  const pendingConfirmations = new Map<string, PendingConfirmation>();
+
   const onStrategy = (d: import("../shared/types").StrategyDecision): void => {
     if (d.decision === "REJECT") {
       const pending = replyByRequestId.get(d.intentId);
@@ -210,7 +218,36 @@ export async function startTelegramGateway(
     if (d.decision !== "AWAIT_USER_CONFIRM") return;
     const pending = replyByRequestId.get(d.intentId);
     if (!pending) return;
-    void reply(pending.ctx, `Confirm to proceed: ${html(d.reason)}`);
+
+    const keyboard = new InlineKeyboard()
+      .text("Confirm", `confirm:${d.intentId}`)
+      .text("Reject", `reject:${d.intentId}`);
+
+    const timer = setTimeout(() => {
+      const pc = pendingConfirmations.get(d.intentId);
+      if (!pc) return;
+      pendingConfirmations.delete(d.intentId);
+      if (pc.messageId) {
+        void bot.api.editMessageText(
+          pc.ctx.chatId,
+          pc.messageId,
+          `Confirmation expired for this trade.`,
+        ).catch(() => {});
+      }
+    }, 60_000);
+
+    const pc: PendingConfirmation = { ctx: pending.ctx, intentId: d.intentId, timer };
+    pendingConfirmations.set(d.intentId, pc);
+
+    void bot.api
+      .sendMessage(pending.ctx.chatId, `<b>Confirm trade?</b>\n${html(d.reason)}`, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      })
+      .then((msg) => {
+        pc.messageId = msg.message_id;
+      })
+      .catch((err) => console.error("[telegram] confirm keyboard failed:", err));
   };
 
   const onSafety = (r: import("../shared/types").SafetyReport): void => {
@@ -230,10 +267,46 @@ export async function startTelegramGateway(
     void reply(pending.ctx, html(res.summary), undefined);
   };
 
+  const onQuoteFailed = (qf: QuoteFailedPayload): void => {
+    const pending = replyByRequestId.get(qf.intentId);
+    if (!pending) return;
+    replyByRequestId.delete(qf.intentId);
+    void reply(
+      pending.ctx,
+      `Trade failed: ${html(qf.reason.slice(0, 200))}`,
+    );
+  };
+
+  const positionOwners = new Map<string, ReplyCtx>();
+  const lastPnlNotify = new Map<string, number>();
+
+  const onTradeExecutedForTracking = (pos: import("../shared/types").TradeExecutedPayload): void => {
+    const pending = replyByRequestId.get(pos.intentId);
+    if (pending) positionOwners.set(pos.positionId, pending.ctx);
+  };
+
+  const onPositionUpdate = (update: PositionUpdate): void => {
+    const owner = positionOwners.get(update.positionId);
+    if (!owner) return;
+
+    const lastSent = lastPnlNotify.get(update.positionId) ?? 0;
+    if (Date.now() - lastSent < 60_000) return;
+
+    const sign = update.pnlPct >= 0 ? "+" : "";
+    void reply(
+      owner,
+      `Position ${update.positionId.slice(0, 8)}... | $${update.priceUsd.toFixed(6)} | PnL: ${sign}${update.pnlPct.toFixed(1)}%`,
+    );
+    lastPnlNotify.set(update.positionId, Date.now());
+  };
+
+  bus.on("TRADE_EXECUTED", onTradeExecutedForTracking);
   bus.on("TRADE_EXECUTED", onExecuted);
   bus.on("STRATEGY_DECISION", onStrategy);
   bus.on("SAFETY_RESULT", onSafety);
   bus.on("RESEARCH_RESULT", onResearchResult);
+  bus.on("QUOTE_FAILED", onQuoteFailed);
+  bus.on("POSITION_UPDATE", onPositionUpdate);
 
   // /start — welcome message
   bot.command("start", async (ctx) => {
@@ -249,6 +322,7 @@ export async function startTelegramGateway(
         "  Find alpha: trending tokens, smart money\n",
         "Get started:",
         "  /wallet — Create or view your agent wallet",
+        "  /balance — Check balances across chains",
         "  Paste a contract address to trade",
         "  Ask me anything about crypto\n",
         "<i>Type /help for all commands</i>",
@@ -269,20 +343,26 @@ export async function startTelegramGateway(
       [
         "<b>Commands</b>\n",
         "/wallet — Create or view your wallet",
+        "/balance — Check wallet balances across chains",
+        "/positions — View open positions and PnL",
         "/send — Send native tokens to a wallet",
-        "/status — System health and uptime",
-        "/start — Welcome message\n",
+        "/mode — Switch trading mode (degen/normal/safe)",
+        "/watch — Add wallet to copy-trade watch list",
+        "/unwatch — Remove wallet from watch list",
+        "/watchlist — Show watched wallets",
+        "/status — System health and uptime\n",
         "<b>Wallet</b>",
         "<code>connect 0x...</code> — Link external wallet",
         "<code>use agent wallet</code> — Switch to HAWKEYE wallet",
         "<code>use external wallet</code> — Switch to your wallet\n",
-        "<b>Send</b>",
-        "<code>/send 0.01 0x... [chain]</code>",
-        "Default chain: ethereum. Supports: base, arb, op, polygon, bsc, sepolia\n",
         "<b>Trading</b>",
         "Paste a contract address to snipe",
         '"Swap 0.1 ETH to USDC on Base"',
-        '"Send 0.5 ETH to 0xABC on Base"\n',
+        "<code>/mode degen</code> — Auto-execute trades",
+        "<code>/mode safe</code> — Strict safety checks\n",
+        "<b>Copy Trading</b>",
+        "<code>/watch 0xABC... whale1</code> — Copy a wallet's buys",
+        "<code>/unwatch 0xABC...</code> — Stop copying\n",
         "<b>Research</b>",
         '"Is 0x... safe?"',
         '"Check this token"',
@@ -290,6 +370,69 @@ export async function startTelegramGateway(
       ].join("\n"),
       { parse_mode: "HTML" },
     );
+  });
+
+  // /balance — show native token balances across chains
+  bot.command("balance", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    if (!wm || !wm.getWallet(userId)) {
+      await ctx.reply("You need a wallet first. Use /wallet to create one.", {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+    const config = wm.getWalletConfig(userId);
+    const addr = config.activeAddress;
+    if (!addr) {
+      await ctx.reply("No active wallet found. Use /wallet to set one up.");
+      return;
+    }
+
+    await ctx.reply(`Fetching balances for ${codeAddr(addr)}...`, { parse_mode: "HTML" });
+
+    const chains = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc"];
+    const results: string[] = [];
+
+    const fetches = chains.map(async (chain) => {
+      try {
+        const rpc = getChainRpc(chain);
+        const cfg = EVM_CHAIN_CONFIG[chain];
+        const resp = await fetch(rpc, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "eth_getBalance",
+            params: [addr, "latest"],
+          }),
+          signal: AbortSignal.timeout(5_000),
+        });
+        const data = (await resp.json()) as { result?: string };
+        const wei = BigInt(data.result ?? "0");
+        const ethVal = Number(wei) / 1e18;
+        if (ethVal > 0.00001) {
+          return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${cfg?.nativeCurrency ?? "ETH"}`;
+        }
+        return `  ${getChainName(chain)}: 0`;
+      } catch {
+        return `  ${getChainName(chain)}: error`;
+      }
+    });
+
+    const balanceLines = await Promise.all(fetches);
+    const hasBalance = balanceLines.some((l) => !l.endsWith(": 0") && !l.endsWith(": error"));
+
+    const lines = [
+      `<b>Balances</b>`,
+      `Wallet: ${codeAddr(addr)} (${config.mode})`,
+      ``,
+      ...balanceLines,
+    ];
+    if (!hasBalance) {
+      lines.push(``, `No funds detected. Send some ETH/tokens to your wallet address to start trading.`);
+    }
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
   // /wallet — create on explicit request, show info
@@ -377,6 +520,166 @@ export async function startTelegramGateway(
     await executeSend(rctx, userId, recipient, amount, chain.name, chain.id);
   });
 
+  // Per-user settings (in-memory, session-scoped)
+  const userSettings = new Map<string, { mode: TradingMode }>();
+
+  const MODE_MAP: Record<string, TradingMode> = {
+    degen: "INSTANT",
+    instant: "INSTANT",
+    normal: "NORMAL",
+    safe: "CAREFUL",
+    careful: "CAREFUL",
+  };
+
+  const MODE_DESC: Record<TradingMode, string> = {
+    INSTANT: "Auto-execute trades. Warnings shown but won't block.",
+    NORMAL: "Confirm risky trades (safety 50-69). Reject below 50.",
+    CAREFUL: "Reject anything below 70. Confirm if any flags present.",
+  };
+
+  // /mode — switch trading mode
+  bot.command("mode", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    const arg = (ctx.match as string).trim().toLowerCase();
+
+    if (!arg) {
+      const current = userSettings.get(userId)?.mode ?? "NORMAL";
+      const friendlyName = current === "INSTANT" ? "degen" : current === "CAREFUL" ? "safe" : "normal";
+      await ctx.reply(
+        [
+          `<b>Trading Mode: ${friendlyName}</b>`,
+          MODE_DESC[current],
+          ``,
+          `Change with:`,
+          `  <code>/mode degen</code> — auto-execute`,
+          `  <code>/mode normal</code> — confirm risky`,
+          `  <code>/mode safe</code> — strict safety`,
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+
+    const mode = MODE_MAP[arg];
+    if (!mode) {
+      await ctx.reply(`Unknown mode: ${arg}. Try: degen, normal, safe`);
+      return;
+    }
+
+    userSettings.set(userId, { mode });
+    const friendlyName = mode === "INSTANT" ? "degen" : mode === "CAREFUL" ? "safe" : "normal";
+    await ctx.reply(
+      `<b>Mode set: ${friendlyName}</b>\n${MODE_DESC[mode]}`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  // /watch — add wallet to copy-trade watch list
+  bot.command("watch", async (ctx) => {
+    const args = (ctx.match as string).trim().split(/\s+/);
+    const address = args[0] ?? "";
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      await ctx.reply(
+        "Usage: <code>/watch 0xABC... [label]</code>\nExample: <code>/watch 0x1234...ABCD whale1</code>",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    const labelText = args.slice(1).join(" ");
+    const wallet: import("../shared/types").WatchedWallet = { address, chain: "evm" };
+    if (labelText) wallet.label = labelText;
+    bus.emit("ADD_WATCHED_WALLET", wallet);
+    await ctx.reply(
+      `Watching ${codeAddr(address)}${labelText ? ` (${html(labelText)})` : ""}.\nI'll copy their buys automatically through the safety pipeline.`,
+      { parse_mode: "HTML" },
+    );
+  });
+
+  // /unwatch — remove wallet from watch list
+  bot.command("unwatch", async (ctx) => {
+    const address = (ctx.match as string).trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      await ctx.reply("Usage: <code>/unwatch 0xABC...</code>", { parse_mode: "HTML" });
+      return;
+    }
+    bus.emit("REMOVE_WATCHED_WALLET", address);
+    await ctx.reply(`Stopped watching ${codeAddr(address)}.`, { parse_mode: "HTML" });
+  });
+
+  // /watchlist — show watched wallets
+  bot.command("watchlist", async (ctx) => {
+    const addresses = getWatchedWalletAddresses();
+    if (addresses.length === 0) {
+      await ctx.reply(
+        "No wallets being watched.\nUse <code>/watch 0xABC... [label]</code> to start copy trading.",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    const lines = ["<b>Watched Wallets</b>\n"];
+    for (const addr of addresses) {
+      lines.push(`  ${codeAddr(addr)}`);
+    }
+    lines.push(`\nTotal: ${addresses.length}`);
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
+  // /positions — show open positions with PnL
+  bot.command("positions", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    const positions = getPositionsByUser(userId);
+    if (positions.length === 0) {
+      await ctx.reply("No open positions. Paste a contract address to start trading.");
+      return;
+    }
+    const lines = ["<b>Open Positions</b>\n"];
+    for (const pos of positions) {
+      lines.push(
+        `  ${codeAddr(pos.address.slice(0, 10))}... (${pos.chainId}) | Entry: $${pos.entryPriceUsd.toFixed(6)} | TX: ${pos.txHash.slice(0, 10)}...`,
+      );
+    }
+    lines.push(`\nTotal: ${positions.length} position(s)`);
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
+  // Callback query handler — inline keyboard confirmations
+  bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const userId = String(ctx.from?.id ?? "unknown");
+
+    const confirmMatch = data.match(/^(confirm|reject):(.+)$/);
+    if (!confirmMatch) {
+      await ctx.answerCallbackQuery({ text: "Unknown action" });
+      return;
+    }
+
+    const action = confirmMatch[1]!;
+    const intentId = confirmMatch[2]!;
+    const pc = pendingConfirmations.get(intentId);
+
+    if (!pc) {
+      await ctx.answerCallbackQuery({ text: "This confirmation has expired." });
+      return;
+    }
+
+    pendingConfirmations.delete(intentId);
+    clearTimeout(pc.timer);
+
+    const confirmed = action === "confirm";
+    bus.emit("USER_CONFIRMED", { intentId, confirmed, userId, at: Date.now() });
+
+    const statusText = confirmed ? "Trade confirmed. Executing..." : "Trade rejected.";
+    await ctx.answerCallbackQuery({ text: statusText });
+
+    if (pc.messageId) {
+      void bot.api
+        .editMessageText(pc.ctx.chatId, pc.messageId, `<b>${statusText}</b>`, {
+          parse_mode: "HTML",
+        })
+        .catch(() => {});
+    }
+  });
+
   // Message handler
   bot.on("message:text", async (ctx) => {
     const userId = String(ctx.from?.id ?? "unknown");
@@ -449,7 +752,7 @@ export async function startTelegramGateway(
       case "RESEARCH_WALLET":
         return handleResearchWallet(result, rctx);
       case "COPY_TRADE":
-        return handleComingSoon(rctx, "copy trading", result.rawText);
+        return handleCopyTrade(result, rctx);
       case "BRIDGE":
         return handleBridge(result, rctx);
       case "PORTFOLIO":
@@ -698,8 +1001,9 @@ export async function startTelegramGateway(
     }
 
     const urgencyRaw = d["urgency"];
+    const userMode = userSettings.get(userId)?.mode;
     const urgency: TradingMode =
-      urgencyRaw === "INSTANT" || urgencyRaw === "CAREFUL" ? urgencyRaw : "NORMAL";
+      urgencyRaw === "INSTANT" || urgencyRaw === "CAREFUL" ? urgencyRaw : (userMode ?? "NORMAL");
 
     const specificChain = resolvedChainName ?? chainHint ?? null;
     const intentBase = {
@@ -824,12 +1128,12 @@ export async function startTelegramGateway(
     );
   }
 
-  function handlePortfolio(
+  async function handlePortfolio(
     result: RouterResult,
     rctx: ReplyCtx,
     walletMgr: WalletManager | null,
     userId: string,
-  ): void {
+  ): Promise<void> {
     if (!walletMgr || !walletMgr.getWallet(userId)) {
       void llmReply(
         rctx,
@@ -840,20 +1144,118 @@ export async function startTelegramGateway(
       return;
     }
     const config = walletMgr.getWalletConfig(userId);
-    void llmReply(
+    const addr = config.activeAddress;
+    if (!addr) {
+      void reply(rctx, "No active wallet. Use /wallet to set one up.");
+      return;
+    }
+
+    const chains = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc"];
+    const fetches = chains.map(async (chain) => {
+      try {
+        const rpc = getChainRpc(chain);
+        const cfg = EVM_CHAIN_CONFIG[chain];
+        const resp = await fetch(rpc, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0", id: 1,
+            method: "eth_getBalance",
+            params: [addr, "latest"],
+          }),
+          signal: AbortSignal.timeout(5_000),
+        });
+        const data = (await resp.json()) as { result?: string };
+        const wei = BigInt(data.result ?? "0");
+        const ethVal = Number(wei) / 1e18;
+        if (ethVal > 0.00001) {
+          return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${cfg?.nativeCurrency ?? "ETH"}`;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    });
+
+    const balanceLines = (await Promise.all(fetches)).filter((l): l is string => l !== null);
+
+    const positions = getPositionsByUser(userId);
+    const posLines: string[] = [];
+    if (positions.length > 0) {
+      posLines.push(``, `<b>Open Positions (${positions.length})</b>`);
+      for (const pos of positions) {
+        posLines.push(
+          `  ${pos.address.slice(0, 10)}... (${pos.chainId}) | Entry: $${pos.entryPriceUsd.toFixed(6)}`,
+        );
+      }
+    }
+
+    if (balanceLines.length === 0 && positions.length === 0) {
+      void reply(
+        rctx,
+        [
+          `Wallet: ${codeAddr(addr)} (${config.mode})`,
+          ``,
+          `No balances or positions found. Send some ETH to your wallet to start trading.`,
+        ].join("\n"),
+      );
+      return;
+    }
+
+    void reply(
       rctx,
-      result.rawText,
-      `The user wants portfolio info. Their active wallet is ${config.activeAddress ?? "none"} (mode: ${config.mode}). Full portfolio tracking with live PnL is coming soon. Mention what you CAN do now.`,
-      `Active wallet: ${config.activeAddress ?? "none"} (${config.mode}). Full portfolio tracking is coming soon.`,
+      [
+        `<b>Portfolio</b>`,
+        `Wallet: ${codeAddr(addr)} (${config.mode})`,
+        ``,
+        ...(balanceLines.length > 0 ? [`<b>Balances</b>`, ...balanceLines] : []),
+        ...posLines,
+      ].join("\n"),
     );
   }
 
   function handleSettings(result: RouterResult, rctx: ReplyCtx): void {
+    const d = result.data;
+    const setting = typeof d["setting"] === "string" ? d["setting"].toLowerCase() : "";
+    const value = typeof d["value"] === "string" ? d["value"].toLowerCase() : "";
+
+    if (setting.includes("mode") || setting.includes("trading") || value in MODE_MAP) {
+      const modeKey = value in MODE_MAP ? value : setting;
+      const mode = MODE_MAP[modeKey] ?? MODE_MAP[value];
+      if (mode) {
+        userSettings.set(rctx.userId, { mode });
+        const friendlyName = mode === "INSTANT" ? "degen" : mode === "CAREFUL" ? "safe" : "normal";
+        void reply(rctx, `<b>Mode set: ${friendlyName}</b>\n${MODE_DESC[mode]}`);
+        return;
+      }
+    }
+
     void llmReply(
       rctx,
       result.rawText,
-      "The user wants to change a setting. Acknowledge what they want to set. Persistent settings are coming soon — for now it applies to current session only.",
-      "Settings update noted. Persistent settings are coming soon — applies to current session only.",
+      `The user wants to change a setting. Available settings: trading mode (degen/normal/safe) via /mode. Acknowledge and guide them.`,
+      `Available settings:\n  /mode degen — auto-execute\n  /mode normal — confirm risky\n  /mode safe — strict safety`,
+    );
+  }
+
+  function handleCopyTrade(result: RouterResult, rctx: ReplyCtx): void {
+    const d = result.data;
+    const address = typeof d["walletAddress"] === "string" ? d["walletAddress"] : null;
+
+    if (address && /^0x[a-fA-F0-9]{40}$/.test(address)) {
+      bus.emit("ADD_WATCHED_WALLET", { address, chain: "evm" });
+      void reply(
+        rctx,
+        `Now watching ${codeAddr(address)} for copy trading.\nI'll copy their buys automatically through the safety pipeline.`,
+      );
+      return;
+    }
+
+    void llmReply(
+      rctx,
+      result.rawText,
+      `The user wants to copy trade. They need to provide a wallet address. Tell them to use /watch 0xABC... [label] to start copy trading a wallet. Mention they can use /watchlist to see watched wallets.`,
+      `To start copy trading, use:\n  /watch 0xABC... [label]\n\nI'll automatically copy their buys through the safety pipeline. Use /watchlist to see your watched wallets.`,
     );
   }
 
@@ -913,10 +1315,13 @@ export async function startTelegramGateway(
   return {
     bot,
     stop: () => {
+      bus.off("TRADE_EXECUTED", onTradeExecutedForTracking);
       bus.off("TRADE_EXECUTED", onExecuted);
       bus.off("STRATEGY_DECISION", onStrategy);
       bus.off("SAFETY_RESULT", onSafety);
       bus.off("RESEARCH_RESULT", onResearchResult);
+      bus.off("QUOTE_FAILED", onQuoteFailed);
+      bus.off("POSITION_UPDATE", onPositionUpdate);
       bot.stop();
     },
   };
