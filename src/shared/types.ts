@@ -286,6 +286,19 @@ export type UserConfirmedPayload = {
   at: number;
 };
 
+export type PlatformType = "telegram" | "discord" | "whatsapp" | "webchat";
+
+export type ExternalWalletEntry = {
+  address: string;
+  label: string;
+  connectedAt: number;
+  delegated: boolean;
+};
+
+export type ActiveWalletRef =
+  | { kind: "agent" }
+  | { kind: "external"; address: string };
+
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",
   SAFETY_RESULT: "SAFETY_RESULT",

@@ -342,7 +342,8 @@ export async function startTelegramGateway(
     await ctx.reply(
       [
         "<b>Commands</b>\n",
-        "/wallet — Create or view your wallet",
+        "/wallet — Create or view your wallet (email sign-in)",
+        "/link — Tie your wallet to an email",
         "/balance — Check wallet balances across chains",
         "/positions — View open positions and PnL",
         "/send — Send native tokens to a wallet",
@@ -352,9 +353,10 @@ export async function startTelegramGateway(
         "/watchlist — Show watched wallets",
         "/status — System health and uptime\n",
         "<b>Wallet</b>",
-        "<code>connect 0x...</code> — Link external wallet",
-        "<code>use agent wallet</code> — Switch to HAWKEYE wallet",
-        "<code>use external wallet</code> — Switch to your wallet\n",
+        "<code>connect 0x... [label]</code> — Link external wallet",
+        "<code>disconnect 0x...</code> — Remove linked wallet",
+        "<code>use 0x...</code> — Set active wallet for trades",
+        "<code>use agent wallet</code> — Switch to HAWKEYE wallet\n",
         "<b>Trading</b>",
         "Paste a contract address to snipe",
         '"Swap 0.1 ETH to USDC on Base"',
@@ -435,7 +437,35 @@ export async function startTelegramGateway(
     await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
-  // /wallet — create on explicit request, show info
+  // /link — tie existing wallet to a real email
+  bot.command("link", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    if (!wm) {
+      await ctx.reply("Wallet system not available.");
+      return;
+    }
+    const emailArg = (ctx.match as string).trim();
+    if (emailArg && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailArg) && !emailArg.endsWith("@hawkeye.local")) {
+      try {
+        const ok = await wm.linkEmail(userId, emailArg);
+        if (ok) {
+          await ctx.reply(
+            `Wallet linked to <b>${emailArg}</b>.\nYour wallet is now recoverable via this email across any platform.`,
+            { parse_mode: "HTML" },
+          );
+        } else {
+          await ctx.reply("No wallet found to link. Use /wallet first.");
+        }
+      } catch (err) {
+        await ctx.reply(`Link failed: ${(err as Error).message}`);
+      }
+      return;
+    }
+    pendingEmailPrompts.set(userId, { chatId: ctx.chat.id, action: "link" });
+    await ctx.reply("Enter your email to link to your wallet profile:");
+  });
+
+  // /wallet — create on explicit request, show full multi-wallet info
   bot.command("wallet", async (ctx) => {
     const userId = String(ctx.from?.id ?? "unknown");
     if (!wm) {
@@ -445,32 +475,57 @@ export async function startTelegramGateway(
 
     const existing = wm.getWallet(userId);
     if (!existing) {
-      try {
-        const wallet = await wm.getOrCreateWallet(userId);
-        await ctx.reply(
-          [
-            "<b>Wallet Created</b>\n",
-            `Address: ${codeAddr(wallet.address)}`,
-            "\nFund this address with ETH to start trading.",
-            "Tap the address to copy it.",
-          ].join("\n"),
-          { parse_mode: "HTML" },
-        );
-      } catch (err) {
-        await ctx.reply(`Failed to create wallet: ${(err as Error).message}`);
-      }
+      pendingEmailPrompts.set(userId, { chatId: ctx.chat.id, action: "create" });
+      await ctx.reply(
+        [
+          "Enter your email to create your HAWKEYE wallet.",
+          "",
+          "This email ties your wallet to your identity across Telegram, Discord, and web.",
+          "Your wallet is managed by Privy — recoverable through your email.",
+        ].join("\n"),
+      );
       return;
     }
 
-    const config = wm.getWalletConfig(userId);
+    const full = wm.getFullWalletConfig(userId);
+    if (!full) {
+      await ctx.reply("No wallet profile found. Use /wallet to create one.");
+      return;
+    }
+
     const lines: string[] = ["<b>Your Wallets</b>\n"];
-    if (config.agentWallet) {
-      lines.push(`Agent: ${codeAddr(config.agentWallet.address)}`);
+    const isSynthetic = full.email.endsWith("@hawkeye.local");
+    lines.push(`Email: ${isSynthetic ? "<i>not linked</i> (/link to add)" : `<b>${full.email}</b>`}`);
+    lines.push("");
+    const isAgentActive = full.activeWallet.kind === "agent";
+
+    if (full.agentWallet) {
+      const tag = isAgentActive ? " [ACTIVE]" : "";
+      lines.push(`Agent: ${codeAddr(full.agentWallet.address)}${tag}`);
     }
-    if (config.externalAddress) {
-      lines.push(`External: ${codeAddr(config.externalAddress)}`);
+
+    if (full.externalWallets.length > 0) {
+      lines.push("");
+      lines.push("<b>Connected Wallets</b>");
+      for (const ew of full.externalWallets) {
+        const isActive =
+          full.activeWallet.kind === "external" &&
+          full.activeWallet.address.toLowerCase() === ew.address.toLowerCase();
+        const tag = isActive ? " [ACTIVE]" : "";
+        const delegation = ew.delegated ? "" : " (view-only)";
+        lines.push(`${ew.label}: ${codeAddr(ew.address)}${tag}${delegation}`);
+      }
     }
-    lines.push(`\nActive: <b>${config.mode}</b>`);
+
+    lines.push("");
+    lines.push(`Active for trades: <b>${full.activeAddress ? codeAddr(full.activeAddress) : "none"}</b>`);
+    lines.push("");
+    lines.push("<b>Commands</b>");
+    lines.push("<code>connect 0x... [label]</code> — Link wallet");
+    lines.push("<code>disconnect 0x...</code> — Remove wallet");
+    lines.push("<code>use 0x...</code> — Set active wallet");
+    lines.push("<code>use agent wallet</code> — Switch to agent wallet");
+
     await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
@@ -522,6 +577,7 @@ export async function startTelegramGateway(
 
   // Per-user settings (in-memory, session-scoped)
   const userSettings = new Map<string, { mode: TradingMode }>();
+  const pendingEmailPrompts = new Map<string, { chatId: number; action: "create" | "link" }>();
 
   const MODE_MAP: Record<string, TradingMode> = {
     degen: "INSTANT",
@@ -689,19 +745,101 @@ export async function startTelegramGateway(
 
     addMessage(userId, "user", text);
 
-    // Wallet connect command
-    const connectMatch = text.trim().match(/^(?:connect|link)\s+(0x[a-fA-F0-9]{40})$/i);
+    // Email input for wallet creation / link
+    const pendingEmail = pendingEmailPrompts.get(userId);
+    if (pendingEmail && wm) {
+      pendingEmailPrompts.delete(userId);
+      const emailInput = text.trim().toLowerCase();
+
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailInput) || emailInput.endsWith("@hawkeye.local")) {
+        await ctx.reply("That doesn't look like a valid email. Try /wallet again.");
+        return;
+      }
+
+      if (pendingEmail.action === "create") {
+        try {
+          const wallet = await wm.createWalletWithEmail(userId, emailInput);
+          await ctx.reply(
+            [
+              "<b>Wallet Created</b>\n",
+              `Address: ${codeAddr(wallet.address)}`,
+              `Email: <b>${emailInput}</b>`,
+              `\nYour wallet is tied to this email via Privy.`,
+              `Recoverable on any platform (Telegram, Discord, web).`,
+              `\nFund this address with ETH to start trading.`,
+            ].join("\n"),
+            { parse_mode: "HTML" },
+          );
+        } catch (err) {
+          await ctx.reply(`Failed to create wallet: ${(err as Error).message}`);
+        }
+      } else {
+        try {
+          const ok = await wm.linkEmail(userId, emailInput);
+          if (ok) {
+            await ctx.reply(
+              `Wallet linked to <b>${emailInput}</b>.\nRecoverable across all platforms.`,
+              { parse_mode: "HTML" },
+            );
+          } else {
+            await ctx.reply("No wallet found to link. Use /wallet first.");
+          }
+        } catch (err) {
+          await ctx.reply(`Link failed: ${(err as Error).message}`);
+        }
+      }
+      return;
+    }
+
+    // Wallet connect command: connect 0x... [label]
+    const connectMatch = text.trim().match(/^(?:connect|link)\s+(0x[a-fA-F0-9]{40})(?:\s+(.+))?$/i);
     if (wm && connectMatch) {
-      wm.connectExternalWallet(userId, connectMatch[1]!);
+      const addr = connectMatch[1]!;
+      const label = connectMatch[2]?.trim();
+      wm.connectExternalWallet(userId, addr, label);
       await ctx.reply(
-        `External wallet connected: ${codeAddr(connectMatch[1]!)}\n\nYour trades will use this wallet. Say "use agent wallet" to switch back.`,
+        [
+          `Wallet connected: ${codeAddr(addr)}${label ? ` (${label})` : ""}`,
+          `\nNow active for trades. Say <code>use agent wallet</code> to switch back.`,
+          `Use <code>/wallet</code> to see all connected wallets.`,
+        ].join("\n"),
         { parse_mode: "HTML" },
       );
       return;
     }
 
+    // Disconnect wallet: disconnect 0x...
+    const disconnectMatch = text.trim().match(/^disconnect\s+(0x[a-fA-F0-9]{40})$/i);
+    if (wm && disconnectMatch) {
+      const addr = disconnectMatch[1]!;
+      const ok = wm.disconnectExternalWallet(userId, addr);
+      if (ok) {
+        await ctx.reply(`Wallet disconnected: ${codeAddr(addr)}\nSwitched to agent wallet.`, {
+          parse_mode: "HTML",
+        });
+      } else {
+        await ctx.reply(`Wallet ${codeAddr(addr)} is not connected.`, { parse_mode: "HTML" });
+      }
+      return;
+    }
+
+    // Use specific address: use 0x...
+    const useAddrMatch = lower.match(/^use\s+(0x[a-fA-F0-9]{40})$/i);
+    if (wm && useAddrMatch) {
+      const ok = wm.setActiveWallet(userId, { kind: "external", address: useAddrMatch[1]! });
+      if (ok) {
+        await ctx.reply(`Active wallet: ${codeAddr(useAddrMatch[1]!)}`, { parse_mode: "HTML" });
+      } else {
+        await ctx.reply(
+          `That wallet is not connected. Use <code>connect 0x...</code> first.`,
+          { parse_mode: "HTML" },
+        );
+      }
+      return;
+    }
+
     if (wm && (lower === "use agent wallet" || lower === "use hawkeye wallet")) {
-      wm.setWalletMode(userId, "agent");
+      wm.setActiveWallet(userId, { kind: "agent" });
       const w = wm.getWallet(userId);
       await ctx.reply(`Switched to agent wallet${w ? ": " + codeAddr(w.address) : ""}`, {
         parse_mode: "HTML",
@@ -715,15 +853,17 @@ export async function startTelegramGateway(
         lower === "use my wallet" ||
         lower === "use connected wallet")
     ) {
-      const config = wm.getWalletConfig(userId);
-      if (config.externalAddress) {
-        wm.setWalletMode(userId, "external");
-        await ctx.reply(`Switched to external wallet: ${codeAddr(config.externalAddress)}`, {
-          parse_mode: "HTML",
-        });
+      const full = wm.getFullWalletConfig(userId);
+      if (full && full.externalWallets.length > 0) {
+        const first = full.externalWallets[0]!;
+        wm.setActiveWallet(userId, { kind: "external", address: first.address });
+        await ctx.reply(
+          `Switched to: ${codeAddr(first.address)} (${first.label})`,
+          { parse_mode: "HTML" },
+        );
       } else {
         await ctx.reply(
-          `No external wallet connected. Say <code>connect 0x...</code> to link one.`,
+          `No external wallet connected. Say <code>connect 0x... [label]</code> to link one.`,
           { parse_mode: "HTML" },
         );
       }
