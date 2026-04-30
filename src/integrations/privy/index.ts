@@ -196,7 +196,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       .wallets()
       .ethereum()
       .signTransaction(w.walletId, {
-        params: { transaction: txObj as any },
+        params: { transaction: txObj as Record<string, unknown> },
       });
 
     return result.signed_transaction;
@@ -222,7 +222,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       .ethereum()
       .sendTransaction(w.walletId, {
         caip2,
-        params: { transaction: txObj as any },
+        params: { transaction: txObj as Record<string, unknown> },
       });
 
     return { hash: result.hash, caip2: result.caip2 };

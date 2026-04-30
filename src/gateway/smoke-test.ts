@@ -94,6 +94,7 @@ async function runAdapterLifecycle(): Promise<void> {
   (globalThis as Record<string, unknown>)["WebSocket"] = class extends FakeWebSocket {
     constructor(url: string) {
       super(url);
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
       lastFake = this;
     }
   };
