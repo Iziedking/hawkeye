@@ -1457,18 +1457,26 @@ export async function startTelegramGateway(
 
     if (!chain) chain = "evm";
 
-    if (address && !resolvedChainName && !chainHint) {
+    // DexScreener-first: ALWAYS verify token identity and chain from on-chain data.
+    // Never trust LLM-provided token names or chains -- they hallucinate.
+    let verifiedTokenName: string | null = null;
+    let verifiedTokenSymbol: string | null = null;
+    if (address) {
       try {
-        const { pairs } = await searchPairs(address, { limit: 3 });
-        const best = pairs
+        const { pairs } = await searchPairs(address, { limit: 5 });
+        const matched = pairs
           .filter((p) => p.baseToken?.address?.toLowerCase() === address!.toLowerCase())
-          .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+          .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
+        const best = matched[0];
         if (best) {
+          verifiedTokenName = best.baseToken?.name ?? null;
+          verifiedTokenSymbol = best.baseToken?.symbol ?? null;
           resolvedChainName = resolveChainAlias(best.chainId) ?? best.chainId;
           chain = best.chainId === "solana" ? "solana" : "evm";
-          hlog.agent("gateway", `auto-detected chain: ${best.chainId} for ${address.slice(0, 10)}`);
+          if (toToken && verifiedTokenSymbol) toToken = verifiedTokenSymbol;
+          hlog.agent("gateway", `DexScreener verified: ${verifiedTokenSymbol} (${verifiedTokenName}) on ${best.chainId}`);
         }
-      } catch { /* DexScreener lookup failed, proceed with default */ }
+      } catch { /* DexScreener lookup failed, proceed with LLM data */ }
     }
 
     const amountRaw = d["amount"] as Record<string, unknown> | null | undefined;
@@ -1527,12 +1535,22 @@ export async function startTelegramGateway(
       }
     }
 
+    const sideRaw = d["side"];
+    const side: "buy" | "sell" = sideRaw === "sell" ? "sell" : "buy";
+
     if (amount.value <= 0) {
-      const sym = toToken ?? (address ? address.slice(0, 10) + "..." : "this token");
-      void reply(rctx,
-        `How much do you want to buy of ${html(sym)}?\n` +
-        `Example: "buy $5 worth" or "buy 0.01 ETH of ${html(sym)}"`,
-      );
+      const sym = verifiedTokenSymbol ?? toToken ?? (address ? address.slice(0, 10) + "..." : "this token");
+      if (side === "sell") {
+        void reply(rctx,
+          `How much do you want to sell of ${html(sym)}?\n` +
+          `Example: "sell $5 worth" or "sell 50% of ${html(sym)}"`,
+        );
+      } else {
+        void reply(rctx,
+          `How much do you want to buy of ${html(sym)}?\n` +
+          `Example: "buy $5 worth" or "buy 0.01 ETH of ${html(sym)}"`,
+        );
+      }
       lastResearchByUser.set(userId, { address: address!, chain: chain!, symbol: toToken ?? address!.slice(0, 10), at: Date.now() });
       return;
     }
@@ -1543,6 +1561,14 @@ export async function startTelegramGateway(
       urgencyRaw === "INSTANT" || urgencyRaw === "CAREFUL" ? urgencyRaw : (userMode ?? "NORMAL");
 
     const specificChain = resolvedChainName ?? chainHint ?? null;
+
+    const defaultExits: TradeIntent["exits"] = side === "buy"
+      ? [
+          { target: { kind: "multiplier", value: 2.0 }, percent: 50 },
+          { target: { kind: "multiplier", value: 5.0 }, percent: 100 },
+        ]
+      : [];
+
     const intentBase = {
       intentId: result.id,
       userId: result.userId,
@@ -1550,10 +1576,11 @@ export async function startTelegramGateway(
       address,
       chain,
       amount,
-      exits: [] as TradeIntent["exits"],
+      exits: defaultExits,
       urgency,
       rawText: result.rawText,
       createdAt: result.routedAt,
+      side,
     };
     const intent: TradeIntent = specificChain
       ? { ...intentBase, chainHint: specificChain as ChainId }
@@ -1580,8 +1607,12 @@ export async function startTelegramGateway(
       at: Date.now(),
     });
 
-    const tokenLabel = toToken
-      ? `${html(toToken.toUpperCase())} (${codeAddr(address)})`
+    const displaySymbol = verifiedTokenSymbol ?? toToken;
+    const displayName = verifiedTokenName;
+    const tokenLabel = displaySymbol
+      ? displayName
+        ? `${html(displaySymbol.toUpperCase())} (${html(displayName)}) ${codeAddr(address)}`
+        : `${html(displaySymbol.toUpperCase())} (${codeAddr(address)})`
       : codeAddr(address);
     const chainLabel =
       specificChain && specificChain !== chain ? `${chain} (${html(specificChain)})` : chain;
@@ -1594,12 +1625,11 @@ export async function startTelegramGateway(
     const processingNote = keeperHubActive
       ? "Checking safety and getting best price. MEV protection active."
       : "Checking safety and getting best price.";
+    const actionVerb = side === "sell" ? "Selling" : fromToken && toToken ? "Swapping" : "Buying";
     await reply(
       rctx,
       [
-        fromToken && toToken
-          ? `Swapping${amountDisplay ? " " + amountDisplay : ""} to ${html(toToken.toUpperCase())} on ${chainLabel}...`
-          : `Buying${amountDisplay ? " " + amountDisplay + " of" : ""} ${tokenLabel} on ${chainLabel}...`,
+        `${actionVerb}${amountDisplay ? " " + amountDisplay + (side === "sell" ? " of" : " of") : ""} ${tokenLabel} on ${chainLabel}...`,
         processingNote,
       ]
         .join("\n"),

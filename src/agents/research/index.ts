@@ -29,6 +29,8 @@ import type {
   LlmClient,
 } from "../../shared/types";
 import { OgComputeClient } from "../../integrations/0g/compute";
+import { ArkhamClient } from "../../integrations/arkham/index";
+import type { ArkhamHolder, ArkhamFlow } from "../../integrations/arkham/index";
 import {
   getLatestTokenProfiles,
   getLatestBoosts,
@@ -1540,6 +1542,8 @@ type ResearchData = {
   brave: BraveResult[];
   gecko: GeckoTerminalData | null;
   priceChange: { h1: number | null; h6: number | null; h24: number | null } | null;
+  arkhamHolders: ArkhamHolder[];
+  arkhamFlows: ArkhamFlow[];
   opportunityScore: number;
   question: string;
 };
@@ -1603,9 +1607,31 @@ function buildResearchPrompt(d: ResearchData): string {
         .map((r) => r.title)
         .join(" | ")}`,
     );
+
+  if (d.arkhamHolders.length > 0) {
+    lines.push(`\nTop holders (Arkham Intelligence):`);
+    for (const h of d.arkhamHolders.slice(0, 5)) {
+      const label = h.entity ?? h.address.slice(0, 10) + "...";
+      lines.push(`  ${label}: ${h.percentage.toFixed(1)}% ($${formatCompact(h.usd).replace("$", "")})`);
+    }
+    const top5Pct = d.arkhamHolders.slice(0, 5).reduce((s, h) => s + h.percentage, 0);
+    if (top5Pct > 40) lines.push(`  ⚠ Top-5 holders control ${top5Pct.toFixed(0)}% of supply`);
+  }
+
+  if (d.arkhamFlows.length > 0) {
+    lines.push(`\nSmart money flows (24h, Arkham):`);
+    for (const f of d.arkhamFlows.slice(0, 5)) {
+      const label = f.entityName ?? f.address.slice(0, 10) + "...";
+      const dir = f.netUSD >= 0 ? "net inflow" : "net outflow";
+      lines.push(`  ${label} (${f.entityType ?? "unknown"}): ${dir} $${formatCompact(Math.abs(f.netUSD)).replace("$", "")}`);
+    }
+    const totalNet = d.arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
+    lines.push(`  Net flow: ${totalNet >= 0 ? "+" : ""}$${formatCompact(Math.abs(totalNet)).replace("$", "")}`);
+  }
+
   lines.push(`\nUser question: ${d.question}`);
   lines.push(
-    "\nBased ONLY on the data above, give a 2-sentence take: what's the main risk and is there opportunity? Write like a crypto trader talking to a friend, not a report. Do NOT invent numbers or facts not in the data.",
+    "\nBased ONLY on the data above, give a concise take: what's the main risk and is there opportunity? If Arkham holder/flow data is present, factor in concentration risk and smart money direction. Write like a crypto trader talking to a friend, not a report. Do NOT invent numbers or facts not in the data.",
   );
   return lines.join("\n");
 }
@@ -1626,6 +1652,16 @@ function buildTemplateSummary(d: ResearchData): string {
   if (d.age.whaleAlert === true) parts.push("Whale transfer detected.");
   if (d.age.distributingWallets) parts.push(`${d.age.distributingWallets} wallets distributing.`);
   if (d.gecko?.priceTrend) parts.push(`Price trend: ${d.gecko.priceTrend}.`);
+  if (d.arkhamHolders.length > 0) {
+    const top3Pct = d.arkhamHolders.slice(0, 3).reduce((s, h) => s + h.percentage, 0);
+    if (top3Pct > 50) parts.push(`High concentration: top 3 holders own ${top3Pct.toFixed(0)}%.`);
+  }
+  if (d.arkhamFlows.length > 0) {
+    const netFlow = d.arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
+    if (Math.abs(netFlow) > 10_000) {
+      parts.push(`Smart money 24h: ${netFlow >= 0 ? "+" : ""}${formatCompact(netFlow)} net flow.`);
+    }
+  }
   if (d.opportunityScore >= 70) {
     parts.push("Looks promising, but always DYOR.");
   } else if (d.opportunityScore < 40) {
@@ -1635,55 +1671,148 @@ function buildTemplateSummary(d: ResearchData): string {
 }
 
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
+async function fetchCoinGeckoSearchTrending(): Promise<Array<{ id: string; name: string; symbol: string; market_cap_rank: number | null }>> {
+  try {
+    const resp = await fetch("https://api.coingecko.com/api/v3/search/trending", {
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!resp.ok) return [];
+    const data = (await resp.json()) as { coins?: Array<{ item: { id: string; name: string; symbol: string; market_cap_rank: number | null } }> };
+    return (data.coins ?? []).map((c) => c.item);
+  } catch { return []; }
+}
+
+type TrendingCandidate = {
+  symbol: string;
+  name: string;
+  address: string;
+  chainId: string;
+  priceUsd: string | null;
+  liquidity: number;
+  volume24h: number;
+  priceChange24h: number | null;
+  marketCap: number | null;
+  source: "dexscreener" | "coingecko";
+};
+
 async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
   const q = (req.question ?? req.rawText ?? "").toLowerCase();
   const isTrending = /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
   if (!isTrending) return false;
 
   const filterChains = detectChainsFromText(req.rawText ?? "");
-  const chainsToQuery = filterChains.length > 0
-    ? filterChains
-    : ["ethereum", "base", "solana", "bsc"];
   const chainLabel = filterChains.length > 0 ? filterChains.join(" + ") : "all chains";
-  log.agent("research", `trending query: chains=[${chainsToQuery.join(",")}] text="${q.slice(0, 60)}"`);
+  log.agent("research", `trending query: chains=[${filterChains.join(",") || "all"}] text="${q.slice(0, 60)}"`);
 
   try {
-    type TaggedCGItem = CoinGeckoMarketItem & { _sourceChain: string };
-    const cgQueries = chainsToQuery.map(async (chain) => {
-      const items = await fetchCoinGeckoTrending(chain, 10);
-      return items.map((i) => ({ ...i, _sourceChain: chain }) as TaggedCGItem);
-    });
-    const cgResults = (await Promise.all(cgQueries)).flat()
-      .sort((a, b) => (b.total_volume ?? 0) - (a.total_volume ?? 0));
+    // Source 1: DexScreener profiles + boosts (real DEX activity)
+    // Source 2: CoinGecko /search/trending (search buzz)
+    const [profiles, boosts, cgTrending] = await Promise.all([
+      getLatestTokenProfiles().catch(() => []),
+      getLatestBoosts().catch(() => []),
+      fetchCoinGeckoSearchTrending(),
+    ]);
 
-    const seen = new Set<string>();
-    const uniqueTokens: TaggedCGItem[] = [];
-    for (const t of cgResults) {
-      if (seen.has(t.id)) continue;
-      seen.add(t.id);
-      uniqueTokens.push(t);
-      if (uniqueTokens.length >= 12) break;
+    const candidates: TrendingCandidate[] = [];
+    const seenAddr = new Set<string>();
+
+    // Process DexScreener profiles + boosts
+    const dexTokens = [...profiles, ...boosts];
+    for (const t of dexTokens) {
+      const addr = (t as { tokenAddress?: string }).tokenAddress ?? (t as { address?: string }).address ?? "";
+      const cid = (t as { chainId?: string }).chainId ?? "";
+      if (!addr || !cid) continue;
+      const key = `${cid}:${addr.toLowerCase()}`;
+      if (seenAddr.has(key)) continue;
+
+      if (filterChains.length > 0 && !filterChains.includes(cid)) continue;
+
+      seenAddr.add(key);
+      candidates.push({
+        symbol: "",
+        name: "",
+        address: addr,
+        chainId: cid,
+        priceUsd: null,
+        liquidity: 0,
+        volume24h: 0,
+        priceChange24h: null,
+        marketCap: null,
+        source: "dexscreener",
+      });
     }
 
-    const dexLookups = await Promise.all(
-      uniqueTokens.map(async (t) => {
+    // Process CoinGecko trending -- cross-ref with DexScreener for addresses
+    const cgWithPairs = await Promise.all(
+      cgTrending.slice(0, 10).map(async (coin) => {
+        if (TRENDING_EXCLUDE_SYMBOLS.has(coin.symbol.toUpperCase())) return null;
         try {
-          const { pairs } = await searchPairs(t.symbol, { limit: 8 });
-          const match = pairs
+          const { pairs } = await searchPairs(coin.symbol, { limit: 5 });
+          const filtered = pairs
             .filter((p) => {
               const sym = p.baseToken?.symbol?.toUpperCase();
-              return sym === t.symbol.toUpperCase() && p.chainId === t._sourceChain;
+              if (sym !== coin.symbol.toUpperCase()) return false;
+              if (filterChains.length > 0 && !filterChains.includes(p.chainId)) return false;
+              return true;
             })
-            .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
-          return { cg: t as CoinGeckoMarketItem, pair: match ?? null, sourceChain: t._sourceChain };
-        } catch { return { cg: t as CoinGeckoMarketItem, pair: null, sourceChain: t._sourceChain }; }
+            .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
+          return filtered[0] ?? null;
+        } catch { return null; }
       }),
     );
 
-    const top = dexLookups
-      .filter((d) => d.pair?.baseToken?.address)
+    for (let i = 0; i < cgTrending.length && i < 10; i++) {
+      const pair = cgWithPairs[i];
+      if (!pair?.baseToken?.address) continue;
+      const key = `${pair.chainId}:${pair.baseToken.address.toLowerCase()}`;
+      if (seenAddr.has(key)) continue;
+      seenAddr.add(key);
+      candidates.push({
+        symbol: pair.baseToken.symbol ?? cgTrending[i]!.symbol,
+        name: pair.baseToken.name ?? cgTrending[i]!.name,
+        address: pair.baseToken.address,
+        chainId: pair.chainId,
+        priceUsd: pair.priceUsd ?? null,
+        liquidity: pair.liquidity?.usd ?? 0,
+        volume24h: pair.volume?.h24 ?? 0,
+        priceChange24h: pair.priceChange?.h24 ?? null,
+        marketCap: pair.marketCap ?? null,
+        source: "coingecko",
+      });
+    }
+
+    // Enrich DexScreener candidates that lack pair data
+    const needsEnrich = candidates.filter((c) => c.source === "dexscreener" && !c.symbol);
+    if (needsEnrich.length > 0) {
+      const enriched = await Promise.all(
+        needsEnrich.slice(0, 12).map(async (c) => {
+          try {
+            const { pairs } = await searchPairs(c.address, { limit: 3 });
+            const match = pairs
+              .filter((p) => p.baseToken?.address?.toLowerCase() === c.address.toLowerCase())
+              .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+            if (match?.baseToken) {
+              c.symbol = match.baseToken.symbol ?? "";
+              c.name = match.baseToken.name ?? "";
+              c.priceUsd = match.priceUsd ?? null;
+              c.liquidity = match.liquidity?.usd ?? 0;
+              c.volume24h = match.volume?.h24 ?? 0;
+              c.priceChange24h = match.priceChange?.h24 ?? null;
+              c.marketCap = match.marketCap ?? null;
+            }
+          } catch { /* skip */ }
+        }),
+      );
+    }
+
+    // Filter and sort
+    const filtered = candidates
+      .filter((c) => c.symbol && !TRENDING_EXCLUDE_SYMBOLS.has(c.symbol.toUpperCase()))
+      .filter((c) => c.liquidity >= 1_000)
+      .sort((a, b) => b.volume24h - a.volume24h)
       .slice(0, 8);
-    if (top.length === 0) {
+
+    if (filtered.length === 0) {
       bus.emit("RESEARCH_RESULT", {
         requestId: req.requestId,
         address: "trending",
@@ -1698,53 +1827,44 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       return true;
     }
 
+    // Safety scan (parallel, 6s cap)
     const safetyMap = new Map<string, { score: number; flags: string[] }>();
-    const tokensWithAddr = top.filter((d) => d.pair?.baseToken?.address);
     try {
       const scans = await Promise.all(
-        tokensWithAddr.slice(0, 8).map(async (d) => {
-          const addr = d.pair!.baseToken.address;
-          const cc = d.pair!.chainId === "solana" ? "solana" as const : "evm" as const;
+        filtered.map(async (d) => {
+          const cc = d.chainId === "solana" ? "solana" as const : "evm" as const;
           try {
             const result = await Promise.race([
-              runSecurityScan(addr, cc, d.pair!.chainId),
+              runSecurityScan(d.address, cc, d.chainId),
               new Promise<{ score: number; flags: string[]; ok: boolean }>((resolve) =>
                 setTimeout(() => resolve({ score: -1, flags: [], ok: false }), 6_000),
               ),
             ]);
-            return { address: addr, ...result };
+            return { address: d.address, ...result };
           } catch {
-            return { address: addr, score: -1, flags: [] as string[], ok: false };
+            return { address: d.address, score: -1, flags: [] as string[], ok: false };
           }
         }),
       );
       for (const s of scans) safetyMap.set(s.address, s);
     } catch { /* safety scan failed */ }
 
+    // Format output
     const lines: string[] = [];
     lines.push(`Trending on ${chainLabel}:\n`);
     let rank = 0;
-    for (const d of top) {
+    for (const d of filtered) {
       rank++;
-      const sym = d.cg.symbol.toUpperCase();
-      const name = d.cg.name;
-      const price = d.pair?.priceUsd
-        ? `$${parseFloat(d.pair.priceUsd).toPrecision(4)}`
-        : d.cg.current_price != null ? `$${d.cg.current_price.toPrecision(4)}` : "n/a";
-      const vol = d.cg.total_volume
-        ? formatCompact(d.cg.total_volume)
-        : d.pair?.volume?.h24 ? formatCompact(d.pair.volume.h24) : "";
-      const liq = d.pair?.liquidity?.usd ? formatCompact(d.pair.liquidity.usd) : "";
-      const h24 = d.cg.price_change_percentage_24h != null
-        ? `${d.cg.price_change_percentage_24h > 0 ? "+" : ""}${d.cg.price_change_percentage_24h.toFixed(1)}%`
-        : d.pair?.priceChange?.h24 != null
-          ? `${d.pair.priceChange.h24 > 0 ? "+" : ""}${d.pair.priceChange.h24.toFixed(1)}%`
-          : "";
-      const mc = d.cg.market_cap ? formatCompact(d.cg.market_cap) : "";
-      const addr = d.pair?.baseToken?.address ?? "";
-      const chain = d.pair?.chainId ?? d.sourceChain;
+      const sym = d.symbol.toUpperCase();
+      const price = d.priceUsd ? `$${parseFloat(d.priceUsd).toPrecision(4)}` : "n/a";
+      const vol = d.volume24h > 0 ? formatCompact(d.volume24h) : "";
+      const liq = d.liquidity > 0 ? formatCompact(d.liquidity) : "";
+      const h24 = d.priceChange24h != null
+        ? `${d.priceChange24h > 0 ? "+" : ""}${d.priceChange24h.toFixed(1)}%`
+        : "";
+      const mc = d.marketCap ? formatCompact(d.marketCap) : "";
 
-      const safety = addr ? safetyMap.get(addr) : undefined;
+      const safety = safetyMap.get(d.address);
       let safetyLabel = "";
       if (safety && safety.score >= 0) {
         if (safety.flags.includes("HONEYPOT")) safetyLabel = " | HONEYPOT";
@@ -1753,11 +1873,11 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
         else safetyLabel = " | RISKY";
       }
 
-      lines.push(`${rank}. ${sym} (${name})${safetyLabel}`);
-      const details = [chain, price, liq ? `liq ${liq}` : "", `24h ${h24}`, vol ? `vol ${vol}` : "", mc ? `mc ${mc}` : ""]
+      lines.push(`${rank}. ${sym} (${d.name})${safetyLabel}`);
+      const details = [d.chainId, price, liq ? `liq ${liq}` : "", h24 ? `24h ${h24}` : "", vol ? `vol ${vol}` : "", mc ? `mc ${mc}` : ""]
         .filter(Boolean).join(" | ");
       lines.push(`   ${details}`);
-      if (addr) lines.push(`   ${addr}`);
+      lines.push(`   ${d.address}`);
     }
 
     lines.push(`\nPaste any address above to research or trade.`);
@@ -1791,7 +1911,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
   return true;
 }
 
-async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Promise<void> {
+async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkham?: ArkhamClient): Promise<void> {
   log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"}`);
 
   if (!req.address && !req.tokenName) {
@@ -1856,7 +1976,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
       }
     : null;
 
-  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS] = await Promise.allSettled([
+  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS] = await Promise.allSettled([
     runSecurityScan(address, chainClass, resolvedChainId),
     checkAgeAndHolders(address, chainClass, resolvedChainId),
     checkTrendSignal(ticker, tokenName, true),
@@ -1864,6 +1984,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
     chainClass === "solana" ? fetchBirdeye(address) : Promise.resolve(null),
     searchBrave(`${ticker} ${tokenName} crypto`),
     fetchGeckoTerminal(address, resolvedChainId),
+    arkham ? arkham.getTokenHolders(resolvedChainId, address, 10) : Promise.resolve([] as ArkhamHolder[]),
+    arkham ? arkham.getTokenFlows(resolvedChainId, address, "24h", 10) : Promise.resolve([] as ArkhamFlow[]),
   ]);
 
   const security =
@@ -1886,6 +2008,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
   const birdeye = birdS.status === "fulfilled" ? birdS.value : null;
   const brave = braveS.status === "fulfilled" ? braveS.value : [];
   const gecko = geckoS.status === "fulfilled" ? geckoS.value : null;
+  const arkhamHolders = arkHoldersS.status === "fulfilled" ? arkHoldersS.value : [];
+  const arkhamFlows = arkFlowsS.status === "fulfilled" ? arkFlowsS.value : [];
 
   const tavilyHit = await checkTavily(ticker, 7);
   if (tavilyHit && !trend.sources.includes("tavily")) {
@@ -1897,6 +2021,14 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
   let baseScore = security.score;
   if (age.whaleAlert) baseScore = Math.max(0, baseScore - 15);
   if (age.distributingWallets) baseScore = Math.max(0, baseScore - age.distributingWallets * 5);
+  if (arkhamHolders.length > 0) {
+    const top3ArkhamPct = arkhamHolders.slice(0, 3).reduce((s, h) => s + h.percentage, 0);
+    if (top3ArkhamPct > 60) baseScore = Math.max(0, baseScore - 10);
+  }
+  if (arkhamFlows.length > 0) {
+    const totalNet = arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
+    if (totalNet < -50_000) baseScore = Math.max(0, baseScore - 5);
+  }
 
   const multiplier = computeNarrativeMultiplier(trend);
   const opportunityScore = Math.min(100, Math.round(baseScore * multiplier));
@@ -1916,6 +2048,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
     brave,
     gecko,
     priceChange,
+    arkhamHolders,
+    arkhamFlows,
     opportunityScore,
     question: req.question,
   };
@@ -1955,14 +2089,14 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
  * Job 1: background polling loop — emits ALPHA_FOUND for tokens that pass all gates.
  * Job 2: RESEARCH_REQUEST listener — emits RESEARCH_RESULT with synthesised verdict.
  */
-export function startResearchAgent(deps?: { llm?: LlmClient }): { stop(): void } {
+export function startResearchAgent(deps?: { llm?: LlmClient; arkham?: ArkhamClient }): { stop(): void } {
   void runPollingCycle();
   const timer = setInterval(() => {
     void runPollingCycle();
   }, POLL_INTERVAL_MS);
 
   const onRequest = (req: ResearchRequest) => {
-    void handleResearchRequest(req, deps?.llm);
+    void handleResearchRequest(req, deps?.llm, deps?.arkham);
   };
   bus.on("RESEARCH_REQUEST", onRequest);
 

@@ -358,6 +358,26 @@ async function handleExecute(intentId: string): Promise<void> {
     return;
   }
 
+  // Handle user-initiated sell: find position, execute reverse swap
+  if (intent.side === "sell") {
+    const userPositions = Array.from(positionStore.values()).filter(
+      (p) => p.userId === intent.userId && p.address.toLowerCase() === intent.address.toLowerCase(),
+    );
+    if (userPositions.length === 0) {
+      bus.emit("QUOTE_FAILED", {
+        intentId,
+        address: intent.address,
+        reason: "You don't have an open position in this token. Nothing to sell.",
+      });
+      contextCache.delete(intentId);
+      return;
+    }
+    const pos = userPositions[0]!;
+    await handleSell({ positionId: pos.positionId, fraction: 1.0, triggeredBy: { kind: "multiplier", value: 0 }, emittedAt: Date.now() });
+    contextCache.delete(intentId);
+    return;
+  }
+
   console.log(`[execution] ${intent.chain} swap ${intent.address.slice(0, 10)}... for user ${intent.userId}`);
 
   let receipt: ExecutionReceipt;

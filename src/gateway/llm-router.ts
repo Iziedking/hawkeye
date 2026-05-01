@@ -20,7 +20,8 @@ const URGENCY_FAST = /\b(now|asap|instant|ape|fast|quick)\b/i;
 const URGENCY_CAREFUL = /\b(careful|slow|safe|cautious)\b/i;
 
 const DEGEN_KEYWORDS =
-  /\b(ape|buy|send\s*it|yolo|snipe|get|grab|long|pump|moon|degen|letsgo|go|in)\b/i;
+  /\b(ape|buy|send\s*it|yolo|snipe|get|grab|long|pump|moon|degen|letsgo|go|in|sell|dump|exit|close|short)\b/i;
+const SELL_KEYWORDS = /\b(sell|dump|exit|close|short)\b/i;
 
 export type RouterInput = {
   text: string;
@@ -73,6 +74,7 @@ type SnipeData = {
   chain: ChainClass;
   amount: TradeAmount;
   urgency: TradingMode;
+  side: "buy" | "sell";
 };
 
 function tryDegenShortcut(text: string): SnipeData | null {
@@ -104,11 +106,13 @@ function tryDegenShortcut(text: string): SnipeData | null {
   // If meaningful words remain, this isn't a bare degen snipe — let LLM classify
   if (remainder.length > 15) return null;
 
+  const isSell = SELL_KEYWORDS.test(text);
   return {
     address,
     chain,
     amount: extractAmount(text),
     urgency: detectUrgency(text) === "NORMAL" ? "INSTANT" : detectUrgency(text),
+    side: isSell ? "sell" : "buy",
   };
 }
 
@@ -304,7 +308,7 @@ function validateTradeData(data: Record<string, unknown>): SnipeData | null {
   const urgency = data["urgency"];
   const mode: TradingMode = urgency === "INSTANT" || urgency === "CAREFUL" ? urgency : "NORMAL";
 
-  return { address, chain, amount, urgency: mode };
+  return { address, chain, amount, urgency: mode, side: "buy" };
 }
 
 const SWAP_KW = /\b(swap|exchange|convert|trade)\b/i;
@@ -335,18 +339,21 @@ function regexFallback(input: RouterInput): RouterResult {
       });
     }
 
+    const isSell = SELL_KEYWORDS.test(lower);
     return buildResult(input, "DEGEN_SNIPE", 0.6, {
       address,
       chain,
       amount: extractAmount(text),
       urgency: detectUrgency(text) === "NORMAL" ? "INSTANT" : detectUrgency(text),
+      side: isSell ? "sell" : "buy",
     });
   }
 
   if (SWAP_KW.test(lower)) {
+    const isSell = SELL_KEYWORDS.test(lower);
     return buildResult(input, "TRADE", 0.7, {
       query: text,
-      side: "buy",
+      side: isSell ? "sell" : "buy",
     });
   }
 

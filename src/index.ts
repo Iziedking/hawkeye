@@ -30,6 +30,7 @@ import { startResearchAgent } from "./agents/research/index";
 import { startMonitorAgent } from "./agents/monitor/index";
 import { startCopyTradeAgent } from "./agents/copy-trade/index";
 import { KeeperHubClient, KeeperHubError } from "./integrations/keeperhub/index";
+import { ArkhamClient } from "./integrations/arkham/index";
 
 loadEnvLocal();
 
@@ -195,7 +196,14 @@ async function main(): Promise<void> {
   const stopSafety = startSafetyAgent();
   const stopQuote = startQuoteAgent();
   const stopExecution = startExecutionAgent({ walletManager: wm, keeperHub });
-  const stopResearch = startResearchAgent(llm ? { llm } : {});
+  let arkham: ArkhamClient | undefined;
+  try {
+    arkham = new ArkhamClient();
+    log.info("Arkham Intelligence client initialized");
+  } catch {
+    log.warn("ARKHAM_API_KEY not set — research will run without Arkham data");
+  }
+  const stopResearch = startResearchAgent({ llm: llm ?? undefined, arkham });
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
 
