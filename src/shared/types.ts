@@ -201,6 +201,13 @@ export type ResearchResult = {
   liquidityUsd: number | null;
   flags: SafetyFlag[];
   completedAt: number;
+  tokenName?: string;
+  symbol?: string;
+  volume24h?: number | null;
+  priceChange24h?: number | null;
+  fdv?: number | null;
+  opportunityScore?: number | null;
+  isTrending?: boolean;
 };
 
 export type GeneralQueryRequest = {

@@ -41,18 +41,28 @@ const CONVERSATIONAL_PROMPT = [
   "You are HAWKEYE, an autonomous on-chain crypto agent on Telegram.",
   "",
   "Your live capabilities:",
-  "- Trade/snipe tokens (user pastes a contract address)",
-  "- Research token safety, liquidity, price (DexScreener + GoPlus)",
-  "- Find alpha: trending tokens, smart money, new listings",
-  "- Manage wallets: create agent wallet, connect external wallet",
+  "- Trade/snipe tokens (user pastes a contract address or says 'buy [token]')",
+  "- Research token safety, liquidity, price via DexScreener, GoPlus, GeckoTerminal, Etherscan",
+  "- Find alpha: trending tokens, smart money flows (Dune), TVL movers (DeFiLlama)",
+  "- Copy-trade: watch whale wallets with /watch, auto-mirror their buys",
+  "- Manage wallets: /wallet to create agent wallet, connect external wallet",
+  "- Trading modes: /mode degen (auto-execute), /mode normal (confirm risky), /mode safe (reject risky)",
+  "- Portfolio: /balance for native balances, /positions for open trades",
   "",
-  "Coming soon: bridging, LP provision, portfolio tracking, copy trading, wallet analysis.",
+  "Data sources (real-time, never guessed):",
+  "- DexScreener: pairs, prices, liquidity, volume, boosts, trending tokens",
+  "- GoPlus: contract security (honeypot, tax, owner, proxy detection)",
+  "- GeckoTerminal: OHLCV candles, price trends, volatility",
+  "- Etherscan: holder concentration, whale movements, contract age",
+  "- CoinGecko: market cap, sentiment",
+  "- DeFiLlama: TVL, protocol rankings, category data",
+  "- Dune Analytics: smart money token flows",
   "",
   "Rules:",
   "- Be direct and natural. No fluff. 2-4 sentences max.",
-  "- Never hallucinate prices, addresses, or data.",
-  "- If the user wants to do something you can help with, tell them exactly how (e.g. paste a CA, say /wallet).",
-  "- If something is coming soon, say so honestly but mention what you CAN do now.",
+  "- NEVER invent prices, market caps, TVL numbers, addresses, or any data. If you don't have it, say 'paste the contract address and I'll look it up' or suggest the right command.",
+  "- If user asks about a specific token price/data, tell them to paste the contract address so you can fetch real data.",
+  "- If the user wants to do something you can help with, tell them exactly how.",
   "- You understand swaps, bridges, LP, DeFi, MEV, tokenomics, on-chain analysis.",
   "- Do not use markdown. Use plain text only. No asterisks, no headers.",
 ].join("\n");
@@ -175,6 +185,51 @@ export async function startTelegramGateway(
     }
   }
 
+  async function replyWithKeyboard(
+    ctx: ReplyCtx,
+    text: string,
+    keyboard: InlineKeyboard,
+  ): Promise<void> {
+    addMessage(ctx.userId, "assistant", text.replace(/<[^>]+>/g, ""));
+    try {
+      await bot.api.sendMessage(ctx.chatId, text, {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      });
+    } catch (err) {
+      console.error("[telegram] reply failed:", err);
+    }
+  }
+
+  function formatUsd(n: number): string {
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
+    if (n >= 1) return n.toFixed(2);
+    return n.toPrecision(4);
+  }
+
+  function buildTrendingKeyboard(summary: string): InlineKeyboard | null {
+    const addrRegex = /^\s+(0x[a-fA-F0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})\s*$/gm;
+    const symRegex = /^\d+\.\s+(\S+)\s/gm;
+    const addresses: string[] = [];
+    const symbols: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = addrRegex.exec(summary)) !== null && addresses.length < 3) {
+      addresses.push(m[1]!);
+    }
+    while ((m = symRegex.exec(summary)) !== null && symbols.length < 3) {
+      symbols.push(m[1]!);
+    }
+    if (addresses.length === 0) return null;
+    const kb = new InlineKeyboard();
+    for (let i = 0; i < addresses.length; i++) {
+      const label = symbols[i] ?? addresses[i]!.slice(0, 8);
+      kb.text(`Research ${label}`, `research:${addresses[i]}`);
+    }
+    return kb;
+  }
+
   // Bus listeners for async agent responses
   const onExecuted = (pos: import("../shared/types").TradeExecutedPayload): void => {
     const pending = replyByRequestId.get(pos.intentId);
@@ -263,7 +318,51 @@ export async function startTelegramGateway(
     const pending = replyByRequestId.get(res.requestId);
     if (!pending) return;
     replyByRequestId.delete(res.requestId);
-    void reply(pending.ctx, html(res.summary), undefined);
+
+    if (res.isTrending || res.address === "trending") {
+      const kb = buildTrendingKeyboard(res.summary);
+      if (kb) {
+        void replyWithKeyboard(pending.ctx, html(res.summary), kb);
+      } else {
+        void reply(pending.ctx, html(res.summary), undefined);
+      }
+      return;
+    }
+
+    const lines: string[] = [];
+    const label = res.symbol ?? res.tokenName ?? res.address.slice(0, 10);
+    if (res.symbol || res.tokenName) {
+      lines.push(`<b>${html(res.symbol ?? "")}${res.tokenName ? ` (${html(res.tokenName)})` : ""}</b>`);
+    }
+    if (res.safetyScore !== null) {
+      const tag = res.safetyScore >= 70 ? "OK" : res.safetyScore >= 40 ? "CAUTION" : "DANGER";
+      lines.push(`Safety: <b>${res.safetyScore}/100</b> [${tag}]`);
+    }
+    if (res.flags.length > 0) {
+      lines.push(`Flags: ${res.flags.join(", ")}`);
+    }
+    const stats: string[] = [];
+    if (res.priceUsd != null) stats.push(`Price: $${formatUsd(res.priceUsd)}`);
+    if (res.liquidityUsd != null) stats.push(`Liq: $${formatUsd(res.liquidityUsd)}`);
+    if (stats.length) lines.push(stats.join(" | "));
+    const stats2: string[] = [];
+    if (res.priceChange24h != null) {
+      const sign = res.priceChange24h >= 0 ? "+" : "";
+      stats2.push(`24h: ${sign}${res.priceChange24h.toFixed(1)}%`);
+    }
+    if (res.volume24h != null) stats2.push(`Vol: $${formatUsd(res.volume24h)}`);
+    if (res.fdv != null && res.fdv > 0) stats2.push(`FDV: $${formatUsd(res.fdv)}`);
+    if (stats2.length) lines.push(stats2.join(" | "));
+    if (res.opportunityScore != null) {
+      lines.push(`Opportunity: <b>${res.opportunityScore}/100</b>`);
+    }
+    lines.push("");
+    lines.push(html(res.summary));
+
+    const kb = new InlineKeyboard()
+      .text(`Buy ${label}`, `buy:${res.address}:${res.chain}`)
+      .text("Refresh", `research:${res.address}`);
+    void replyWithKeyboard(pending.ctx, lines.join("\n"), kb);
   };
 
   const onQuoteFailed = (qf: QuoteFailedPayload): void => {
@@ -711,7 +810,57 @@ export async function startTelegramGateway(
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     const userId = String(ctx.from?.id ?? "unknown");
+    const chatId = ctx.chat?.id ?? ctx.from.id;
+    const rctx: ReplyCtx = { chatId, userId };
 
+    // research:{address} — trigger research for a token from trending
+    const researchMatch = data.match(/^research:(.+)$/);
+    if (researchMatch) {
+      const addr = researchMatch[1]!;
+      await ctx.answerCallbackQuery({ text: "Researching..." });
+      const requestId = randomUUID();
+      replyByRequestId.set(requestId, { ctx: rctx, rootHash: null });
+      bus.emit("RESEARCH_REQUEST", {
+        requestId,
+        userId,
+        channel: "telegram" as MessageChannel,
+        address: addr,
+        tokenName: null,
+        chain: null,
+        question: `Research ${addr}`,
+        rawText: `research ${addr}`,
+        createdAt: Date.now(),
+      });
+      void reply(rctx, `Researching ${codeAddr(addr)}...`);
+      return;
+    }
+
+    // buy:{address}:{chain} — start trade from research card
+    const buyMatch = data.match(/^buy:(.+):(evm|solana)$/);
+    if (buyMatch) {
+      const addr = buyMatch[1]!;
+      const chain = buyMatch[2]! as ChainClass;
+      await ctx.answerCallbackQuery({ text: "Setting up trade..." });
+      const intentId = randomUUID();
+      replyByRequestId.set(intentId, { ctx: rctx, rootHash: null });
+      const mode = userSettings.get(userId)?.mode ?? "NORMAL";
+      bus.emit("TRADE_REQUEST", {
+        intentId,
+        userId,
+        channel: "telegram" as MessageChannel,
+        address: addr,
+        chain,
+        amount: { value: 0, unit: "NATIVE" } as TradeAmount,
+        exits: [],
+        urgency: mode as TradingMode,
+        rawText: `buy ${addr}`,
+        createdAt: Date.now(),
+      });
+      void reply(rctx, `Processing trade for ${codeAddr(addr)}...\nSafety + Quote agents running.`);
+      return;
+    }
+
+    // confirm/reject trade
     const confirmMatch = data.match(/^(confirm|reject):(.+)$/);
     if (!confirmMatch) {
       await ctx.answerCallbackQuery({ text: "Unknown action" });

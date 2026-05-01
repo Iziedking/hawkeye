@@ -1511,7 +1511,7 @@ function buildResearchPrompt(d: ResearchData): string {
     );
   lines.push(`\nUser question: ${d.question}`);
   lines.push(
-    "\nGive a concise 2-3 sentence verdict on this token. Be direct — mention the most important risk or opportunity. No filler.",
+    "\nGive a concise 2-3 sentence verdict on this token based ONLY on the data above. Do NOT invent numbers, scores, or facts not present in the data. Be direct — mention the most important risk or opportunity. No filler.",
   );
   return lines.join("\n");
 }
@@ -1560,9 +1560,25 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
   try {
     const [profiles, boosts] = await Promise.all([getLatestTokenProfiles(), getLatestBoosts()]);
 
-    const chainFilter = req.chain === "solana" ? "solana" : req.chain === "evm" ? null : null;
-    const solanaKeywords = /\bsolana\b|sol\b/i.test(req.rawText);
-    const filterChain = chainFilter ?? (solanaKeywords ? "solana" : null);
+    const CHAIN_KEYWORDS: Record<string, string> = {
+      ethereum: "ethereum", eth: "ethereum",
+      base: "base", arbitrum: "arbitrum", arb: "arbitrum",
+      optimism: "optimism", op: "optimism",
+      polygon: "polygon", matic: "polygon",
+      bsc: "bsc", bnb: "bsc", binance: "bsc",
+      avalanche: "avalanche", avax: "avalanche",
+      blast: "blast", scroll: "scroll", linea: "linea",
+      mantle: "mantle", zksync: "zksync",
+      solana: "solana", sol: "solana",
+    };
+    let filterChain: string | null = null;
+    const rawLower = (req.rawText ?? "").toLowerCase();
+    for (const [kw, cid] of Object.entries(CHAIN_KEYWORDS)) {
+      if (new RegExp(`\\b${kw}\\b`).test(rawLower)) {
+        filterChain = cid;
+        break;
+      }
+    }
 
     const seen = new Set<string>();
     const candidates: Array<{ address: string; chainId: string }> = [];
@@ -1602,11 +1618,38 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       fetchDuneSmartMoney(filterChain ?? undefined),
     ]);
 
+    // Safety scan top tokens in parallel (6s timeout per token)
+    const validPairs = pairResults.filter(
+      (r) => r.pair && (r.pair.liquidity?.usd ?? 0) >= 1000,
+    );
+    const safetyMap = new Map<string, { score: number; flags: string[] }>();
+    try {
+      const scans = await Promise.all(
+        validPairs.slice(0, 8).map(async (r) => {
+          const cc = r.chainId === "solana" ? "solana" as const : "evm" as const;
+          try {
+            const result = await Promise.race([
+              runSecurityScan(r.address, cc, r.chainId),
+              new Promise<{ score: number; flags: string[]; ok: boolean }>((resolve) =>
+                setTimeout(() => resolve({ score: -1, flags: [], ok: false }), 6_000),
+              ),
+            ]);
+            return { address: r.address, ...result };
+          } catch {
+            return { address: r.address, score: -1, flags: [] as string[], ok: false };
+          }
+        }),
+      );
+      for (const s of scans) safetyMap.set(s.address, s);
+    } catch {
+      // Safety scan failed entirely — continue without labels
+    }
+
     const lines: string[] = [];
     const chainLabel = filterChain ?? "all chains";
     lines.push(`Trending on ${chainLabel}:\n`);
     let rank = 0;
-    for (const r of pairResults) {
+    for (const r of validPairs) {
       if (!r.pair) continue;
       rank++;
       const sym = r.pair.baseToken?.symbol ?? "???";
@@ -1615,7 +1658,15 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       const liq = r.pair.liquidity?.usd ? `$${(r.pair.liquidity.usd / 1000).toFixed(0)}k` : "n/a";
       const h24 = r.pair.priceChange?.h24 != null ? `${r.pair.priceChange.h24 > 0 ? "+" : ""}${r.pair.priceChange.h24.toFixed(1)}%` : "";
       const vol = r.pair.volume?.h24 ? `$${(r.pair.volume.h24 / 1000).toFixed(0)}k` : "";
-      lines.push(`${rank}. ${sym} (${name})`);
+      const safety = safetyMap.get(r.address);
+      let safetyLabel = "";
+      if (safety && safety.score >= 0) {
+        if (safety.flags.includes("HONEYPOT")) safetyLabel = " | HONEYPOT";
+        else if (safety.score >= 70) safetyLabel = " | SAFE";
+        else if (safety.score >= 40) safetyLabel = " | CAUTION";
+        else safetyLabel = " | RISKY";
+      }
+      lines.push(`${rank}. ${sym} (${name})${safetyLabel}`);
       lines.push(`   ${r.chainId} | ${price} | liq ${liq} | 24h ${h24}${vol ? ` | vol ${vol}` : ""}`);
       lines.push(`   ${r.address}`);
     }
@@ -1628,7 +1679,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       for (const p of llamaTrending) {
         const tvl = `$${(p.tvl / 1_000_000).toFixed(1)}M`;
         const chg = p.change1d != null ? ` | 1d ${p.change1d > 0 ? "+" : ""}${p.change1d.toFixed(1)}%` : "";
-        lines.push(`  ${p.name} (${p.symbol}) | TVL ${tvl}${chg} | ${p.category}`);
+        lines.push(`  ${p.name}${p.symbol ? ` (${p.symbol})` : ""} | TVL ${tvl}${chg} | ${p.category}`);
       }
     }
 
@@ -1654,6 +1705,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       liquidityUsd: null,
       flags: [],
       completedAt: Date.now(),
+      isTrending: true,
     });
   } catch (err) {
     console.error("[research] trending query failed:", err);
@@ -1797,6 +1849,12 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
     liquidityUsd,
     flags: security.flags,
     completedAt: Date.now(),
+    tokenName,
+    symbol: ticker,
+    volume24h: best?.volume?.h24 ?? null,
+    priceChange24h: priceChange?.h24 ?? null,
+    fdv: best?.fdv ?? null,
+    opportunityScore,
   } satisfies ResearchResult);
 
   console.log(`[research] RESEARCH_RESULT emitted for ${ticker} (opportunity=${opportunityScore})`);
