@@ -1,9 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { envOr } from "../../shared/env";
-import type {
-  OgInferenceRequest,
-  OgInferenceResponse,
-} from "../0g/compute";
+import type { OgInferenceRequest, OgInferenceResponse } from "../0g/compute";
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
@@ -58,14 +55,17 @@ export class FallbackLlmClient {
   private primaryHealthy = true;
   private log: (msg: string) => void;
 
-  constructor(
-    primary: LlmLike | null,
-    fallback: LlmLike | null,
-    log?: (msg: string) => void,
-  ) {
+  get ogHealthy(): boolean { return this.primaryHealthy && this.primary !== null; }
+  get usingFallback(): boolean { return !this.primaryHealthy && this.fallback !== null; }
+  get fallbackName(): string | null {
+    if (!this.usingFallback || !this.fallback) return null;
+    return (this.fallback as { model?: string }).model ?? "fallback";
+  }
+
+  constructor(primary: LlmLike | null, fallback: LlmLike | null, log?: (msg: string) => void) {
     this.primary = primary;
     this.fallback = fallback;
-    this.log = log ?? ((m) => console.log(`[fallback-llm] ${m}`));
+    this.log = log ?? ((m) => console.log(`[llm] ${m}`));
   }
 
   async ready(): Promise<void> {
@@ -76,11 +76,11 @@ export class FallbackLlmClient {
         this.log("0G Compute ready (primary)");
       } catch {
         this.primaryHealthy = false;
-        this.log("0G Compute unavailable" + (this.fallback ? ", Claude is primary" : ""));
+        this.log("0G Compute unavailable" + (this.fallback ? ", fallback LLM is primary" : ""));
       }
     } else {
       this.primaryHealthy = false;
-      this.log("No 0G client" + (this.fallback ? ", Claude is primary" : ""));
+      this.log("No 0G client" + (this.fallback ? ", fallback LLM is primary" : ""));
     }
   }
 

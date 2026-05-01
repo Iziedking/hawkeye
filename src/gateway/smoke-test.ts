@@ -4,7 +4,6 @@ import process from "node:process";
 import { OpenClawAdapter, decodeChatEvent } from "./openclaw-adapter";
 import { parseIntent } from "./intent-parser.legacy";
 
-
 type Listener<E> = (ev: E) => void;
 
 class FakeWebSocket {
@@ -29,16 +28,11 @@ class FakeWebSocket {
     queueMicrotask(() => this.fakeOpen());
   }
 
-  addEventListener(
-    name: "open" | "message" | "close" | "error",
-    fn: Listener<unknown>,
-  ): void {
+  addEventListener(name: "open" | "message" | "close" | "error", fn: Listener<unknown>): void {
     if (name === "open") this.openListeners.push(fn as Listener<Event>);
     else if (name === "message") this.messageListeners.push(fn as Listener<{ data: string }>);
     else if (name === "close")
-      this.closeListeners.push(
-        fn as Listener<{ code: number; reason: string; wasClean: boolean }>,
-      );
+      this.closeListeners.push(fn as Listener<{ code: number; reason: string; wasClean: boolean }>);
     else if (name === "error") this.errorListeners.push(fn as Listener<Event>);
   }
 
@@ -74,7 +68,6 @@ class FakeWebSocket {
   }
 }
 
-
 let failures = 0;
 function assert(cond: unknown, label: string): void {
   if (!cond) {
@@ -94,6 +87,7 @@ async function runAdapterLifecycle(): Promise<void> {
   (globalThis as Record<string, unknown>)["WebSocket"] = class extends FakeWebSocket {
     constructor(url: string) {
       super(url);
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
       lastFake = this;
     }
   };
@@ -165,7 +159,13 @@ async function runAdapterLifecycle(): Promise<void> {
 
     await new Promise((r) => setImmediate(r));
     assert(messages.length === 1, "inbound handler received one message");
-    const msg = messages[0] as { channel: string; userId: string; text: string; envelopeId: string; conversationId: string | null };
+    const msg = messages[0] as {
+      channel: string;
+      userId: string;
+      text: string;
+      envelopeId: string;
+      conversationId: string | null;
+    };
     assert(msg.channel === "telegram", "channel normalized");
     assert(msg.userId === "user-42", "userId extracted from senderId");
     assert(msg.conversationId === "conv-7", "conversationId extracted");
@@ -212,10 +212,7 @@ async function runPureHelpers(): Promise<void> {
   console.log("\n[2] pure helpers");
 
   // decodeChatEvent with minimal payload.
-  const a = decodeChatEvent(
-    { sender: "u-9", text: "hello", platform: "whatsapp" },
-    { id: "e-1" },
-  );
+  const a = decodeChatEvent({ sender: "u-9", text: "hello", platform: "whatsapp" }, { id: "e-1" });
   assert(a !== null && a.userId === "u-9", "decodeChatEvent: fallback to sender");
   assert(a !== null && a.channel === "whatsapp", "decodeChatEvent: fallback to platform");
   assert(a !== null && a.envelopeId === "e-1", "decodeChatEvent: envelopeId from envelope.id");

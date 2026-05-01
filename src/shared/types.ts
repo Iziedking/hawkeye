@@ -22,6 +22,7 @@ export const CHAIN_IDS = [
   "aptos",
   "tron",
   "sepolia",
+  "base-sepolia",
 ] as const;
 
 export type ChainId = (typeof CHAIN_IDS)[number];
@@ -33,25 +34,18 @@ export type TradeAmount = {
   unit: AmountUnit;
 };
 
-
-
 export type ExitTarget =
-  | { kind: "multiplier"; value: number }    // e.g. 3x
-  | { kind: "price"; usd: number }           // e.g. $0.42
-  | { kind: "fdv"; usd: number }             // e.g. FDV $10M
-  | { kind: "marketcap"; usd: number };      // e.g. MC $5M
+  | { kind: "multiplier"; value: number } // e.g. 3x
+  | { kind: "price"; usd: number } // e.g. $0.42
+  | { kind: "fdv"; usd: number } // e.g. FDV $10M
+  | { kind: "marketcap"; usd: number }; // e.g. MC $5M
 
 export type PartialExit = {
-
   percent: number;
   target: ExitTarget;
 };
 
-
-
 export type TradingMode = "INSTANT" | "NORMAL" | "CAREFUL";
-
-
 
 export type MessageChannel =
   | "whatsapp"
@@ -74,8 +68,8 @@ export type TradeIntent = {
   rawText: string;
   createdAt: number;
   chainHint?: ChainId;
+  side?: "buy" | "sell";
 };
-
 
 export type SafetyFlag =
   | "HONEYPOT"
@@ -103,7 +97,6 @@ export type SafetyReport = {
   completedAt: number;
 };
 
-
 export type Quote = {
   intentId: string;
   address: string;
@@ -115,8 +108,9 @@ export type Quote = {
   feeEstimateUsd: number;
   route: string;
   completedAt: number;
+  tokenName?: string;
+  tokenSymbol?: string;
 };
-
 
 export type StrategyDecision =
   | {
@@ -176,10 +170,10 @@ export type AlphaFoundPayload = {
   foundAt: number;
 };
 
-
 export type IntentCategory =
   | "DEGEN_SNIPE"
   | "TRADE"
+  | "SEND_TOKEN"
   | "RESEARCH_TOKEN"
   | "RESEARCH_WALLET"
   | "COPY_TRADE"
@@ -211,6 +205,13 @@ export type ResearchResult = {
   liquidityUsd: number | null;
   flags: SafetyFlag[];
   completedAt: number;
+  tokenName?: string;
+  symbol?: string;
+  volume24h?: number | null;
+  priceChange24h?: number | null;
+  fdv?: number | null;
+  opportunityScore?: number | null;
+  isTrending?: boolean;
 };
 
 export type GeneralQueryRequest = {
@@ -277,6 +278,37 @@ export type UserSettings = {
   minSafetyScore: number;
 };
 
+export type QuoteFailedPayload = {
+  intentId: string;
+  address: string;
+  reason: string;
+};
+
+export type WatchedWallet = {
+  address: string;
+  label?: string;
+  chain?: ChainClass;
+};
+
+export type UserConfirmedPayload = {
+  intentId: string;
+  confirmed: boolean;
+  userId: string;
+  at: number;
+};
+
+export type PlatformType = "telegram" | "discord" | "whatsapp" | "webchat";
+
+export type ExternalWalletEntry = {
+  address: string;
+  label: string;
+  connectedAt: number;
+  delegated: boolean;
+};
+
+export type ActiveWalletRef =
+  | { kind: "agent" }
+  | { kind: "external"; address: string };
 
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",
@@ -293,6 +325,10 @@ export const EVENT_NAMES = {
   RESEARCH_RESULT: "RESEARCH_RESULT",
   GENERAL_QUERY_REQUEST: "GENERAL_QUERY_REQUEST",
   GENERAL_QUERY_RESULT: "GENERAL_QUERY_RESULT",
+  QUOTE_FAILED: "QUOTE_FAILED",
+  ADD_WATCHED_WALLET: "ADD_WATCHED_WALLET",
+  REMOVE_WATCHED_WALLET: "REMOVE_WATCHED_WALLET",
+  USER_CONFIRMED: "USER_CONFIRMED",
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];
@@ -321,4 +357,8 @@ export type BusEvents = {
   RESEARCH_RESULT: ResearchResult;
   GENERAL_QUERY_REQUEST: GeneralQueryRequest;
   GENERAL_QUERY_RESULT: GeneralQueryResult;
+  QUOTE_FAILED: QuoteFailedPayload;
+  ADD_WATCHED_WALLET: WatchedWallet;
+  REMOVE_WATCHED_WALLET: string;
+  USER_CONFIRMED: UserConfirmedPayload;
 };

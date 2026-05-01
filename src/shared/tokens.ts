@@ -66,15 +66,26 @@ const KNOWN_TOKENS: Record<string, ChainTokens> = {
 
 // Normalize chain name from user input
 const CHAIN_ALIASES: Record<string, string> = {
-  eth: "ethereum", ethereum: "ethereum", mainnet: "ethereum",
+  eth: "ethereum",
+  ethereum: "ethereum",
+  mainnet: "ethereum",
   base: "base",
-  arb: "arbitrum", arbitrum: "arbitrum",
-  op: "optimism", optimism: "optimism",
-  poly: "polygon", polygon: "polygon", matic: "polygon",
-  bsc: "bsc", bnb: "bsc", binance: "bsc",
-  avax: "avalanche", avalanche: "avalanche",
-  sepolia: "sepolia", sep: "sepolia",
-  sol: "solana", solana: "solana",
+  arb: "arbitrum",
+  arbitrum: "arbitrum",
+  op: "optimism",
+  optimism: "optimism",
+  poly: "polygon",
+  polygon: "polygon",
+  matic: "polygon",
+  bsc: "bsc",
+  bnb: "bsc",
+  binance: "bsc",
+  avax: "avalanche",
+  avalanche: "avalanche",
+  sepolia: "sepolia",
+  sep: "sepolia",
+  sol: "solana",
+  solana: "solana",
 };
 
 export type ResolvedToken = {
@@ -119,13 +130,18 @@ type DexSearchResponse = {
   pairs?: DexPair[];
 };
 
-export async function searchDexScreener(query: string, chain?: string): Promise<ResolvedToken | null> {
+export async function searchDexScreener(
+  query: string,
+  chain?: string,
+): Promise<ResolvedToken | null> {
   // DexScreener search is single-word only
   const word = query.trim().split(/\s+/)[0];
   if (!word) return null;
 
   try {
-    const resp = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(word)}`);
+    const resp = await fetch(
+      `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(word)}`,
+    );
     if (!resp.ok) return null;
 
     const data = (await resp.json()) as DexSearchResponse;
@@ -149,7 +165,8 @@ export async function searchDexScreener(query: string, chain?: string): Promise<
     // Return whichever token in the pair matches the query
     const base = best.baseToken;
     const quote = best.quoteToken;
-    const match = base.symbol.toUpperCase() === sym ? base : quote.symbol.toUpperCase() === sym ? quote : base;
+    const match =
+      base.symbol.toUpperCase() === sym ? base : quote.symbol.toUpperCase() === sym ? quote : base;
 
     const liq = best.liquidity?.usd;
     const result: ResolvedToken = {

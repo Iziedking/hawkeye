@@ -8,5 +8,5 @@
     "types": ["node"],
     "lib": ["ES2023"]
   },
-  "include": ["./**/*.ts", "../shared/**/*.ts"]
+  "include": ["./**/*.ts", "../shared/**/*.ts", "../tools/**/*.ts", "../integrations/**/*.ts"]
 }
