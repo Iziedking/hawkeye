@@ -128,6 +128,8 @@ function buildRouteLabel(chainId: string, chain: "evm" | "solana"): string {
 // Agent entry point
 // ---------------------------------------------------------------------------
 
+const TESTNET_CHAIN_IDS = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+
 export function startQuoteAgent(): () => void {
   const handler = async (intent: TradeIntent): Promise<void> => {
     const start = Date.now();
@@ -136,6 +138,29 @@ export function startQuoteAgent(): () => void {
     );
 
     try {
+      const chainHint = (intent as any).chainHint as string | undefined;
+      const isTestnet = chainHint ? TESTNET_CHAIN_IDS.has(chainHint) : false;
+
+      if (isTestnet) {
+        const testnetQuote: Quote = {
+          intentId: intent.intentId,
+          address: intent.address,
+          chainId: chainHint as ChainId,
+          pairAddress: "",
+          priceUsd: 0,
+          liquidityUsd: 999_999,
+          expectedSlippagePct: 1,
+          feeEstimateUsd: 0,
+          route: `Uniswap (${chainHint} testnet)`,
+          completedAt: Date.now(),
+        };
+        bus.emit("QUOTE_RESULT", testnetQuote);
+        console.log(
+          `[QuoteAgent] testnet quote emitted for ${chainHint}, skipping DexScreener`,
+        );
+        return;
+      }
+
       // 1. Resolve the best pair via DexScreener (chain-first rule)
       const pair = await resolveBestPair(intent.address, intent.chain);
       if (!pair) {
