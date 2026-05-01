@@ -668,6 +668,7 @@ async function scanToken(
     );
   }
 
+  // TODO(israel): add resolvedChainId: chainId once SafetyReport gains resolvedChainId?: string
   return { intentId, address, chainId, score, flags, sources, completedAt: Date.now() };
 }
 
