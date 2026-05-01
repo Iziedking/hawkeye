@@ -1418,10 +1418,16 @@ export async function startTelegramGateway(
       amount = { value: Number.isFinite(v) && v > 0 ? v : 0, unit };
     }
 
+    // USD override: if raw text has $ near the amount, treat as USD regardless of LLM unit
+    const raw = result.rawText;
+    const usdMatch = raw.match(/\$\s*([\d.]+)|(\d+(?:\.\d+)?)\s*\$/);
+    if (usdMatch && amount.unit === "NATIVE") {
+      const val = parseFloat(usdMatch[1] ?? usdMatch[2] ?? "0");
+      if (val > 0) amount = { value: val, unit: "USD" };
+    }
+
     // Fallback: parse amount from raw text when LLM doesn't extract it
     if (amount.value <= 0) {
-      const raw = result.rawText;
-      const usdMatch = raw.match(/\$\s*([\d.]+)|(\d+(?:\.\d+)?)\s*\$/);
       const ethMatch = raw.match(/([\d.]+)\s*(?:ETH|eth|ether)/i);
       if (usdMatch) {
         const val = parseFloat(usdMatch[1] ?? usdMatch[2] ?? "0");
@@ -1445,6 +1451,14 @@ export async function startTelegramGateway(
       const ethEquiv = amount.value / ethPriceUsd;
       hlog.agent("gateway", `$${amount.value} → ${ethEquiv.toFixed(8)} ETH (price=$${ethPriceUsd})`);
       amount = { value: ethEquiv, unit: "NATIVE" };
+    }
+
+    // Apply user's default amount when none specified
+    if (amount.value <= 0) {
+      const defAmt = userSettings.get(userId)?.defaultAmount;
+      if (defAmt && defAmt > 0) {
+        amount = { value: defAmt, unit: "NATIVE" };
+      }
     }
 
     const urgencyRaw = d["urgency"];
@@ -1476,6 +1490,14 @@ export async function startTelegramGateway(
     if (isTestnet) pending.isTestnet = true;
     pendingMap.set(intent.intentId, pending);
     bus.emit("TRADE_REQUEST", intent);
+
+    // Save to conversation context so "buy $2" works after "ape this 0xCA..."
+    lastResearchByUser.set(userId, {
+      address,
+      chain,
+      symbol: toToken ?? address.slice(0, 10),
+      at: Date.now(),
+    });
 
     const tokenLabel = toToken
       ? `${html(toToken.toUpperCase())} (${codeAddr(address)})`

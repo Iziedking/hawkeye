@@ -221,7 +221,7 @@ async function executeEvmSwap(
       tokenOutChainId: String(numChainId),
       amount: amountWei,
       type: "EXACT_INPUT",
-      slippageTolerance: quote.expectedSlippagePct,
+      slippageTolerance: parseFloat(quote.expectedSlippagePct.toFixed(2)),
       routingPreference: "BEST_PRICE",
     }),
     signal: AbortSignal.timeout(10_000),

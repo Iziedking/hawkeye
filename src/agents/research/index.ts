@@ -19,6 +19,7 @@
 //   Synthesis  : Injected LlmClient (Israel's FallbackLlmClient) → OgComputeClient fallback
 
 import { bus } from "../../shared/event-bus";
+import { log } from "../../shared/logger";
 import type {
   AlphaFoundPayload,
   ResearchRequest,
@@ -1567,12 +1568,11 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
   const isTrending = /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
   if (!isTrending) return false;
 
-  console.log(`[research] trending query: chain=${req.chain ?? "all"} text="${q.slice(0, 60)}"`);
+  const filterChain = detectChainFromText(req.rawText ?? "");
+  log.agent("research", `trending query: chain=${filterChain ?? "all"} text="${q.slice(0, 60)}"`);
 
   try {
     const [profiles, boosts] = await Promise.all([getLatestTokenProfiles(), getLatestBoosts()]);
-
-    const filterChain = detectChainFromText(req.rawText ?? "");
 
     const seen = new Set<string>();
     const candidates: Array<{ address: string; chainId: string }> = [];
@@ -1585,23 +1585,27 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       candidates.push({ address: item.tokenAddress, chainId: item.chainId });
     }
 
-    // Supplement with searchPairs when chain-filtered results are sparse
+    // Supplement with multi-keyword search when chain-filtered results are sparse
     if (filterChain && candidates.length < 6 && isValidChain(filterChain)) {
-      try {
-        const { pairs } = await searchPairs("token", { chain: filterChain as DexScreenerChain, limit: 20 });
-        const sorted = pairs
-          .filter((p) => (p.volume?.h24 ?? 0) > 5000 && (p.liquidity?.usd ?? 0) > 5000)
-          .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
-        for (const p of sorted) {
-          const addr = p.baseToken?.address;
-          if (!addr) continue;
-          const key = addr.toLowerCase();
-          if (seen.has(key)) continue;
-          seen.add(key);
-          candidates.push({ address: addr, chainId: p.chainId });
-          if (candidates.length >= 10) break;
-        }
-      } catch { /* searchPairs failed — continue with what we have */ }
+      const searches = ["pepe", "ai", "doge", "meme", "eth"].map(async (term) => {
+        try {
+          const { pairs } = await searchPairs(term, { chain: filterChain as DexScreenerChain, limit: 10 });
+          return pairs
+            .filter((p) => (p.volume?.h24 ?? 0) > 5000 && (p.liquidity?.usd ?? 0) > 5000)
+            .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
+        } catch { return []; }
+      });
+      const allPairs = (await Promise.all(searches)).flat()
+        .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
+      for (const p of allPairs) {
+        const addr = p.baseToken?.address;
+        if (!addr) continue;
+        const key = addr.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ address: addr, chainId: p.chainId });
+        if (candidates.length >= 10) break;
+      }
     }
 
     const top = candidates.slice(0, 8);

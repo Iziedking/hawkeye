@@ -110,7 +110,6 @@ async function initAxlBus(): Promise<AxlEventBus<BusEvents> | null> {
 
   sponsors.gensyn.connected = true;
   sponsors.gensyn.peers = axl.getPeerCount();
-  log.gensyn(`connected, ${axl.getPeerCount()} peers on AXL overlay`);
 
   const bridgedEvents: Array<keyof BusEvents> = [
     "TRADE_REQUEST",
@@ -192,11 +191,11 @@ async function main(): Promise<void> {
   const axl = await initAxlBus();
 
   // Strategy MUST start BEFORE Safety and Quote
-  const stopStrategy = startStrategyAgent({ llm: llm ?? undefined });
+  const stopStrategy = startStrategyAgent(llm ? { llm } : {});
   const stopSafety = startSafetyAgent();
   const stopQuote = startQuoteAgent();
   const stopExecution = startExecutionAgent({ walletManager: wm, keeperHub });
-  const stopResearch = startResearchAgent({ llm: llm ?? undefined });
+  const stopResearch = startResearchAgent(llm ? { llm } : {});
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
 
@@ -274,11 +273,10 @@ async function main(): Promise<void> {
   const ogActuallyHealthy = llm?.ogHealthy ?? false;
   if (!ogActuallyHealthy) sponsors.og.compute = false;
 
-  log.ready({
+  const readyCfg: import("./shared/logger").ReadyConfig = {
     ogCompute: ogActuallyHealthy,
     ogStorage: sponsors.og.storage,
     ogChain: sponsors.og.chain,
-    ogChainAddr: registry?.address,
     gensyn: sponsors.gensyn.connected,
     gensynPeers: sponsors.gensyn.peers,
     uniswap: sponsors.uniswap.active,
@@ -286,7 +284,9 @@ async function main(): Promise<void> {
     privy: wm !== null,
     llmFallback: llm?.usingFallback ? (llm.fallbackName ?? "OpenRouter") : null,
     agentCount: agentNames.length,
-  });
+  };
+  if (registry) readyCfg.ogChainAddr = registry.address;
+  log.ready(readyCfg);
 
   const cleanups = [
     stopTracer,
