@@ -1,13 +1,12 @@
-
 import { createZGComputeNetworkBroker } from "@0glabs/0g-serving-broker";
 import { ethers } from "ethers";
 import { envOr, requireEnv } from "../../shared/env";
+import { log } from "../../shared/logger";
 
 const DEFAULT_RPC_URL = "https://evmrpc-testnet.0g.ai";
 
 const DEFAULT_PROVIDER_ADDRESS = "0xa48f01287233509FD694a22Bf840225062E67836";
 const DEFAULT_MODEL = "qwen/qwen-2.5-7b-instruct";
-
 
 const MIN_LEDGER_OG = 3;
 const MIN_PROVIDER_FUND_OG = 1;
@@ -44,7 +43,6 @@ export class OgComputeError extends Error {
   }
 }
 
-
 type Broker = Awaited<ReturnType<typeof createZGComputeNetworkBroker>>;
 
 export type OgComputeClientOptions = {
@@ -56,6 +54,7 @@ export type OgComputeClientOptions = {
 
 export class OgComputeClient {
   private readonly wallet: ethers.Wallet;
+  private readonly provider: ethers.JsonRpcProvider;
   readonly providerAddress: string;
   readonly model: string;
 
@@ -70,8 +69,28 @@ export class OgComputeClient {
       opts.providerAddress ?? envOr("OG_PROVIDER_ADDRESS", DEFAULT_PROVIDER_ADDRESS);
     this.model = opts.model ?? envOr("OG_MODEL", DEFAULT_MODEL);
 
-    const provider = new ethers.JsonRpcProvider(rpcUrl);
-    this.wallet = new ethers.Wallet(privateKey, provider);
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.wallet = new ethers.Wallet(privateKey, this.provider);
+  }
+
+  async waitForPendingTxs(): Promise<void> {
+    try {
+      const addr = this.wallet.address;
+      const pending = await this.provider.getTransactionCount(addr, "pending");
+      const confirmed = await this.provider.getTransactionCount(addr, "latest");
+      if (pending > confirmed) {
+        log.og("compute", `waiting for ${pending - confirmed} pending tx(s)...`);
+        const start = Date.now();
+        while (Date.now() - start < 30_000) {
+          const current = await this.provider.getTransactionCount(addr, "latest");
+          if (current >= pending) return;
+          await new Promise((r) => setTimeout(r, 2_000));
+        }
+        log.warn("0G pending txs did not confirm in 30s, proceeding");
+      }
+    } catch {
+      // best effort
+    }
   }
 
   private async getBroker(): Promise<Broker> {
@@ -80,7 +99,6 @@ export class OgComputeClient {
     }
     return this.brokerPromise;
   }
-
 
   async ready(): Promise<void> {
     if (this.readyPromise === null) {
@@ -94,7 +112,6 @@ export class OgComputeClient {
 
   private async doReady(): Promise<void> {
     const broker = await this.getBroker();
-
 
     try {
       await broker.ledger.addLedger(MIN_LEDGER_OG);
@@ -112,7 +129,6 @@ export class OgComputeClient {
       }
     }
 
-
     try {
       await broker.inference.acknowledgeProviderSigner(this.providerAddress);
     } catch (err) {
@@ -121,7 +137,6 @@ export class OgComputeClient {
       }
     }
 
-
     try {
       await broker.ledger.transferFund(
         this.providerAddress,
@@ -129,7 +144,6 @@ export class OgComputeClient {
         ethers.parseEther(String(MIN_PROVIDER_FUND_OG)),
       );
     } catch (err) {
-
       if (!isAlreadyExistsError(err)) {
         throw classify(err, "LEDGER_LOW", "transferFund failed");
       }
@@ -145,13 +159,11 @@ export class OgComputeClient {
     return this.serviceMetaPromise;
   }
 
-
   async infer(req: OgInferenceRequest): Promise<OgInferenceResponse> {
     await this.ready();
     const broker = await this.getBroker();
     const meta = await this.getServiceMeta();
     const model = req.model ?? this.model ?? meta.model;
-
 
     let headers: Record<string, string | undefined>;
     try {
@@ -202,7 +214,6 @@ export class OgComputeClient {
     const chatId = completion.id ?? "";
     const text = completion.choices?.[0]?.message?.content ?? "";
 
-
     // processResponse may throw on testnet (no TEE receipts), treat as unverified
     let verified: boolean;
     try {
@@ -221,10 +232,7 @@ export class OgComputeClient {
     };
   }
 
-
-  async close(): Promise<void> {
-
-  }
+  async close(): Promise<void> {}
 }
 
 function isAlreadyExistsError(err: unknown): boolean {
@@ -237,17 +245,17 @@ function isAlreadyExistsError(err: unknown): boolean {
   );
 }
 
-function classify(
-  err: unknown,
-  reason: OgComputeErrorReason,
-  label: string,
-): OgComputeError {
+function classify(err: unknown, reason: OgComputeErrorReason, label: string): OgComputeError {
   const msg = (err as Error)?.message ?? String(err);
   const lowered = msg.toLowerCase();
   if (lowered.includes("insufficient") || lowered.includes("balance")) {
     return new OgComputeError("LEDGER_LOW", `${label}: ${msg}`, err);
   }
-  if (lowered.includes("network") || lowered.includes("timeout") || lowered.includes("econnrefused")) {
+  if (
+    lowered.includes("network") ||
+    lowered.includes("timeout") ||
+    lowered.includes("econnrefused")
+  ) {
     return new OgComputeError("PROVIDER_UNREACHABLE", `${label}: ${msg}`, err);
   }
   return new OgComputeError(reason, `${label}: ${msg}`, err);

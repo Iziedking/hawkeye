@@ -28,12 +28,10 @@ type UploadCapture = {
   calledWith: unknown[];
 };
 
-function patchUpload(
-  client: OgStorageClient,
-  result: [unknown, Error | null],
-): UploadCapture {
+function patchUpload(client: OgStorageClient, result: [unknown, Error | null]): UploadCapture {
   const capture: UploadCapture = { calledWith: [] };
-  const indexer = (client as unknown as { indexer: { upload: Function } }).indexer;
+  const indexer = (client as unknown as { indexer: { upload: (...args: unknown[]) => unknown } })
+    .indexer;
   indexer.upload = async (...args: unknown[]) => {
     capture.calledWith = args;
     return result;
@@ -69,14 +67,10 @@ async function runTests(): Promise<void> {
   console.log("\n[2] writeJson serializes nested objects");
   {
     const client = makeClient();
-    let uploadedBytes: Uint8Array | null = null;
-    const indexer = (client as unknown as { indexer: { upload: Function } }).indexer;
-    indexer.upload = async (mem: { data: Uint8Array | undefined }) => {
-      // MemData stores the raw bytes; grab them for inspection.
-      // The SDK's MemData shape varies, but the bytes we passed in are the
-      // constructor arg. We serialized them ourselves, so let's just verify
-      // via the result — the important thing is that writeJson didn't throw.
-      uploadedBytes = mem?.data ?? null;
+    const indexer = (client as unknown as { indexer: { upload: (...args: unknown[]) => unknown } })
+      .indexer;
+    indexer.upload = async (...args: unknown[]) => {
+      void args;
       return [{ rootHash: "0x1", txHash: "0x2", txSeq: 1 }, null];
     };
 
@@ -101,10 +95,7 @@ async function runTests(): Promise<void> {
     } catch (err) {
       threw = true;
       assert(err instanceof OgStorageError, "error: instanceof OgStorageError");
-      assert(
-        (err as OgStorageError).reason === "UPLOAD_FAILED",
-        "error: reason UPLOAD_FAILED",
-      );
+      assert((err as OgStorageError).reason === "UPLOAD_FAILED", "error: reason UPLOAD_FAILED");
     }
     assert(threw, "error: writeJson threw");
   }
@@ -112,7 +103,8 @@ async function runTests(): Promise<void> {
   console.log("\n[4] writeJson: upload throws (network)");
   {
     const client = makeClient();
-    const indexer = (client as unknown as { indexer: { upload: Function } }).indexer;
+    const indexer = (client as unknown as { indexer: { upload: (...args: unknown[]) => unknown } })
+      .indexer;
     indexer.upload = async () => {
       throw new Error("ECONNREFUSED");
     };

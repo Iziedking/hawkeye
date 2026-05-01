@@ -19,7 +19,6 @@ function assert(cond: unknown, label: string): void {
   }
 }
 
-
 type FakeBehavior =
   | { kind: "text"; text: string }
   | { kind: "throw"; err: Error }
@@ -70,7 +69,6 @@ function asClient(f: FakeLlm): OgComputeClient {
   return f as unknown as OgComputeClient;
 }
 
-
 async function runRegexStage(): Promise<void> {
   console.log("\n[1] regex stage");
 
@@ -105,10 +103,7 @@ async function runRegexStage(): Promise<void> {
     userId: "u-1",
     channel: "telegram",
   });
-  assert(
-    dollar?.amount.value === 100 && dollar?.amount.unit === "USD",
-    "regex: amount $100 USD",
-  );
+  assert(dollar?.amount.value === 100 && dollar?.amount.unit === "USD", "regex: amount $100 USD");
 
   const defaultAmount = await parseIntent({
     text: "look at 0xabcdef0123456789abcdef0123456789abcdef01",
@@ -128,7 +123,6 @@ async function runRegexStage(): Promise<void> {
   });
   assert(urlNoise === null, "regex: URL substring does not false-match Solana");
 }
-
 
 async function runLlmStage(): Promise<void> {
   console.log("\n[2] LLM fallback");
@@ -172,10 +166,7 @@ async function runLlmStage(): Promise<void> {
   );
   assert(happy?.chain === "evm", "llm happy: chain evm");
   assert(happy?.urgency === "INSTANT", "llm happy: urgency INSTANT");
-  assert(
-    happy?.amount.value === 25 && happy?.amount.unit === "USD",
-    "llm happy: amount 25 USD",
-  );
+  assert(happy?.amount.value === 25 && happy?.amount.unit === "USD", "llm happy: amount 25 USD");
   assert(fake1.calls.length === 1, "llm happy: exactly one inference call");
 
   // Code-fenced JSON (some models ignore "no markdown" instructions).

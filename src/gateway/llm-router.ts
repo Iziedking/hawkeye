@@ -137,7 +137,6 @@ function detectUrgency(text: string): TradingMode {
   return "NORMAL";
 }
 
-
 const ROUTER_SYSTEM_PROMPT = [
   "You are HAWKEYE's intent router. Classify the user message and extract structured data.",
   "Return STRICT JSON only. No prose, no markdown, no code fences.",
@@ -145,22 +144,27 @@ const ROUTER_SYSTEM_PROMPT = [
   "## Intent Categories",
   "",
   "1. DEGEN_SNIPE — User pastes a contract address with buy intent, or a bare address with no context.",
-  "2. TRADE — Explicit trade with parameters: \"buy 0.5 ETH of [token]\", \"sell my [token]\".",
-  "3. RESEARCH_TOKEN — User wants info about a token. May include address. \"is this safe?\", \"check this token\".",
-  "4. RESEARCH_WALLET — User wants info about a wallet. \"what's 0xABC buying?\", \"track this wallet\".",
-  "5. COPY_TRADE — User wants to copy/follow a wallet. \"copy this wallet\", \"mirror 0xABC\".",
-  "6. BRIDGE — Move assets between chains. \"bridge 0.5 ETH to Base\".",
-  "7. PORTFOLIO — Check positions/PnL/holdings. \"show my bags\", \"how are my positions\".",
-  "8. SETTINGS — Change config. \"set degen mode\", \"default amount 1 SOL\".",
-  "9. GENERAL_QUERY — Market questions, trending tokens, alpha. \"what's hot?\", \"any alpha?\".",
-  "10. UNKNOWN — Cannot classify.",
+  '2. TRADE — Explicit trade/swap: "buy 0.5 ETH of [token]", "swap ETH to USDC", "sell my [token]".',
+  '3. SEND_TOKEN — Transfer native tokens to a wallet address. "send 0.1 ETH to 0xABC", "transfer 5 MATIC to 0xDEF on polygon".',
+  '4. RESEARCH_TOKEN — User wants info about a token OR wants to see trending/hot tokens on a chain. "is this safe?", "check this token", "what\'s trending on solana?", "any alpha?", "what\'s hot on base?".',
+  '5. RESEARCH_WALLET — User wants info about a wallet. "what\'s 0xABC buying?", "track this wallet".',
+  '6. COPY_TRADE — User wants to copy/follow a wallet. "copy this wallet", "mirror 0xABC".',
+  '7. BRIDGE — Move assets between chains. "bridge 0.5 ETH to Base".',
+  '8. PORTFOLIO — Check positions/PnL/holdings. "show my bags", "how are my positions".',
+  '9. SETTINGS — Change config. "set degen mode", "default amount 1 SOL".',
+  '10. GENERAL_QUERY — Conversational messages, greetings, general crypto questions not about specific tokens or trends.',
+  "11. UNKNOWN — Cannot classify.",
   "",
   "## Rules",
   "- Bare contract address + no/minimal text = DEGEN_SNIPE.",
   "- Contract address + question = RESEARCH_TOKEN.",
   "- Wallet address + inquiry = RESEARCH_WALLET.",
-  "- \"buy [amount] of [address]\" with explicit params = TRADE.",
-  "- CA + \"buy\" or \"ape\" = DEGEN_SNIPE (not TRADE).",
+  '- "buy [amount] of [address]" with explicit params = TRADE.',
+  '- "swap X to Y", "exchange ETH for USDC" = TRADE (no address needed, extract token names).',
+  '- CA + "buy" or "ape" = DEGEN_SNIPE (not TRADE).',
+  '- "send/transfer [amount] to 0xWALLET" = SEND_TOKEN (recipient is a wallet, not a chain).',
+  '- "bridge [amount] to [chain name]" = BRIDGE (target is a chain, not a wallet).',
+  '- "what\'s trending", "what\'s hot", "any alpha", "top movers" = RESEARCH_TOKEN with question="trending" and chain if mentioned.',
   "",
   "## Response Format",
   "{",
@@ -170,8 +174,9 @@ const ROUTER_SYSTEM_PROMPT = [
   "}",
   "",
   "## Per-category data:",
-  "DEGEN_SNIPE: { address, chain: \"evm\"|\"solana\", amount: {value,unit}|null, urgency: \"INSTANT\"|\"NORMAL\"|\"CAREFUL\" }",
-  "TRADE: { address, chain, side: \"buy\"|\"sell\", amount|null, urgency }",
+  'DEGEN_SNIPE: { address, chain: "evm"|"solana", amount: {value,unit}|null, urgency: "INSTANT"|"NORMAL"|"CAREFUL" }',
+  'TRADE: { address|null, fromToken|null, toToken|null, chain|null, side: "buy"|"sell"|"swap", amount: {value,unit}|null, urgency }',
+  'SEND_TOKEN: { recipient: "0x...", amount: {value, unit}, chain|null, asset|null }',
   "RESEARCH_TOKEN: { address|null, tokenName|null, chain|null, question: string }",
   "RESEARCH_WALLET: { walletAddress, chain, question }",
   "COPY_TRADE: { walletAddress, chain, autoTrade: boolean }",
@@ -184,15 +189,13 @@ const ROUTER_SYSTEM_PROMPT = [
   "## Address rules",
   "- EVM: 0x + 40 hex chars. Solana: 32-44 base58 chars.",
   "- Never invent addresses. If missing, set to null.",
+  "- Extract token names/symbols (e.g. ETH, USDC, PEPE) into fromToken/toToken even without addresses.",
+  "- If user says a chain name (sepolia, base, arbitrum, etc), extract it into chain.",
   "- Default amount null (system uses user defaults).",
   "- DEGEN_SNIPE default urgency = INSTANT. Others = NORMAL.",
 ].join("\n");
 
-
-async function routeViaLlm(
-  input: RouterInput,
-  deps: RouterDeps,
-): Promise<RouterResult> {
+async function routeViaLlm(input: RouterInput, deps: RouterDeps): Promise<RouterResult> {
   const client = deps.llm;
   if (client === undefined) return regexFallback(input);
 
@@ -238,8 +241,7 @@ async function routeViaLlm(
 
   const obj = parsed as Record<string, unknown>;
   const category = validateCategory(obj["category"]);
-  const confidence =
-    typeof obj["confidence"] === "number" ? obj["confidence"] : 0.5;
+  const confidence = typeof obj["confidence"] === "number" ? obj["confidence"] : 0.5;
   const data =
     obj["data"] !== null && typeof obj["data"] === "object"
       ? (obj["data"] as Record<string, unknown>)
@@ -263,6 +265,7 @@ function validateCategory(raw: unknown): IntentCategory {
   const valid: IntentCategory[] = [
     "DEGEN_SNIPE",
     "TRADE",
+    "SEND_TOKEN",
     "RESEARCH_TOKEN",
     "RESEARCH_WALLET",
     "COPY_TRADE",
@@ -278,19 +281,15 @@ function validateCategory(raw: unknown): IntentCategory {
   return "UNKNOWN";
 }
 
-function validateTradeData(
-  data: Record<string, unknown>,
-): SnipeData | null {
-  const address =
-    typeof data["address"] === "string" ? data["address"].trim() : null;
+function validateTradeData(data: Record<string, unknown>): SnipeData | null {
+  const address = typeof data["address"] === "string" ? data["address"].trim() : null;
   if (address === null || address.length === 0) return null;
 
   const chain = data["chain"];
   if (chain !== "evm" && chain !== "solana") return null;
 
   if (chain === "evm" && !/^0x[a-fA-F0-9]{40}$/.test(address)) return null;
-  if (chain === "solana" && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address))
-    return null;
+  if (chain === "solana" && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) return null;
 
   let amount: TradeAmount = { value: 0, unit: "NATIVE" };
   const amountRaw = data["amount"];
@@ -298,26 +297,44 @@ function validateTradeData(
     const a = amountRaw as Record<string, unknown>;
     const v = typeof a["value"] === "number" ? a["value"] : 0;
     const u = a["unit"];
-    const unit: TradeAmount["unit"] =
-      u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
+    const unit: TradeAmount["unit"] = u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
     amount = { value: Number.isFinite(v) && v > 0 ? v : 0, unit };
   }
 
   const urgency = data["urgency"];
-  const mode: TradingMode =
-    urgency === "INSTANT" || urgency === "CAREFUL" ? urgency : "NORMAL";
+  const mode: TradingMode = urgency === "INSTANT" || urgency === "CAREFUL" ? urgency : "NORMAL";
 
   return { address, chain, amount, urgency: mode };
 }
 
+const SWAP_KW = /\b(swap|exchange|convert|trade)\b/i;
+const SEND_KW = /\b(send|transfer)\b/i;
+const BRIDGE_KW = /\b(bridge|transfer|move|send)\s.*(to|from|across)\s/i;
+const LP_KW = /\b(liquidity|lp|provide|pool|add liquidity|remove liquidity)\b/i;
+const PORTFOLIO_KW = /\b(portfolio|positions|bags|holdings|balance|pnl|my wallet)\b/i;
+const RESEARCH_KW = /\b(safe|rug|scam|check|research|analyze|audit|info|details|honeypot)\b/i;
+const SETTINGS_KW = /\b(settings?|set|config|default|mode|slippage)\b/i;
+const TRENDING_KW = /\b(trending|alpha|hot|what.?s new|movers|gainers|top)\b/i;
+
 function regexFallback(input: RouterInput): RouterResult {
   const text = input.text.trim();
+  const lower = text.toLowerCase();
 
   const evm = text.match(EVM_ADDR);
   const sol = text.match(SOL_ADDR);
+
   if (evm || sol) {
     const address = evm ? evm[0]! : sol![1]!;
     const chain: ChainClass = evm ? "evm" : "solana";
+
+    if (RESEARCH_KW.test(lower)) {
+      return buildResult(input, "RESEARCH_TOKEN", 0.7, {
+        address,
+        chain,
+        question: text,
+      });
+    }
+
     return buildResult(input, "DEGEN_SNIPE", 0.6, {
       address,
       chain,
@@ -326,7 +343,42 @@ function regexFallback(input: RouterInput): RouterResult {
     });
   }
 
-  return buildResult(input, "GENERAL_QUERY", 0.3, { query: text });
+  if (SWAP_KW.test(lower)) {
+    return buildResult(input, "TRADE", 0.7, {
+      query: text,
+      side: "buy",
+    });
+  }
+
+  if (SEND_KW.test(lower) && evm) {
+    return buildResult(input, "SEND_TOKEN", 0.8, {
+      recipient: evm[0],
+      amount: extractAmount(text),
+      chain: null,
+    });
+  }
+
+  if (BRIDGE_KW.test(lower)) {
+    return buildResult(input, "BRIDGE", 0.7, { query: text });
+  }
+
+  if (LP_KW.test(lower)) {
+    return buildResult(input, "TRADE", 0.6, { query: text, side: "lp" });
+  }
+
+  if (PORTFOLIO_KW.test(lower)) {
+    return buildResult(input, "PORTFOLIO", 0.7, { query: text });
+  }
+
+  if (SETTINGS_KW.test(lower)) {
+    return buildResult(input, "SETTINGS", 0.6, { setting: text, value: "" });
+  }
+
+  if (TRENDING_KW.test(lower)) {
+    return buildResult(input, "GENERAL_QUERY", 0.7, { query: text });
+  }
+
+  return buildResult(input, "GENERAL_QUERY", 0.5, { query: text });
 }
 
 function stripCodeFences(s: string): string {
@@ -355,10 +407,7 @@ function buildResult(
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(
-      () => reject(new Error(`timeout after ${ms}ms`)),
-      ms,
-    );
+    const t = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
     p.then(
       (v) => {
         clearTimeout(t);

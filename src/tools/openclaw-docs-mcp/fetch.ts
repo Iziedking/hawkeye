@@ -1,9 +1,5 @@
 import TurndownService from "turndown";
-import {
-  DEFAULT_ORIGIN,
-  USER_AGENT,
-  isAllowedUrl,
-} from "./sources.js";
+import { DEFAULT_ORIGIN, USER_AGENT, isAllowedUrl } from "./sources.js";
 
 export interface FetchResult {
   url: string;
@@ -30,7 +26,6 @@ const turndown = new TurndownService({
   codeBlockStyle: "fenced",
   bulletListMarker: "-",
 });
-
 
 turndown.remove(["script", "style", "noscript", "iframe"]);
 turndown.addRule("strip-nav-footer", {
@@ -95,8 +90,7 @@ export async function fetchDoc(
       redirect: "follow",
       headers: {
         "User-Agent": USER_AGENT,
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
         "Accept-Language": "en-US,en;q=0.9",
       },
     });
@@ -116,9 +110,7 @@ export async function fetchDoc(
     );
   }
 
-  const markdown = isTextLike(url, contentType)
-    ? text
-    : turndown.turndown(text);
+  const markdown = isTextLike(url, contentType) ? text : turndown.turndown(text);
 
   const result: FetchResult = {
     url,

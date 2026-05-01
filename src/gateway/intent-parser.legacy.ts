@@ -11,7 +11,6 @@ import type {
 import type { OgComputeClient } from "../integrations/0g/compute";
 import { OgComputeError } from "../integrations/0g/compute";
 
-
 const EVM_ADDR = /0x[a-fA-F0-9]{40}/;
 // Standalone base58 — anchored by whitespace/boundary so URL substrings
 // don't false-match. Same rule as the stub.
@@ -66,7 +65,6 @@ export async function parseIntent(
   if (llmHit === null) return null;
   return buildIntent(input, llmHit);
 }
-
 
 type ParsedCore = {
   address: string;
@@ -129,15 +127,14 @@ function isPlausibleIntent(text: string): boolean {
   return words.length >= 1;
 }
 
-
 const LLM_SYSTEM_PROMPT = [
   "You are HAWKEYE's intent parser. Extract a single crypto trade intent from the user message.",
-  'Return STRICT JSON only (no prose, no markdown, no code fences) matching this schema:',
+  "Return STRICT JSON only (no prose, no markdown, no code fences) matching this schema:",
   '{"address": string, "chain": "evm"|"solana", "amount": {"value": number, "unit": "NATIVE"|"USD"|"TOKEN"}, "urgency": "INSTANT"|"NORMAL"|"CAREFUL"}',
-  'If no trade intent is present, return exactly: null',
+  "If no trade intent is present, return exactly: null",
   "Rules:",
   "- address is the token contract (EVM 0x... or Solana base58). Do not invent one.",
-  "- If no explicit amount is given, use {value: 0, unit: \"NATIVE\"}.",
+  '- If no explicit amount is given, use {value: 0, unit: "NATIVE"}.',
   "- Urgency: NORMAL unless the user says 'now/ape/fast' (INSTANT) or 'careful/slow/safe' (CAREFUL).",
   "- Never return prose. Never wrap in code fences. Output must parse as JSON or be the literal null.",
 ].join("\n");
@@ -205,24 +202,19 @@ function validateLlmIntent(obj: unknown): ParsedCore | null {
     const a = amountRaw as Record<string, unknown>;
     const v = typeof a["value"] === "number" ? a["value"] : 0;
     const u = a["unit"];
-    const unit: TradeAmount["unit"] =
-      u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
+    const unit: TradeAmount["unit"] = u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
     amount = { value: Number.isFinite(v) && v > 0 ? v : 0, unit };
   }
 
   const urgency = o["urgency"];
-  const mode: TradingMode =
-    urgency === "INSTANT" || urgency === "CAREFUL" ? urgency : "NORMAL";
+  const mode: TradingMode = urgency === "INSTANT" || urgency === "CAREFUL" ? urgency : "NORMAL";
 
   return { address, chain, amount, urgency: mode };
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(
-      () => reject(new Error(`timeout after ${ms}ms`)),
-      ms,
-    );
+    const t = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
     p.then(
       (v) => {
         clearTimeout(t);
@@ -235,7 +227,6 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     );
   });
 }
-
 
 function buildIntent(input: ParseInput, core: ParsedCore): TradeIntent {
   return {

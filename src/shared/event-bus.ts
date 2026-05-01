@@ -1,5 +1,3 @@
-
-
 import { EventEmitter } from "node:events";
 import type { BusEvents } from "./types";
 
@@ -11,8 +9,7 @@ export class EventBus<E extends EventMap> {
   private readonly emitter = new EventEmitter();
 
   constructor() {
-   
-    this.emitter.setMaxListeners(32);
+    this.emitter.setMaxListeners(64);
   }
 
   emit<K extends keyof E & string>(event: K, payload: E[K]): void {
@@ -41,7 +38,8 @@ export class EventBus<E extends EventMap> {
   }
 }
 
-
+// Default local bus. Replaced by AxlEventBus when Gensyn AXL node is available.
+// Agents import `bus` — they never know which transport is active.
 export const bus = new EventBus<BusEvents>();
 
 export default bus;

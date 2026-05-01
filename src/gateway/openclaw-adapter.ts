@@ -57,7 +57,6 @@ export type ReqFrame = {
 
 export type OpenClawFrame = EventFrame | ResFrame;
 
-
 const DEFAULT_URL = "ws://127.0.0.1:18789";
 const REQUEST_TIMEOUT_MS = 10_000;
 const CONNECT_CHALLENGE_TIMEOUT_MS = 5_000;
@@ -68,7 +67,6 @@ const DEFAULT_TICK_INTERVAL_MS = 30_000;
 const CLOSE_NORMAL = 1000;
 const CLOSE_TICK_TIMEOUT = 4000;
 const CLOSE_PROTOCOL = 4001;
-
 
 type PendingRequest = {
   resolve: (payload: unknown) => void;
@@ -103,8 +101,7 @@ export class OpenClawAdapter {
   constructor(opts: AdapterOptions = {}) {
     this.url = opts.url ?? process.env["OPENCLAW_URL"] ?? DEFAULT_URL;
     this.explicitToken = opts.token;
-    this.configPath =
-      opts.configPath ?? join(homedir(), ".openclaw", "openclaw.json");
+    this.configPath = opts.configPath ?? join(homedir(), ".openclaw", "openclaw.json");
     this.log = opts.log ?? defaultLog;
   }
 
@@ -150,11 +147,7 @@ export class OpenClawAdapter {
           return;
         }
         const f = frame as Record<string, unknown>;
-        if (
-          !this.connected &&
-          f["type"] === "event" &&
-          f["event"] === "connect.challenge"
-        ) {
+        if (!this.connected && f["type"] === "event" && f["event"] === "connect.challenge") {
           this.clearChallengeTimer();
           const challengeFrame: EventFrame = {
             type: "event",
@@ -265,7 +258,6 @@ export class OpenClawAdapter {
       }
     });
   }
-
 
   private async sendConnect(challenge: EventFrame): Promise<void> {
     const payload = (challenge.payload ?? {}) as Record<string, unknown>;
@@ -486,7 +478,6 @@ export class OpenClawAdapter {
   }
 }
 
-
 function safeParse(raw: string): unknown {
   try {
     return JSON.parse(raw);
@@ -504,10 +495,7 @@ export function decodeChatEvent(
   const p = payload as Record<string, unknown>;
 
   const channel =
-    pickString(p, "channel") ??
-    pickString(p, "source") ??
-    pickString(p, "platform") ??
-    "unknown";
+    pickString(p, "channel") ?? pickString(p, "source") ?? pickString(p, "platform") ?? "unknown";
 
   const userId =
     pickString(p, "senderId") ??
@@ -517,17 +505,10 @@ export function decodeChatEvent(
     null;
   if (userId === null) return null;
 
-  const text =
-    pickString(p, "text") ??
-    pickString(p, "body") ??
-    pickString(p, "message") ??
-    "";
+  const text = pickString(p, "text") ?? pickString(p, "body") ?? pickString(p, "message") ?? "";
 
   const conversationId =
-    pickString(p, "conversationId") ??
-    pickString(p, "chatId") ??
-    pickString(p, "threadId") ??
-    null;
+    pickString(p, "conversationId") ?? pickString(p, "chatId") ?? pickString(p, "threadId") ?? null;
 
   const envelopeId =
     pickString(p, "envelopeId") ??
@@ -536,10 +517,7 @@ export function decodeChatEvent(
     randomUUID();
 
   const receivedAt =
-    pickNumber(p, "receivedAt") ??
-    pickNumber(p, "ts") ??
-    pickNumber(p, "timestamp") ??
-    Date.now();
+    pickNumber(p, "receivedAt") ?? pickNumber(p, "ts") ?? pickNumber(p, "timestamp") ?? Date.now();
 
   return {
     envelopeId,
