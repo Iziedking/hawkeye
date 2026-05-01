@@ -176,7 +176,10 @@ async function checkAndSubmitApproval(
     data: data.approval.data ?? "",
     value: data.approval.value ?? "0",
     chainId,
+<<<<<<< HEAD
     gasLimit: "100000",
+=======
+>>>>>>> 7968605bb7352be9b23092ca55d997785dc6863f
   });
   console.log(`[execution] approval confirmed: ${result.hash.slice(0, 16)}...`);
 }
@@ -265,12 +268,19 @@ async function executeEvmSwap(
 
   if (!walletMgr) throw new Error("Wallet manager not available");
 
+<<<<<<< HEAD
   const txParams = {
+=======
+  const txParams: import("../integrations/privy/index").SignTxInput = {
+>>>>>>> 7968605bb7352be9b23092ca55d997785dc6863f
     to: swapData.swap.to!,
     data: swapData.swap.data!,
     value: swapData.swap.value ?? "0",
     chainId: numChainId,
+<<<<<<< HEAD
     gasLimit: "500000",
+=======
+>>>>>>> 7968605bb7352be9b23092ca55d997785dc6863f
   };
 
   // Try KeeperHub for MEV-protected submission, fall back to direct Privy
@@ -360,6 +370,29 @@ async function handleExecute(intentId: string): Promise<void> {
     return;
   }
 
+<<<<<<< HEAD
+=======
+  // Handle user-initiated sell: find position, execute reverse swap
+  if (intent.side === "sell") {
+    const userPositions = Array.from(positionStore.values()).filter(
+      (p) => p.userId === intent.userId && p.address.toLowerCase() === intent.address.toLowerCase(),
+    );
+    if (userPositions.length === 0) {
+      bus.emit("QUOTE_FAILED", {
+        intentId,
+        address: intent.address,
+        reason: "You don't have an open position in this token. Nothing to sell.",
+      });
+      contextCache.delete(intentId);
+      return;
+    }
+    const pos = userPositions[0]!;
+    await handleSell({ positionId: pos.positionId, fraction: 1.0, triggeredBy: { kind: "multiplier", value: 0 }, emittedAt: Date.now() });
+    contextCache.delete(intentId);
+    return;
+  }
+
+>>>>>>> 7968605bb7352be9b23092ca55d997785dc6863f
   console.log(`[execution] ${intent.chain} swap ${intent.address.slice(0, 10)}... for user ${intent.userId}`);
 
   let receipt: ExecutionReceipt;

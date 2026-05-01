@@ -136,6 +136,46 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
     return;
   }
 
+<<<<<<< HEAD
+=======
+  // Validation gate: catch chain mismatches and bad data before execution
+  const TESTNET_CHAINS = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+  if (intent.chainHint && intent.chainHint !== quote.chainId) {
+    const intentIsTestnet = TESTNET_CHAINS.has(intent.chainHint);
+    const quoteIsTestnet = TESTNET_CHAINS.has(quote.chainId);
+    if (intentIsTestnet !== quoteIsTestnet) {
+      emitDecision({
+        intentId: intent.intentId,
+        decision: "REJECT",
+        reason: `Chain mismatch: you requested ${intent.chainHint} but the token was found on ${quote.chainId}. Please specify the correct chain.`,
+        rejectedAt: Date.now(),
+      });
+      console.log(`[strategy] ${intent.intentId} — REJECTED: chain mismatch (intent=${intent.chainHint}, quote=${quote.chainId})`);
+      return;
+    }
+  }
+  if (!intent.chainHint && TESTNET_CHAINS.has(quote.chainId)) {
+    emitDecision({
+      intentId: intent.intentId,
+      decision: "REJECT",
+      reason: `Token resolved to testnet (${quote.chainId}) but no testnet was specified. If you meant to trade on testnet, say "buy on sepolia".`,
+      rejectedAt: Date.now(),
+    });
+    console.log(`[strategy] ${intent.intentId} — REJECTED: unexpected testnet resolution`);
+    return;
+  }
+  if (quote.liquidityUsd < 500) {
+    emitDecision({
+      intentId: intent.intentId,
+      decision: "REJECT",
+      reason: `Token has almost no liquidity ($${quote.liquidityUsd.toFixed(0)}). Too risky to trade.`,
+      rejectedAt: Date.now(),
+    });
+    console.log(`[strategy] ${intent.intentId} — REJECTED: liquidity too low ($${quote.liquidityUsd})`);
+    return;
+  }
+
+>>>>>>> 7968605bb7352be9b23092ca55d997785dc6863f
   const decision = applyModeLogic(intent, safety, quote);
 
   if (agentLlm) {

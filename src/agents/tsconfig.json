@@ -11,7 +11,11 @@
     "lib": ["ES2023"]
   },
 <<<<<<< HEAD
+<<<<<<< HEAD
   "include": ["./**/*.ts", "../shared/**/*.ts"]
+=======
+  "include": ["./**/*.ts", "../shared/**/*.ts", "../tools/**/*.ts", "../integrations/**/*.ts"]
+>>>>>>> 7968605bb7352be9b23092ca55d997785dc6863f
 }
 =======
   "include": ["./**/*.ts", "../shared/**/*.ts", "../tools/**/*.ts", "../integrations/**/*.ts"]
