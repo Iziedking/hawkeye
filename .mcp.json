@@ -6,13 +6,7 @@
     },
     "coingecko": {
       "command": "cmd",
-      "args": [
-        "/c",
-        "npx",
-        "-y",
-        "mcp-remote@latest",
-        "https://mcp.api.coingecko.com/mcp"
-      ]
+      "args": ["/c", "npx", "-y", "mcp-remote@latest", "https://mcp.api.coingecko.com/mcp"]
     },
     "dexscreener": {
       "command": "cmd",
@@ -29,6 +23,10 @@
     "keeperhub": {
       "command": "cmd",
       "args": ["/c", "npx", "-y", "mcp-remote@latest", "https://app.keeperhub.com/mcp"]
+    },
+    "defillama": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "mcp-remote@latest", "https://mcp.defillama.com/mcp"]
     }
   }
 }

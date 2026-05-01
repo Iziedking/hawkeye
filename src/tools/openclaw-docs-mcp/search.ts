@@ -1,9 +1,5 @@
 import { fetchDoc } from "./fetch.js";
-import {
-  CURATED_INDEX,
-  LLMS_FULL_URL,
-  type CuratedEntry,
-} from "./sources.js";
+import { CURATED_INDEX, LLMS_FULL_URL, type CuratedEntry } from "./sources.js";
 
 export interface SearchHit {
   source: "curated" | "llms-full";

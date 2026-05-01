@@ -3,8 +3,7 @@
 
 export const BASE_URL = "https://api.dexscreener.com" as const;
 
-export const USER_AGENT =
-  "hawkeye-dexscreener-mcp/0.1 (HAWKEYE practice build)";
+export const USER_AGENT = "hawkeye-dexscreener-mcp/0.1 (HAWKEYE practice build)";
 
 export const DEXSCREENER_CHAINS = [
   "ethereum",
@@ -104,10 +103,7 @@ const bucketProfiles = new RateBucket(55, 60_000); // headroom below 60 rpm
 
 type Bucket = "pairs" | "profiles";
 
-async function request<T>(
-  path: string,
-  bucket: Bucket,
-): Promise<T> {
+async function request<T>(path: string, bucket: Bucket): Promise<T> {
   const b = bucket === "pairs" ? bucketPairs : bucketProfiles;
   await b.acquire();
 

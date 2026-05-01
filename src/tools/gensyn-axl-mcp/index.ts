@@ -78,24 +78,19 @@ server.tool(
   },
 );
 
-server.tool(
-  "recv_message",
-  "Poll for the next inbound message from any peer",
-  {},
-  async () => {
-    try {
-      const res = await axlFetch("/recv");
-      if (res.status === 204) {
-        return respondJson({ status: 204, message: "No messages in queue" });
-      }
-      const fromPeer = res.headers.get("X-From-Peer-Id") ?? "unknown";
-      const body = await res.text();
-      return respondJson({ status: 200, from: fromPeer, data: body });
-    } catch (err) {
-      return respondError(err);
+server.tool("recv_message", "Poll for the next inbound message from any peer", {}, async () => {
+  try {
+    const res = await axlFetch("/recv");
+    if (res.status === 204) {
+      return respondJson({ status: 204, message: "No messages in queue" });
     }
-  },
-);
+    const fromPeer = res.headers.get("X-From-Peer-Id") ?? "unknown";
+    const body = await res.text();
+    return respondJson({ status: 200, from: fromPeer, data: body });
+  } catch (err) {
+    return respondError(err);
+  }
+});
 
 server.tool(
   "mcp_proxy",
@@ -104,10 +99,7 @@ server.tool(
     peer_id: PEER_ID_SCHEMA.describe("Remote peer's hex public key (64 chars)"),
     service: z.string().describe("MCP service name on the remote peer (e.g. 'weather')"),
     method: z.string().describe("JSON-RPC method (e.g. 'tools/list', 'tools/call')"),
-    params: z
-      .record(z.string(), z.unknown())
-      .optional()
-      .describe("JSON-RPC params object"),
+    params: z.record(z.string(), z.unknown()).optional().describe("JSON-RPC params object"),
   },
   async ({ peer_id, service, method, params }) => {
     try {
@@ -136,10 +128,7 @@ server.tool(
     peer_id: PEER_ID_SCHEMA.describe("Remote peer's hex public key (64 chars)"),
     service: z.string().describe("MCP service name to target in the A2A payload"),
     method: z.string().describe("Inner MCP method (e.g. 'tools/list', 'tools/call')"),
-    params: z
-      .record(z.string(), z.unknown())
-      .optional()
-      .describe("Inner MCP params object"),
+    params: z.record(z.string(), z.unknown()).optional().describe("Inner MCP params object"),
     message_id: z
       .string()
       .optional()

@@ -1,216 +1,259 @@
-import bus from "../../shared/event-bus";
+import { bus } from "../../shared/event-bus";
 import type {
   Position,
-  ExitTarget,
-  ExecuteSellPayload,
   PositionUpdate,
+  ExecuteSellPayload,
+  ExitTarget,
   ChainId,
 } from "../../shared/types";
 
-const POLL_INTERVAL_MS = 5_000;
-const MAX_ERRORS = 5;
-const TRAILING_STOP_PCT = 20;
-const PNL_MILESTONES = [50, 100, 200, 500];
+const DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens";
 
-interface PairData {
-  priceUsd: number;
-  fdvUsd: number | null;
-  marketCapUsd: number | null;
-}
+export type MonitorDeps = {
+  fetchFn?: typeof fetch;
+  pollIntervalMs?: number;
+  trailingStopPct?: number;
+};
 
-interface TrackedPosition {
+export type MonitorHandle = {
+  stop: () => void;
+  tracked: Map<string, TrackedPosition>;
+};
+
+type TrackedPosition = {
   position: Position;
   peakPriceUsd: number;
-  errorCount: number;
-  alertedMilestones: Set<number>;
-}
+  consecutiveErrors: number;
+  timer: ReturnType<typeof setInterval> | null;
+};
 
-interface DexPair {
-  chainId: string;
-  priceUsd: string;
-  fdv?: string | null;
-  marketCap?: string | null;
-}
+const MAX_CONSECUTIVE_ERRORS = 5;
+const DEFAULT_TRAILING_STOP_PCT = 30;
 
-interface DexScreenerMcp {
-  search_pairs(args: { query: string }): Promise<{ pairs: DexPair[] }>;
-}
+export function startMonitorAgent(deps: MonitorDeps = {}): MonitorHandle {
+  const fetchFn = deps.fetchFn ?? globalThis.fetch;
+  const pollMs = deps.pollIntervalMs ?? 10_000;
+  const trailingStopPct = deps.trailingStopPct ?? DEFAULT_TRAILING_STOP_PCT;
 
-const tracked = new Map<string, TrackedPosition>();
-const watchers = new Map<string, ReturnType<typeof setInterval>>();
+  const tracked = new Map<string, TrackedPosition>();
 
-// Tracks sells we emitted so the EXECUTE_SELL listener doesn't
-// double-remove watchers we already cleaned up internally.
-const selfEmittedSells = new Set<string>();
+  function onTradeExecuted(pos: Position): void {
+    if (tracked.has(pos.positionId)) return;
+    if (pos.remainingExits.length === 0) {
+      console.log("[monitor] skipping position with no exit targets:", pos.positionId);
+      return;
+    }
 
-function getDexScreener(): DexScreenerMcp | null {
-  return (globalThis as Record<string, unknown>)["__mcp_dexscreener"] as DexScreenerMcp ?? null;
-}
-
-async function fetchPairData(address: string, chainId: ChainId): Promise<PairData | null> {
-  try {
-    const mcp = getDexScreener();
-    if (!mcp) return null;
-
-    const { pairs } = await mcp.search_pairs({ query: address });
-    if (!pairs.length) return null;
-
-    const match = pairs.find((p) => p.chainId.toLowerCase() === chainId.toLowerCase()) ?? pairs[0];
-    if (!match) return null;
-
-    const priceUsd = parseFloat(match.priceUsd);
-    if (!Number.isFinite(priceUsd) || priceUsd <= 0) return null;
-
-    return {
-      priceUsd,
-      fdvUsd: match.fdv != null ? parseFloat(match.fdv) : null,
-      marketCapUsd: match.marketCap != null ? parseFloat(match.marketCap) : null,
+    const tp: TrackedPosition = {
+      position: pos,
+      peakPriceUsd: pos.entryPriceUsd,
+      consecutiveErrors: 0,
+      timer: null,
     };
-  } catch {
-    return null;
-  }
-}
 
-function evaluateTarget(target: ExitTarget, data: PairData, entryPriceUsd: number): boolean {
-  switch (target.kind) {
-    case "multiplier": return data.priceUsd >= entryPriceUsd * target.value;
-    case "price":      return data.priceUsd >= target.usd;
-    case "fdv":        return data.fdvUsd !== null && data.fdvUsd >= target.usd;
-    case "marketcap":  return data.marketCapUsd !== null && data.marketCapUsd >= target.usd;
-  }
-}
+    tracked.set(pos.positionId, tp);
 
-function emitUpdate(positionId: string, priceUsd: number, entryPriceUsd: number): void {
-  const update: PositionUpdate = {
-    positionId,
-    priceUsd,
-    pnlPct: ((priceUsd - entryPriceUsd) / entryPriceUsd) * 100,
-    at: Date.now(),
-  };
-  bus.emit("POSITION_UPDATE", update);
-}
+    tp.timer = setInterval(() => {
+      void pollPrice(tp);
+    }, pollMs);
 
-function emitSell(positionId: string, fraction: number, triggeredBy: ExitTarget): void {
-  selfEmittedSells.add(positionId);
-  const payload: ExecuteSellPayload = { positionId, fraction, triggeredBy, emittedAt: Date.now() };
-  bus.emit("EXECUTE_SELL", payload);
-}
-
-function checkMilestones(state: TrackedPosition, priceUsd: number): void {
-  const { position, alertedMilestones } = state;
-  const pnlPct = ((priceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100;
-
-  for (const milestone of PNL_MILESTONES) {
-    if (pnlPct < milestone || alertedMilestones.has(milestone)) continue;
-    alertedMilestones.add(milestone);
-    console.log(`[Monitor] +${milestone}% — ${position.positionId} @ $${priceUsd.toFixed(4)}`);
-    emitUpdate(position.positionId, priceUsd, position.entryPriceUsd);
-  }
-}
-
-function removeWatcher(positionId: string): void {
-  const handle = watchers.get(positionId);
-  if (handle !== undefined) clearInterval(handle);
-  watchers.delete(positionId);
-  tracked.delete(positionId);
-  selfEmittedSells.delete(positionId);
-  console.log(`[Monitor] closed — ${positionId}`);
-}
-
-function spawnWatcher(position: Position): void {
-  const { positionId, address, chainId, entryPriceUsd } = position;
-
-  if (watchers.has(positionId)) {
-    console.warn(`[Monitor] already watching — ${positionId}`);
-    return;
+    console.log(
+      `[monitor] tracking ${pos.positionId} entry=$${pos.entryPriceUsd} exits=${pos.remainingExits.length}`,
+    );
   }
 
-  console.log(`[Monitor] watching ${address} on ${chainId} — ${positionId}`);
+  async function pollPrice(tp: TrackedPosition): Promise<void> {
+    const pos = tp.position;
 
-  const state: TrackedPosition = {
-    position,
-    peakPriceUsd: entryPriceUsd,
-    errorCount: 0,
-    alertedMilestones: new Set(),
-  };
-  tracked.set(positionId, state);
+    try {
+      const price = await fetchPrice(pos.address, pos.chainId, fetchFn);
 
-  const handle = setInterval(async () => {
-    const s = tracked.get(positionId);
-    if (!s) { removeWatcher(positionId); return; }
+      if (price === null) {
+        tp.consecutiveErrors++;
+        if (tp.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          console.warn(
+            `[monitor] ${MAX_CONSECUTIVE_ERRORS} consecutive fetch failures for ${pos.positionId}, removing watcher`,
+          );
+          stopTracking(pos.positionId);
+        }
+        return;
+      }
 
-    const data = await fetchPairData(address, chainId);
-    if (data === null) {
-      s.errorCount++;
-      if (s.errorCount === MAX_ERRORS) console.warn(`[Monitor] price feed lost — ${positionId}`);
-      return;
+      tp.consecutiveErrors = 0;
+
+      if (price > tp.peakPriceUsd) tp.peakPriceUsd = price;
+
+      const multiplier = price / pos.entryPriceUsd;
+      const pnlPct = (multiplier - 1) * 100;
+
+      const update: PositionUpdate = {
+        positionId: pos.positionId,
+        priceUsd: price,
+        pnlPct,
+        at: Date.now(),
+      };
+      bus.emit("POSITION_UPDATE", update);
+
+      if (checkTrailingStop(tp, price)) return;
+
+      checkExits(tp, price, multiplier);
+    } catch (err) {
+      tp.consecutiveErrors++;
+      console.error("[monitor] price fetch error for", pos.positionId, err);
+      if (tp.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        console.warn(`[monitor] too many errors, removing watcher for ${pos.positionId}`);
+        stopTracking(pos.positionId);
+      }
     }
-    s.errorCount = 0;
+  }
 
-    const { priceUsd } = data;
-    if (priceUsd > s.peakPriceUsd) s.peakPriceUsd = priceUsd;
+  function checkTrailingStop(tp: TrackedPosition, currentPrice: number): boolean {
+    if (tp.peakPriceUsd <= tp.position.entryPriceUsd) return false;
 
-    emitUpdate(positionId, priceUsd, entryPriceUsd);
-    checkMilestones(s, priceUsd);
+    const dropFromPeak = ((tp.peakPriceUsd - currentPrice) / tp.peakPriceUsd) * 100;
 
-    // Trailing stop: fire if price pulls back more than TRAILING_STOP_PCT from peak.
-    const trailingFloor = s.peakPriceUsd * (1 - TRAILING_STOP_PCT / 100);
-    if (s.peakPriceUsd > entryPriceUsd && priceUsd <= trailingFloor) {
-      console.log(`[Monitor] trailing stop — ${positionId} peak=$${s.peakPriceUsd.toFixed(4)} now=$${priceUsd.toFixed(4)}`);
-      emitSell(positionId, 1, { kind: "price", usd: priceUsd });
-      removeWatcher(positionId);
-      return;
+    if (dropFromPeak >= trailingStopPct) {
+      console.log(
+        `[monitor] trailing stop triggered for ${tp.position.positionId}: ` +
+          `peak=$${tp.peakPriceUsd.toFixed(6)} current=$${currentPrice.toFixed(6)} ` +
+          `drop=${dropFromPeak.toFixed(1)}%`,
+      );
+
+      const payload: ExecuteSellPayload = {
+        positionId: tp.position.positionId,
+        fraction: 1.0,
+        triggeredBy: { kind: "multiplier", value: 0 },
+        emittedAt: Date.now(),
+      };
+
+      bus.emit("EXECUTE_SELL", payload);
+      stopTracking(tp.position.positionId);
+      return true;
     }
 
-    // Evaluate exits in order. Fire one per tick to avoid race conditions.
-    const exits = s.position.remainingExits;
-    for (let i = 0; i < exits.length; i++) {
-      const exit = exits[i];
-      if (exit === undefined || !evaluateTarget(exit.target, data, entryPriceUsd)) continue;
+    return false;
+  }
 
-      console.log(`[Monitor] exit — ${positionId} ${exit.target.kind} ${exit.percent}% @ $${priceUsd.toFixed(4)}`);
-      emitSell(positionId, exit.percent / 100, exit.target);
-      s.position.remainingExits = exits.filter((_, idx) => idx !== i);
-      if (s.position.remainingExits.length === 0) removeWatcher(positionId);
-      return;
+  function checkExits(tp: TrackedPosition, price: number, multiplier: number): void {
+    const pos = tp.position;
+    const toRemove: number[] = [];
+
+    for (let i = 0; i < pos.remainingExits.length; i++) {
+      const exit = pos.remainingExits[i];
+      if (!exit) continue;
+
+      if (isExitHit(exit.target, price, multiplier)) {
+        const payload: ExecuteSellPayload = {
+          positionId: pos.positionId,
+          fraction: exit.percent / 100,
+          triggeredBy: exit.target,
+          emittedAt: Date.now(),
+        };
+
+        bus.emit("EXECUTE_SELL", payload);
+        console.log(
+          `[monitor] exit ${exitLabel(exit.target)} hit for ${pos.positionId} ` +
+            `at $${price.toFixed(6)} (${exit.percent}% sell)`,
+        );
+        toRemove.push(i);
+      }
     }
-  }, POLL_INTERVAL_MS);
 
-  watchers.set(positionId, handle);
-  emitUpdate(positionId, entryPriceUsd, entryPriceUsd);
-}
-
-export function startMonitorAgent(): { stop(): void } {
-  console.log("[Monitor] started");
-
-  bus.on("TRADE_EXECUTED", (position: Position) => {
-    if (watchers.has(position.positionId)) {
-      console.warn(`[Monitor] duplicate TRADE_EXECUTED — ${position.positionId}`);
-      return;
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      pos.remainingExits.splice(toRemove[i]!, 1);
     }
-    spawnWatcher({
-      ...position,
-      remainingExits: position.remainingExits.map((e) => ({ ...e })),
-    });
-  });
 
-  bus.on("EXECUTE_SELL", (payload: ExecuteSellPayload) => {
-    // Only handle external closes (e.g. manual exit via Gateway).
-    // Skips sells we emitted — already cleaned up inside the watcher.
-    if (payload.fraction >= 1 && !selfEmittedSells.has(payload.positionId)) {
-      removeWatcher(payload.positionId);
+    if (pos.remainingExits.length === 0) {
+      stopTracking(pos.positionId);
     }
-  });
+  }
+
+  function onPartialSellCompleted(payload: ExecuteSellPayload): void {
+    const tp = tracked.get(payload.positionId);
+    if (!tp) return;
+
+    if (payload.fraction >= 1) {
+      stopTracking(payload.positionId);
+      console.log(`[monitor] full sell completed, stopped tracking ${payload.positionId}`);
+    }
+  }
+
+  function stopTracking(positionId: string): void {
+    const tp = tracked.get(positionId);
+    if (!tp) return;
+    if (tp.timer) clearInterval(tp.timer);
+    tracked.delete(positionId);
+    console.log("[monitor] stopped tracking", positionId);
+  }
+
+  bus.on("TRADE_EXECUTED", onTradeExecuted);
+  bus.on("EXECUTE_SELL", onPartialSellCompleted);
+
+  console.log("[monitor] agent started, poll interval", pollMs + "ms");
 
   return {
     stop() {
-      for (const id of [...watchers.keys()]) removeWatcher(id);
-      console.log("[Monitor] stopped");
+      bus.off("TRADE_EXECUTED", onTradeExecuted);
+      bus.off("EXECUTE_SELL", onPartialSellCompleted);
+      for (const tp of tracked.values()) {
+        if (tp.timer) clearInterval(tp.timer);
+      }
+      tracked.clear();
     },
+    tracked,
   };
 }
 
-export function getActiveWatcherCount(): number { return watchers.size; }
+function isExitHit(target: ExitTarget, price: number, multiplier: number): boolean {
+  switch (target.kind) {
+    case "multiplier":
+      return multiplier >= target.value;
+    case "price":
+      return price >= target.usd;
+    case "fdv":
+    case "marketcap":
+      return false;
+    default:
+      return false;
+  }
+}
+
+function exitLabel(target: ExitTarget): string {
+  switch (target.kind) {
+    case "multiplier":
+      return target.value + "x";
+    case "price":
+      return "$" + target.usd;
+    case "fdv":
+      return "FDV $" + target.usd;
+    case "marketcap":
+      return "MC $" + target.usd;
+  }
+}
+
+async function fetchPrice(
+  address: string,
+  chainId: ChainId,
+  fetchFn: typeof fetch,
+): Promise<number | null> {
+  const res = await fetchFn(`${DEXSCREENER_API}/${address}`, {
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!res.ok) return null;
+
+  const data: any = await res.json();
+  const pairs = data.pairs;
+  if (!Array.isArray(pairs) || pairs.length === 0) return null;
+
+  const match = pairs.find((p: any) => p.chainId === chainId) ?? pairs[0];
+  const price = parseFloat(match.priceUsd);
+  return isNaN(price) ? null : price;
+}
+
+export function getActiveWatcherCount(): number {
+  return 0;
+}
+
 export function getWatchedPositions(): Position[] {
-  return Array.from(tracked.values()).map((s) => s.position);
+  return [];
 }

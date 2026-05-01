@@ -1,0 +1,5 @@
+[33ma42b18a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mfeat/joshua-copy-trade[m[33m, [m[1;31morigin/feat/joshua-copy-trade[m[33m)[m feat: implement copy and monitor trade
+[33m3dd3a28[m[33m ([m[1;32mmain[m[33m)[m Fix typo in name from 'Chukwu' to 'Chuku'
+[33mb45f5d2[m update llm-router and gateway
+[33me4afc5f[m updated PLAN.md and CONTRIBUTION.md
+[33m8de7a7a[m replace regex intent parser with LLM-first router

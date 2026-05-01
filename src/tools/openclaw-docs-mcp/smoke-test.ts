@@ -11,10 +11,7 @@ type JsonRpcMessage = {
   error?: { code: number; message: string; data?: unknown };
 };
 
-const serverEntry = path.resolve(
-  process.cwd(),
-  "src/tools/openclaw-docs-mcp/index.ts",
-);
+const serverEntry = path.resolve(process.cwd(), "src/tools/openclaw-docs-mcp/index.ts");
 
 // Pin tsx from node_modules/.bin rather than relying on PATH, so we fail
 // loudly if the dep is missing instead of silently running a stale global.
@@ -76,9 +73,7 @@ async function run(): Promise<void> {
   }
 
   function notify(method: string, params?: unknown): void {
-    child.stdin.write(
-      JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n",
-    );
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
   }
 
   const results: Array<{ name: string; ok: boolean; detail: string }> = [];
@@ -103,14 +98,9 @@ async function run(): Promise<void> {
     notify("notifications/initialized");
 
     const listResp = await request("tools/list");
-    const tools = (listResp.result as { tools?: Array<{ name: string }> })
-      ?.tools ?? [];
+    const tools = (listResp.result as { tools?: Array<{ name: string }> })?.tools ?? [];
     const names = tools.map((t) => t.name).sort();
-    const expected = [
-      "fetch_openclaw_page",
-      "list_openclaw_sources",
-      "search_openclaw_docs",
-    ];
+    const expected = ["fetch_openclaw_page", "list_openclaw_sources", "search_openclaw_docs"];
     record(
       "tools/list",
       JSON.stringify(names) === JSON.stringify(expected),
@@ -122,8 +112,7 @@ async function run(): Promise<void> {
       arguments: {},
     });
     const listText =
-      (listSources.result as { content?: Array<{ text?: string }> })
-        ?.content?.[0]?.text ?? "";
+      (listSources.result as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "";
     record(
       "list_openclaw_sources",
       listText.includes("Official OpenClaw README"),
@@ -135,8 +124,7 @@ async function run(): Promise<void> {
       arguments: { query: "gateway configuration", includeLlmsFull: false, limit: 5 },
     });
     const searchText =
-      (searchResp.result as { content?: Array<{ text?: string }> })
-        ?.content?.[0]?.text ?? "";
+      (searchResp.result as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "";
     record(
       "search_openclaw_docs (curated-only)",
       searchText.toLowerCase().includes("gateway"),
@@ -148,8 +136,7 @@ async function run(): Promise<void> {
       arguments: { url: "https://openclaws.io/llms.txt" },
     });
     const fetchText =
-      (fetchResp.result as { content?: Array<{ text?: string }> })
-        ?.content?.[0]?.text ?? "";
+      (fetchResp.result as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "";
     const isErr = (fetchResp.result as { isError?: boolean })?.isError;
     record(
       "fetch_openclaw_page(llms.txt)",
@@ -161,9 +148,7 @@ async function run(): Promise<void> {
   }
 
   const failed = results.filter((r) => !r.ok);
-  process.stderr.write(
-    `\nSummary: ${results.length - failed.length}/${results.length} passed\n`,
-  );
+  process.stderr.write(`\nSummary: ${results.length - failed.length}/${results.length} passed\n`);
   if (stderrBuf.trim()) {
     process.stderr.write(`\n--- server stderr ---\n${stderrBuf}\n`);
   }
@@ -172,7 +157,7 @@ async function run(): Promise<void> {
 
 run().catch((err) => {
   process.stderr.write(
-    `smoke-test fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+    `smoke-test fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
   );
   process.exit(1);
 });

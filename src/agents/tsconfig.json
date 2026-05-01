@@ -10,5 +10,10 @@
     "types": ["node"],
     "lib": ["ES2023"]
   },
+<<<<<<< HEAD
   "include": ["./**/*.ts", "../shared/**/*.ts"]
 }
+=======
+  "include": ["./**/*.ts", "../shared/**/*.ts", "../tools/**/*.ts", "../integrations/**/*.ts"]
+}
+>>>>>>> 65b3b954aae7bae4e9a7e22f727167c3f5fcfa49

@@ -1,4 +1,3 @@
-
 import { Indexer, MemData } from "@0gfoundation/0g-ts-sdk";
 import { ethers } from "ethers";
 import { envOr, requireEnv } from "../../shared/env";
@@ -35,23 +34,81 @@ export type OgStorageClientOptions = {
   indexerUrl?: string;
 };
 
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1_000;
+
 export class OgStorageClient {
   private readonly signer: ethers.Wallet;
   private readonly indexer: Indexer;
   private readonly rpcUrl: string;
+  private readonly indexerUrl: string;
+
+  private consecutiveFailures = 0;
+  private circuitOpenSince = 0;
+  private preflight: Promise<boolean> | null = null;
 
   constructor(opts: OgStorageClientOptions = {}) {
     const privateKey = opts.privateKey ?? requireEnv("HAWKEYE_EVM_PRIVATE_KEY");
     this.rpcUrl = opts.rpcUrl ?? envOr("OG_RPC_URL", DEFAULT_RPC_URL);
-    const indexerUrl = opts.indexerUrl ?? envOr("OG_INDEXER_URL", DEFAULT_INDEXER_URL);
+    this.indexerUrl = opts.indexerUrl ?? envOr("OG_INDEXER_URL", DEFAULT_INDEXER_URL);
 
     const provider = new ethers.JsonRpcProvider(this.rpcUrl);
     this.signer = new ethers.Wallet(privateKey, provider);
-    this.indexer = new Indexer(indexerUrl);
+    this.indexer = new Indexer(this.indexerUrl);
+
+    this.preflight = this.checkIndexerHealth();
   }
 
+  private async checkIndexerHealth(): Promise<boolean> {
+    try {
+      const resp = await fetch(this.indexerUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "indexer_getStatus", params: [], id: 1 }),
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!resp.ok) {
+        console.warn(
+          `[0g-storage] indexer health check failed: HTTP ${resp.status} — disabling writes`,
+        );
+        this.consecutiveFailures = CIRCUIT_BREAKER_THRESHOLD;
+        this.circuitOpenSince = Date.now();
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn(
+        `[0g-storage] indexer unreachable: ${(err as Error).message} — disabling writes`,
+      );
+      this.consecutiveFailures = CIRCUIT_BREAKER_THRESHOLD;
+      this.circuitOpenSince = Date.now();
+      return false;
+    }
+  }
+
+  get circuitOpen(): boolean {
+    if (this.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return false;
+    const elapsed = Date.now() - this.circuitOpenSince;
+    if (elapsed >= CIRCUIT_BREAKER_COOLDOWN_MS) {
+      this.consecutiveFailures = 0;
+      this.circuitOpenSince = 0;
+      console.log("[0g-storage] circuit half-open — retrying writes");
+      return false;
+    }
+    return true;
+  }
 
   async writeJson(key: string, obj: unknown): Promise<OgStorageWriteResult> {
+    if (this.preflight !== null) {
+      await this.preflight;
+      this.preflight = null;
+    }
+    if (this.circuitOpen) {
+      throw new OgStorageError(
+        "INDEXER_UNREACHABLE",
+        `circuit open — skipping write for "${key}" (will retry in ${Math.ceil((CIRCUIT_BREAKER_COOLDOWN_MS - (Date.now() - this.circuitOpenSince)) / 1000)}s)`,
+      );
+    }
     const body = {
       key,
       writtenAt: Date.now(),
@@ -64,24 +121,31 @@ export class OgStorageClient {
 
     let tx: unknown;
     let err: Error | null;
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = () => {};
+    console.error = () => {};
     try {
       [tx, err] = await this.indexer.upload(mem, this.rpcUrl, this.signer);
     } catch (e) {
+      console.log = origLog;
+      console.error = origErr;
+      this.recordFailure();
       throw new OgStorageError(
         "INDEXER_UNREACHABLE",
         `indexer.upload threw: ${(e as Error)?.message ?? String(e)}`,
         e,
       );
     }
+    console.log = origLog;
+    console.error = origErr;
     if (err !== null) {
-      throw new OgStorageError(
-        "UPLOAD_FAILED",
-        `upload error: ${err.message}`,
-        err,
-      );
+      this.recordFailure();
+      throw new OgStorageError("UPLOAD_FAILED", `upload error: ${err.message}`, err);
     }
 
     if (isSingleUpload(tx)) {
+      this.consecutiveFailures = 0;
       return {
         rootHash: tx.rootHash,
         txHash: tx.txHash,
@@ -89,16 +153,25 @@ export class OgStorageClient {
         byteLength: bytes.byteLength,
       };
     }
+    this.recordFailure();
     throw new OgStorageError(
       "FRAGMENTED_UNEXPECTED",
       `upload returned fragmented result (${String((tx as { rootHashes?: string[] }).rootHashes?.length)} parts) — payload too large for single-chunk write`,
     );
   }
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures === CIRCUIT_BREAKER_THRESHOLD) {
+      this.circuitOpenSince = Date.now();
+      console.warn(
+        `[0g-storage] circuit OPEN after ${CIRCUIT_BREAKER_THRESHOLD} consecutive failures — suppressing writes for ${CIRCUIT_BREAKER_COOLDOWN_MS / 1000}s`,
+      );
+    }
+  }
 }
 
-function isSingleUpload(
-  tx: unknown,
-): tx is { rootHash: string; txHash: string; txSeq: number } {
+function isSingleUpload(tx: unknown): tx is { rootHash: string; txHash: string; txSeq: number } {
   if (tx === null || typeof tx !== "object") return false;
   const t = tx as Record<string, unknown>;
   return (

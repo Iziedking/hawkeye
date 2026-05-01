@@ -11,10 +11,7 @@ type JsonRpcMessage = {
   error?: { code: number; message: string; data?: unknown };
 };
 
-const serverEntry = path.resolve(
-  process.cwd(),
-  "src/tools/dexscreener-mcp/index.ts",
-);
+const serverEntry = path.resolve(process.cwd(), "src/tools/dexscreener-mcp/index.ts");
 const tsxBin = path.resolve(
   process.cwd(),
   "node_modules/.bin/tsx" + (process.platform === "win32" ? ".cmd" : ""),
@@ -137,16 +134,15 @@ async function run(): Promise<void> {
     });
     const wethText =
       (wethResp.result as { content?: Array<{ text?: string }> })?.content?.[0]?.text ?? "";
-    const wethOk = !(wethResp.result as { isError?: boolean })?.isError && wethText.includes('"pairs"');
+    const wethOk =
+      !(wethResp.result as { isError?: boolean })?.isError && wethText.includes('"pairs"');
     record("get_pairs_by_token (WETH)", wethOk, `len=${wethText.length}`);
   } finally {
     child.kill();
   }
 
   const failed = results.filter((r) => !r.ok);
-  process.stderr.write(
-    `\nSummary: ${results.length - failed.length}/${results.length} passed\n`,
-  );
+  process.stderr.write(`\nSummary: ${results.length - failed.length}/${results.length} passed\n`);
   if (stderrBuf.trim()) {
     process.stderr.write(`\n--- server stderr ---\n${stderrBuf}\n`);
   }
@@ -155,7 +151,7 @@ async function run(): Promise<void> {
 
 run().catch((err) => {
   process.stderr.write(
-    `smoke-test fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`,
+    `smoke-test fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
   );
   process.exit(1);
 });
