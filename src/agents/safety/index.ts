@@ -36,7 +36,9 @@ function setCache(address: string, data: Omit<SafetyReport, "intentId">): void {
 }
 
 // ─── Testnet chains ───────────────────────────────────────────────────────────
-const TESTNET_CHAIN_IDS = new Set<string>(["sepolia"]);
+const TESTNET_CHAIN_IDS = new Set<string>([
+  "sepolia", "base-sepolia", "basesepolia", "goerli", "mumbai", "fuji",
+]);
 
 // ─── GoPlus retry delays ──────────────────────────────────────────────────────
 // 429s happen when traffic bursts past the free-tier limit (~30 req/min).
@@ -474,10 +476,20 @@ async function checkAgeAndHolders(
   return chainClass === "evm" ? checkEtherscan(address, chainId) : checkSolscan(address);
 }
 
-async function checkEtherscan(address: string, _chainId: string): Promise<AgeAndHolders> {
-  const key = process.env["ETHERSCAN_API_KEY"] ?? "";
+// Maps DexScreener chain IDs to their block explorer API. All use the same Etherscan API format.
+const ETHERSCAN_EXPLORER: Record<string, { url: string; keyEnv: string }> = {
+  ethereum: { url: "https://api.etherscan.io/api",    keyEnv: "ETHERSCAN_API_KEY" },
+  base:     { url: "https://api.basescan.org/api",    keyEnv: "BASESCAN_API_KEY" },
+  arbitrum: { url: "https://api.arbiscan.io/api",     keyEnv: "ARBISCAN_API_KEY" },
+  bsc:      { url: "https://api.bscscan.com/api",     keyEnv: "BSCSCAN_API_KEY" },
+  polygon:  { url: "https://api.polygonscan.com/api", keyEnv: "POLYGONSCAN_API_KEY" },
+};
+
+async function checkEtherscan(address: string, chainId: string): Promise<AgeAndHolders> {
+  const explorer = ETHERSCAN_EXPLORER[chainId] ?? ETHERSCAN_EXPLORER["ethereum"]!;
+  const key = process.env[explorer.keyEnv] ?? "";
   if (!key) return { ageHours: null, top3Pct: null, holderCount: null };
-  const base = "https://api.etherscan.io/api";
+  const base = explorer.url;
   try {
     const [ageResp, holdersResp, supplyResp] = await Promise.all([
       fetch(
