@@ -168,7 +168,7 @@ using `Promise.allSettled`. Return the pair with highest liquidity.
 Add a best-effort CoinGecko price lookup alongside DexScreener. If both return prices, use
 the average. If only one returns, use that. Don't let CoinGecko failure block the quote.
 
-### Joshua -- Safety Agent (`src/agents/safety/` ONLY)
+### Samuel -- Safety Agent (`src/agents/safety/` ONLY)
 
 **Task 1: Expand TESTNET_CHAIN_IDS**
 
