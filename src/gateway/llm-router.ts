@@ -12,7 +12,7 @@ import { OgComputeError } from "../integrations/0g/compute";
 const EVM_ADDR = /0x[a-fA-F0-9]{40}/;
 const SOL_ADDR = /(?:^|\s)([1-9A-HJ-NP-Za-km-z]{32,44})(?:$|\s|[.,!?])/;
 
-const NATIVE_AMOUNT = /\b(\d+(?:\.\d+)?)\s*(eth|sol|bnb|matic|avax|native)\b/i;
+const NATIVE_AMOUNT = /\b(\d+(?:\.\d+)?)\s*(?:\w+\s+)?(eth|sol|bnb|matic|avax|native)\b/i;
 const USD_TOKEN_AMOUNT = /\b(\d+(?:\.\d+)?)\s*(usdc|usdt|dai|busd)\b/i;
 const USD_DOLLAR = /\$(\d+(?:,\d{3})*(?:\.\d+)?)\b/;
 

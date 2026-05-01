@@ -158,6 +158,9 @@ export async function startTelegramGateway(
     throw new Error("TELEGRAM_BOT_TOKEN required. Set it in .env.local or pass via deps.");
 
   const bot = new Bot(token);
+  bot.catch((err) => {
+    console.error("[telegram] bot error:", err.message ?? err);
+  });
   const wm = deps.walletManager ?? null;
   const replyByRequestId = new Map<string, PendingReply>();
 
@@ -501,10 +504,10 @@ export async function startTelegramGateway(
   // /start — smart welcome: returning users get a dynamic LLM greeting
   bot.command("start", async (ctx) => {
     const userId = String(ctx.from?.id ?? "unknown");
-    const hasWallet = wm ? wm.getWallet(userId) !== null : false;
+    const wallet = wm?.getWallet(userId) ?? undefined;
+    const hasWallet = wallet != null;
 
     if (hasWallet && llm) {
-      const wallet = wm!.getWallet(userId)!;
       const positions = getPositionsByUser(userId);
       const config = wm!.getFullWalletConfig(userId);
       const mode = userSettings.get(userId)?.mode ?? "NORMAL";
@@ -1497,7 +1500,7 @@ export async function startTelegramGateway(
 
     // Fallback: parse amount from raw text when LLM doesn't extract it
     if (amount.value <= 0) {
-      const ethMatch = raw.match(/([\d.]+)\s*(?:ETH|eth|ether)/i);
+      const ethMatch = raw.match(/([\d.]+)\s*(?:\w+\s+)?(?:ETH|eth|ether)/i);
       if (usdMatch) {
         const val = parseFloat(usdMatch[1] ?? usdMatch[2] ?? "0");
         if (val > 0) amount = { value: val, unit: "USD" };
@@ -1623,11 +1626,13 @@ export async function startTelegramGateway(
     const processingNote = keeperHubActive
       ? "Checking safety and getting best price. MEV protection active."
       : "Checking safety and getting best price.";
-    const actionVerb = side === "sell" ? "Selling" : fromToken && toToken ? "Swapping" : "Buying";
+    const isSwap = !!(fromToken && toToken) && side !== "sell";
+    const actionVerb = side === "sell" ? "Selling" : isSwap ? "Swapping" : "Buying";
+    const connector = isSwap ? "for" : "of";
     await reply(
       rctx,
       [
-        `${actionVerb}${amountDisplay ? " " + amountDisplay + (side === "sell" ? " of" : " of") : ""} ${tokenLabel} on ${chainLabel}...`,
+        `${actionVerb}${amountDisplay ? " " + amountDisplay + " " + connector : ""} ${tokenLabel} on ${chainLabel}...`,
         processingNote,
       ]
         .join("\n"),
@@ -1830,7 +1835,7 @@ export async function startTelegramGateway(
     rctx: ReplyCtx,
     llmClient: FallbackLlmClient | null,
   ): Promise<void> {
-    const hasWallet = wm ? wm.getWallet(rctx.userId) !== null : false;
+    const hasWallet = wm ? wm.getWallet(rctx.userId) != null : false;
     const positions = getPositionsByUser(rctx.userId);
 
     if (!llmClient) {
