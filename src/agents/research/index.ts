@@ -293,8 +293,39 @@ function computeScore(
   };
 }
 
-// GoPlus EVM fetch with 429 retry. Extracted so runSecurityScan() can await it
-// directly instead of wrapping in Promise.allSettled (which can't retry inline).
+let goplusToken: { token: string; expiresAt: number } | null = null;
+
+async function getGoPlusAccessToken(): Promise<string | null> {
+  if (goplusToken && Date.now() < goplusToken.expiresAt) return goplusToken.token;
+  const key = process.env["GOPLUS_API_KEY"] ?? "";
+  const secret = process.env["GOPLUS_API_SECRET"] ?? "";
+  if (!key || !secret) return null;
+  try {
+    const resp = await fetch("https://api.gopluslabs.io/api/v1/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_key: key, app_secret: secret }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as { result?: { access_token?: string; expires_in?: number } };
+    const token = body.result?.access_token;
+    if (!token) return null;
+    const ttl = (body.result?.expires_in ?? 3600) * 1000;
+    goplusToken = { token, expiresAt: Date.now() + ttl - 60_000 };
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+async function getGoPlusHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = await getGoPlusAccessToken();
+  if (token) headers["Authorization"] = token;
+  return headers;
+}
+
 async function fetchGoPlusEVM(address: string, numericChainId: number): Promise<Response | null> {
   const url =
     `https://api.gopluslabs.io/api/v1/token_security/${numericChainId}` +
@@ -309,8 +340,9 @@ async function fetchGoPlusEVM(address: string, numericChainId: number): Promise<
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
+      const hdrs = await getGoPlusHeaders();
       const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
+        headers: hdrs,
         signal: AbortSignal.timeout(8_000),
       });
       if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
@@ -348,8 +380,9 @@ async function fetchGoPlusSolana(mintAddress: string): Promise<FlagWithSource[]>
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
+      const hdrs = await getGoPlusHeaders();
       const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
+        headers: hdrs,
         signal: AbortSignal.timeout(8_000),
       });
       if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
@@ -1526,6 +1559,52 @@ async function callLLM(prompt: string, llm?: LlmClient): Promise<string> {
   }
 }
 
+// ─── Nansen smart money ───────────────────────────────────────────────────────
+const NANSEN_BASE = "https://api.nansen.ai/v1";
+const NANSEN_CHAIN_MAP: Record<string, string> = {
+  ethereum: "ethereum", base: "base", arbitrum: "arbitrum",
+  bsc: "bsc", polygon: "polygon", optimism: "optimism",
+  avalanche: "avalanche", solana: "solana",
+};
+
+type NansenFlows = {
+  smartMoney: { inflow: number; outflow: number } | null;
+  whales: { inflow: number; outflow: number } | null;
+  label: string | null;
+};
+
+async function fetchNansenFlows(address: string, chainId: string): Promise<NansenFlows | null> {
+  const apiKey = process.env["NANSEN_API_KEY"] ?? "";
+  if (!apiKey) return null;
+  const chain = NANSEN_CHAIN_MAP[chainId];
+  if (!chain) return null;
+
+  try {
+    const resp = await fetch(
+      `${NANSEN_BASE}/token/${chain}/${address.toLowerCase()}/recent-flows-summary`,
+      {
+        headers: { apikey: apiKey, Accept: "application/json" },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as {
+      data?: Array<{ segment?: string; inflow_usd?: number; outflow_usd?: number }>;
+      label?: string;
+    };
+    const segments = body.data ?? [];
+    const sm = segments.find((s) => s.segment?.toLowerCase().includes("smart"));
+    const wh = segments.find((s) => s.segment?.toLowerCase().includes("whale"));
+    return {
+      smartMoney: sm ? { inflow: sm.inflow_usd ?? 0, outflow: sm.outflow_usd ?? 0 } : null,
+      whales: wh ? { inflow: wh.inflow_usd ?? 0, outflow: wh.outflow_usd ?? 0 } : null,
+      label: body.label ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Prompt + fallback template ───────────────────────────────────────────────
 type ResearchData = {
   ticker: string;
@@ -1544,6 +1623,7 @@ type ResearchData = {
   priceChange: { h1: number | null; h6: number | null; h24: number | null } | null;
   arkhamHolders: ArkhamHolder[];
   arkhamFlows: ArkhamFlow[];
+  nansenFlows: NansenFlows | null;
   opportunityScore: number;
   question: string;
 };
@@ -1629,9 +1709,22 @@ function buildResearchPrompt(d: ResearchData): string {
     lines.push(`  Net flow: ${totalNet >= 0 ? "+" : ""}$${formatCompact(Math.abs(totalNet)).replace("$", "")}`);
   }
 
+  if (d.nansenFlows) {
+    lines.push(`\nNansen smart money flows:`);
+    if (d.nansenFlows.smartMoney) {
+      const net = d.nansenFlows.smartMoney.inflow - d.nansenFlows.smartMoney.outflow;
+      lines.push(`  Smart Money: inflow $${formatCompact(d.nansenFlows.smartMoney.inflow)} / outflow $${formatCompact(d.nansenFlows.smartMoney.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`);
+    }
+    if (d.nansenFlows.whales) {
+      const net = d.nansenFlows.whales.inflow - d.nansenFlows.whales.outflow;
+      lines.push(`  Whales: inflow $${formatCompact(d.nansenFlows.whales.inflow)} / outflow $${formatCompact(d.nansenFlows.whales.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`);
+    }
+    if (d.nansenFlows.label) lines.push(`  Nansen label: ${d.nansenFlows.label}`);
+  }
+
   lines.push(`\nUser question: ${d.question}`);
   lines.push(
-    "\nBased ONLY on the data above, give a concise take: what's the main risk and is there opportunity? If Arkham holder/flow data is present, factor in concentration risk and smart money direction. Write like a crypto trader talking to a friend, not a report. Do NOT invent numbers or facts not in the data.",
+    "\nBased ONLY on the data above, give a concise take: what's the main risk and is there opportunity? If Arkham/Nansen holder/flow data is present, factor in concentration risk and smart money direction. Write like a crypto trader talking to a friend, not a report. Do NOT invent numbers or facts not in the data.",
   );
   return lines.join("\n");
 }
@@ -1976,7 +2069,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
       }
     : null;
 
-  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS] = await Promise.allSettled([
+  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS, nansenS] = await Promise.allSettled([
     runSecurityScan(address, chainClass, resolvedChainId),
     checkAgeAndHolders(address, chainClass, resolvedChainId),
     checkTrendSignal(ticker, tokenName, true),
@@ -1986,6 +2079,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     fetchGeckoTerminal(address, resolvedChainId),
     arkham ? arkham.getTokenHolders(resolvedChainId, address, 10) : Promise.resolve([] as ArkhamHolder[]),
     arkham ? arkham.getTokenFlows(resolvedChainId, address, "24h", 10) : Promise.resolve([] as ArkhamFlow[]),
+    fetchNansenFlows(address, resolvedChainId),
   ]);
 
   const security =
@@ -2010,6 +2104,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   const gecko = geckoS.status === "fulfilled" ? geckoS.value : null;
   const arkhamHolders = arkHoldersS.status === "fulfilled" ? arkHoldersS.value : [];
   const arkhamFlows = arkFlowsS.status === "fulfilled" ? arkFlowsS.value : [];
+  const nansenFlows = nansenS.status === "fulfilled" ? nansenS.value : null;
 
   const tavilyHit = await checkTavily(ticker, 7);
   if (tavilyHit && !trend.sources.includes("tavily")) {
@@ -2028,6 +2123,11 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   if (arkhamFlows.length > 0) {
     const totalNet = arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
     if (totalNet < -50_000) baseScore = Math.max(0, baseScore - 5);
+  }
+  if (nansenFlows?.smartMoney) {
+    const netSM = nansenFlows.smartMoney.inflow - nansenFlows.smartMoney.outflow;
+    if (netSM < -100_000) baseScore = Math.max(0, baseScore - 8);
+    else if (netSM > 100_000) baseScore = Math.min(100, baseScore + 5);
   }
 
   const multiplier = computeNarrativeMultiplier(trend);
@@ -2050,6 +2150,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     priceChange,
     arkhamHolders,
     arkhamFlows,
+    nansenFlows,
     opportunityScore,
     question: req.question,
   };

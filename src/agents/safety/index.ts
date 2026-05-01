@@ -173,6 +173,41 @@ async function resolveChain(
   }
 }
 
+// ─── GoPlus authentication ────────────────────────────────────────────────────
+let goplusToken: { token: string; expiresAt: number } | null = null;
+
+async function getGoPlusAccessToken(): Promise<string | null> {
+  if (goplusToken && Date.now() < goplusToken.expiresAt) return goplusToken.token;
+  const key = process.env["GOPLUS_API_KEY"] ?? "";
+  const secret = process.env["GOPLUS_API_SECRET"] ?? "";
+  if (!key || !secret) return null;
+  try {
+    const resp = await fetch("https://api.gopluslabs.io/api/v1/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_key: key, app_secret: secret }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as { result?: { access_token?: string; expires_in?: number } };
+    const token = body.result?.access_token;
+    if (!token) return null;
+    const ttl = (body.result?.expires_in ?? 3600) * 1000;
+    goplusToken = { token, expiresAt: Date.now() + ttl - 60_000 };
+    console.log("[safety] GoPlus access token obtained");
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+async function getGoPlusHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = await getGoPlusAccessToken();
+  if (token) headers["Authorization"] = token;
+  return headers;
+}
+
 // ─── GoPlus EVM ───────────────────────────────────────────────────────────────
 type GoPlusData = {
   is_honeypot?: string;
@@ -201,8 +236,9 @@ async function checkGoPlus(
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
+      const hdrs = await getGoPlusHeaders();
       const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
+        headers: hdrs,
         signal: AbortSignal.timeout(8_000),
       });
       if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
@@ -372,8 +408,9 @@ async function checkGoPlusSolana(
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
+      const hdrs = await getGoPlusHeaders();
       const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
+        headers: hdrs,
         signal: AbortSignal.timeout(8_000),
       });
       if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
@@ -585,10 +622,25 @@ async function scanToken(
   address: string,
   chainClass: "evm" | "solana",
   intentId: string,
+  chainHint?: string,
 ): Promise<SafetyReport> {
+  // Check chainHint first — DexScreener doesn't index testnet tokens
+  if (chainHint && TESTNET_CHAIN_IDS.has(chainHint)) {
+    console.log(`[safety] testnet auto-pass for ${address} (chainHint=${chainHint})`);
+    return {
+      intentId,
+      address,
+      chainId: chainHint as ChainId,
+      score: 100,
+      flags: [],
+      sources: [{ provider: "dexscreener", ok: true, detail: { note: "testnet — auto-pass" } }],
+      completedAt: Date.now(),
+    };
+  }
+
   const { chainId, liquidityUsd, priceUsd } = await resolveChain(address, chainClass);
 
-  // Testnet tokens auto-pass — no point running security checks on test deployments.
+  // Fallback: DexScreener resolved to a testnet chain
   if (TESTNET_CHAIN_IDS.has(chainId)) {
     console.log(`[safety] testnet auto-pass for ${address} (${chainId})`);
     return {
@@ -717,7 +769,7 @@ async function handleSafetyScan(intent: TradeIntent): Promise<void> {
 
   console.log(`[safety] scanning ${intent.address} (${intent.chain})`);
   try {
-    const report = await scanToken(intent.address, intent.chain, intent.intentId);
+    const report = await scanToken(intent.address, intent.chain, intent.intentId, intent.chainHint);
     const { intentId: _omit, ...cacheable } = report;
     setCache(cacheKey, cacheable);
     bus.emit("SAFETY_RESULT", report);

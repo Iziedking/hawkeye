@@ -94,6 +94,16 @@ let keeperHubClient: KeeperHubClient | null = null;
 
 const ETH_ADDRESS = "0x0000000000000000000000000000000000000000";
 const UNISWAP_API = "https://trade-api.gateway.uniswap.org/v1";
+const WALLET_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
+}
 
 const UNISWAP_HEADERS = (apiKey: string) => ({
   "Content-Type": "application/json",
@@ -264,7 +274,7 @@ async function executeEvmSwap(
 
   if (!walletMgr) throw new Error("Wallet manager not available");
 
-  const txParams: import("../integrations/privy/index").SignTxInput = {
+  const txParams: import("../../integrations/privy/index").SignTxInput = {
     to: swapData.swap.to!,
     data: swapData.swap.data!,
     value: swapData.swap.value ?? "0",
@@ -274,7 +284,13 @@ async function executeEvmSwap(
   // Try KeeperHub for MEV-protected submission, fall back to direct Privy
   if (keeperHubClient && !keeperHubClient.circuitOpen) {
     try {
-      const signedTx = await walletMgr.signTransaction(intent.userId, txParams);
+      console.log(`[execution] signing tx via Privy...`);
+      const signedTx = await withTimeout(
+        walletMgr.signTransaction(intent.userId, txParams),
+        WALLET_TIMEOUT_MS,
+        "Privy signTransaction",
+      );
+      console.log(`[execution] submitting to KeeperHub...`);
       const status = await keeperHubClient.submitAndWait(signedTx, numChainId);
       if (status.status === "confirmed" && status.txHash) {
         console.log(`[execution] KeeperHub confirmed: ${status.txHash.slice(0, 16)}...`);
@@ -293,7 +309,12 @@ async function executeEvmSwap(
     }
   }
 
-  const result = await walletMgr.sendTransaction(intent.userId, txParams);
+  console.log(`[execution] direct submit via Privy sendTransaction...`);
+  const result = await withTimeout(
+    walletMgr.sendTransaction(intent.userId, txParams),
+    WALLET_TIMEOUT_MS,
+    "Privy sendTransaction",
+  );
   console.log(`[execution] direct submit (${routingType}): ${result.hash.slice(0, 16)}...`);
 
   return {
@@ -346,15 +367,18 @@ async function executeSolanaSwap(
 }
 
 async function handleExecute(intentId: string): Promise<void> {
+  console.log(`[execution] handleExecute called for ${intentId.slice(0, 8)}...`);
   const ctx = contextCache.get(intentId);
   if (!ctx) {
-    console.error(`[execution] no context for ${intentId}`);
+    console.error(`[execution] no context for ${intentId} — cached IDs: [${[...contextCache.keys()].map(k => k.slice(0, 8)).join(", ")}]`);
+    bus.emit("QUOTE_FAILED", { intentId, address: "", reason: "Execution context lost. Try again." });
     return;
   }
 
   const { intent, quote } = ctx;
   if (!quote) {
     console.error(`[execution] no quote for ${intentId}`);
+    bus.emit("QUOTE_FAILED", { intentId, address: intent.address, reason: "Quote not received in time. Try again." });
     return;
   }
 
@@ -489,13 +513,22 @@ export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
     if (ctx) ctx.quote = quote;
   };
 
-  const onStrategyDecision = async (decision: StrategyDecision) => {
+  const onStrategyDecision = (decision: StrategyDecision) => {
     if (decision.decision !== "EXECUTE") return;
-    await handleExecute(decision.intentId);
+    handleExecute(decision.intentId).catch((err) => {
+      console.error(`[execution] UNHANDLED in handleExecute: ${(err as Error).message}`);
+      bus.emit("QUOTE_FAILED", {
+        intentId: decision.intentId,
+        address: "",
+        reason: `Execution crashed: ${(err as Error).message?.slice(0, 150) ?? "unknown error"}`,
+      });
+    });
   };
 
-  const onExecuteSell = async (payload: ExecuteSellPayload) => {
-    await handleSell(payload);
+  const onExecuteSell = (payload: ExecuteSellPayload) => {
+    handleSell(payload).catch((err) => {
+      console.error(`[execution] UNHANDLED in handleSell: ${(err as Error).message}`);
+    });
   };
 
   bus.on("TRADE_REQUEST", onTradeRequest);

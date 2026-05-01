@@ -150,6 +150,10 @@ process.on("uncaughtException", (err) => {
   log.error("uncaught exception", err);
 });
 
+process.on("unhandledRejection", (reason) => {
+  log.error("unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)));
+});
+
 function initKeeperHub(): KeeperHubClient | null {
   try {
     const kh = new KeeperHubClient();
