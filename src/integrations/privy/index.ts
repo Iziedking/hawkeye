@@ -1,5 +1,6 @@
 import { PrivyClient } from "@privy-io/node";
 import { loadEnvLocal, envOr } from "../../shared/env";
+import { log } from "../../shared/logger";
 import { JsonStore } from "../../shared/store";
 import type { StoredUser, StoredExternalWallet, StoredActiveWallet } from "../../shared/store";
 import type { ChainId, ActiveWalletRef } from "../../shared/types";
@@ -126,7 +127,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     }
   }
   const restored = walletCache.size;
-  if (restored > 0) console.log(`[privy] restored ${restored} wallet(s) from disk`);
+  if (restored > 0) log.privy(`restored ${restored} wallet(s) from disk`);
 
   function resolveEmail(userId: string): string | undefined {
     if (userId.includes("@")) return userId;

@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { log } from "./logger";
 
 export type SubsystemStatus = {
   name: string;
@@ -55,20 +56,74 @@ export function getHealth(): HealthReport {
   };
 }
 
+// Map health check names to sponsor-facing display names and detail labels
+const SPONSOR_DISPLAY: Record<string, { label: string; detailMap: (detail?: string) => string }> = {
+  "LLM": {
+    label: "0G Compute",
+    detailMap: (d) => d === "0G Compute" ? "qwen-2.5-7b" : d ?? "",
+  },
+  "0G Storage": {
+    label: "0G Storage",
+    detailMap: (d) => d === "active" ? "testnet" : d ?? "",
+  },
+  "0G Registry": {
+    label: "0G Chain",
+    detailMap: (d) => d ?? "",
+  },
+  "Gensyn AXL": {
+    label: "Gensyn AXL",
+    detailMap: (d) => d ?? "",
+  },
+  "KeeperHub": {
+    label: "KeeperHub",
+    detailMap: (d) => d === "active" ? "MEV protection" : d ?? "",
+  },
+  "Wallets": {
+    label: "Privy",
+    detailMap: (d) => d === "Privy" ? "agent wallets" : d ?? "",
+  },
+};
+
 export function formatHealthForTelegram(): string {
   const h = getHealth();
-  const uptimeMin = Math.floor(h.uptime / 60_000);
+  const totalMin = Math.floor(h.uptime / 60_000);
+  let uptimeStr: string;
+  if (totalMin >= 60) {
+    const hrs = Math.floor(totalMin / 60);
+    const mins = totalMin % 60;
+    uptimeStr = `${hrs}h ${mins}m`;
+  } else {
+    uptimeStr = `${totalMin}m`;
+  }
+
   const lines = [
-    `HAWKEYE ${h.status.toUpperCase()}`,
-    `Uptime: ${uptimeMin}m`,
-    `Agents: ${h.agents.length} online`,
-    `Positions: ${h.openPositions} open`,
-    `Bus events: ${h.busDepth}`,
+    "HAWKEYE Status",
+    "",
+    `Uptime: ${uptimeStr} | ${h.agents.length} agents | ${h.busDepth} events`,
     "",
   ];
 
+  // Uniswap is not a health-checked subsystem; it is always available
+  // when the Execution Agent is running. Show it after the subsystems.
+  const uniswapOk = h.agents.includes("Execution");
+
   for (const s of h.subsystems) {
-    lines.push(`${s.ok ? "✓" : "✗"} ${s.name}${s.detail ? ` (${s.detail})` : ""}`);
+    const display = SPONSOR_DISPLAY[s.name];
+    const label = display ? display.label : s.name;
+    const detail = display ? display.detailMap(s.detail) : (s.detail ?? "");
+    const status = s.ok ? "ON" : "OFF";
+    const tag = s.ok ? "✓" : "✗";
+    const pad = " ".repeat(Math.max(1, 14 - label.length));
+    lines.push(`${tag} ${label}${pad}${status}   ${detail}`);
+  }
+
+  // Uniswap line (derived from Execution Agent presence)
+  {
+    const tag = uniswapOk ? "✓" : "✗";
+    const status = uniswapOk ? "ON" : "OFF";
+    const label = "Uniswap";
+    const pad = " ".repeat(Math.max(1, 14 - label.length));
+    lines.push(`${tag} ${label}${pad}${status}   Trading API`);
   }
 
   return lines.join("\n");
@@ -90,7 +145,7 @@ export function startHealthServer(port = 8080): Server {
   });
 
   server.listen(port, () => {
-    console.log(`[health] HTTP endpoint on :${port}/health`);
+    log.boot(`health endpoint on :${port}/health`);
   });
 
   return server;

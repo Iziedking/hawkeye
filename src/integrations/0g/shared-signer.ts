@@ -1,5 +1,6 @@
 import { ethers } from "ethers";
 import { envOr, requireEnv } from "../../shared/env";
+import { log } from "../../shared/logger";
 
 const DEFAULT_RPC_URL = "https://evmrpc-testnet.0g.ai";
 
@@ -14,11 +15,11 @@ export async function checkOgBalance(): Promise<void> {
     const a0gi = ethers.formatEther(balance);
     const num = parseFloat(a0gi);
     if (num < 1) {
-      console.warn(`[0g] wallet ${addr} balance: ${a0gi} A0GI — LOW, transactions may fail`);
+      log.warn(`0G wallet ${addr.slice(0, 12)}... balance: ${a0gi} A0GI — LOW`);
     } else {
-      console.log(`[0g] wallet ${addr} balance: ${a0gi} A0GI`);
+      log.og("chain", `wallet ${addr.slice(0, 12)}... balance: ${a0gi} A0GI`);
     }
   } catch (err) {
-    console.warn("[0g] balance check failed:", (err as Error).message);
+    log.warn(`0G balance check failed: ${(err as Error).message}`);
   }
 }

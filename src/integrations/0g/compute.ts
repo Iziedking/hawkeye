@@ -1,6 +1,7 @@
 import { createZGComputeNetworkBroker } from "@0glabs/0g-serving-broker";
 import { ethers } from "ethers";
 import { envOr, requireEnv } from "../../shared/env";
+import { log } from "../../shared/logger";
 
 const DEFAULT_RPC_URL = "https://evmrpc-testnet.0g.ai";
 
@@ -78,14 +79,14 @@ export class OgComputeClient {
       const pending = await this.provider.getTransactionCount(addr, "pending");
       const confirmed = await this.provider.getTransactionCount(addr, "latest");
       if (pending > confirmed) {
-        console.log(`[0g-compute] waiting for ${pending - confirmed} pending tx(s)...`);
+        log.og("compute", `waiting for ${pending - confirmed} pending tx(s)...`);
         const start = Date.now();
         while (Date.now() - start < 30_000) {
           const current = await this.provider.getTransactionCount(addr, "latest");
           if (current >= pending) return;
           await new Promise((r) => setTimeout(r, 2_000));
         }
-        console.warn("[0g-compute] pending txs did not confirm in 30s, proceeding anyway");
+        log.warn("0G pending txs did not confirm in 30s, proceeding");
       }
     } catch {
       // best effort

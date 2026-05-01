@@ -7,6 +7,7 @@
 
 import { EventEmitter } from "node:events";
 import type { EventMap, Handler } from "./event-bus";
+import { log } from "./logger";
 
 const AXL_API = process.env["AXL_API_URL"] ?? "http://127.0.0.1:9002";
 const POLL_INTERVAL_MS = 100;
@@ -46,14 +47,9 @@ export class AxlEventBus<E extends EventMap> {
       this.peerIds = (topo.peers ?? []).map((p) => p.public_key ?? "").filter((k) => k.length > 0);
       this.connected = true;
       this.startPolling();
-      console.log(
-        `[axl-bus] connected — node=${this.nodeId.slice(0, 12)}... peers=${this.peerIds.length}`,
-      );
+      log.gensyn(`connected node=${this.nodeId.slice(0, 12)}... peers=${this.peerIds.length}`);
     } catch (err) {
-      console.warn(
-        `[axl-bus] AXL node unreachable at ${AXL_API} — local-only mode:`,
-        (err as Error).message,
-      );
+      log.warn(`AXL node unreachable at ${AXL_API}: ${(err as Error).message}`);
       this.connected = false;
     }
   }

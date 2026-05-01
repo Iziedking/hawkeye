@@ -170,6 +170,15 @@ export const EVM_CHAIN_CONFIG: Record<string, EvmChainConfig> = {
     explorerUrl: "https://sepolia.etherscan.io",
     wrappedNative: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14",
   },
+  "base-sepolia": {
+    chainId: "base-sepolia",
+    name: "Base Sepolia Testnet",
+    nativeCurrency: "ETH",
+    rpcUrl: envOr("EVM_RPC_BASE_SEPOLIA", "https://sepolia.base.org"),
+    fallbackRpc: "https://base-sepolia-rpc.publicnode.com",
+    explorerUrl: "https://sepolia.basescan.org",
+    wrappedNative: "0x4200000000000000000000000000000000000006",
+  },
 };
 
 /**

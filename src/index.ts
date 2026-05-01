@@ -4,6 +4,7 @@ import { AxlEventBus } from "./shared/axl-bus";
 import type { BusEvents } from "./shared/types";
 import { loadEnvLocal, validateEnv, assertRequiredEnv, envOr } from "./shared/env";
 import { startSwarmTracer } from "./shared/swarm-tracer";
+import { log, sponsors } from "./shared/logger";
 import {
   registerHealthCheck,
   setAgentList,
@@ -35,9 +36,9 @@ loadEnvLocal();
 function reportEnv(): void {
   const check = validateEnv();
   const warnings = assertRequiredEnv(check);
-  for (const w of warnings) console.warn(`[hawkeye] WARN  ${w}`);
+  for (const w of warnings) log.warn(w);
   for (const o of check.optional) {
-    if (!o.ok) console.log(`[hawkeye] info  ${o.name} not set — ${o.enables} disabled`);
+    if (!o.ok) log.boot(`${o.name} not set, ${o.enables} disabled`);
   }
 }
 
@@ -45,61 +46,72 @@ async function initLlm(): Promise<{ llm: FallbackLlmClient | null; compute: OgCo
   let ogClient: OgComputeClient | null = null;
   try {
     ogClient = new OgComputeClient();
+    sponsors.og.compute = true;
+    log.og("compute", "client initialized");
   } catch (err) {
-    console.warn("[hawkeye] 0G Compute failed to construct:", (err as Error).message);
+    log.warn(`0G Compute: ${(err as Error).message}`);
   }
 
   let fallbackClient: ClaudeLlmClient | OpenRouterClient | null = null;
   try {
     fallbackClient = new OpenRouterClient();
-    console.log(`[hawkeye] OpenRouter ready (model: ${fallbackClient.model})`);
+    log.boot(`OpenRouter ready (model: ${fallbackClient.model})`);
   } catch {
     try {
       fallbackClient = new ClaudeLlmClient();
-      console.log("[hawkeye] Claude fallback ready");
+      log.boot("Claude fallback ready");
     } catch (err) {
-      console.warn("[hawkeye] No LLM fallback available:", (err as Error).message);
+      log.warn(`No LLM fallback: ${(err as Error).message}`);
     }
   }
 
   if (!fallbackClient && !ogClient) {
-    console.warn("[hawkeye] No LLM available — regex-only mode");
+    log.warn("No LLM available, regex-only mode");
     return { llm: null, compute: null };
   }
 
-  const client = new FallbackLlmClient(ogClient, fallbackClient);
+  const client = new FallbackLlmClient(ogClient, fallbackClient, (m) => log.og("compute", m));
   await client.ready();
   return { llm: client, compute: ogClient };
 }
 
 function initStorage(): OgStorageClient | null {
   try {
-    return new OgStorageClient();
+    const s = new OgStorageClient();
+    sponsors.og.storage = true;
+    log.og("storage", "client initialized");
+    return s;
   } catch (err) {
-    console.warn("[hawkeye] 0G Storage unavailable:", (err as Error).message);
+    log.warn(`0G Storage: ${(err as Error).message}`);
     return null;
   }
 }
 
 function initRegistry(): RegistryClient | null {
   try {
-    return new RegistryClient();
+    const r = new RegistryClient();
+    sponsors.og.chain = true;
+    log.og("chain", `contract ${r.address.slice(0, 10)}...`);
+    return r;
   } catch (err) {
-    console.warn("[hawkeye] 0G Registry unavailable:", (err as Error).message);
+    log.warn(`0G Registry: ${(err as Error).message}`);
     return null;
   }
 }
 
 async function initAxlBus(): Promise<AxlEventBus<BusEvents> | null> {
   if (!envOr("AXL_API_URL", "")) {
-    console.log("[hawkeye] AXL_API_URL not set — using local EventEmitter bus");
+    log.gensyn("AXL_API_URL not set, using local EventEmitter bus");
     return null;
   }
   const axl = new AxlEventBus<BusEvents>();
   await axl.start();
   if (!axl.isConnected()) return null;
 
-  // Bridge: forward local bus events to AXL peers, and AXL events to local bus
+  sponsors.gensyn.connected = true;
+  sponsors.gensyn.peers = axl.getPeerCount();
+  log.gensyn(`connected, ${axl.getPeerCount()} peers on AXL overlay`);
+
   const bridgedEvents: Array<keyof BusEvents> = [
     "TRADE_REQUEST",
     "SAFETY_RESULT",
@@ -135,24 +147,27 @@ async function initAxlBus(): Promise<AxlEventBus<BusEvents> | null> {
 
 process.on("uncaughtException", (err) => {
   if (err instanceof RangeError && err.message.includes("call stack")) return;
-  console.error("[hawkeye] uncaught:", err.message);
+  log.error("uncaught exception", err);
 });
 
 function initKeeperHub(): KeeperHubClient | null {
   try {
-    return new KeeperHubClient();
+    const kh = new KeeperHubClient();
+    sponsors.keeper.active = true;
+    log.keeper("client initialized, MEV protection active");
+    return kh;
   } catch (err) {
     if (err instanceof KeeperHubError && err.reason === "NO_API_KEY") {
-      console.log("[hawkeye] KH_API_KEY not set — KeeperHub disabled, direct submission only");
+      log.boot("KH_API_KEY not set, KeeperHub disabled");
     } else {
-      console.warn("[hawkeye] KeeperHub init failed:", (err as Error).message);
+      log.warn(`KeeperHub: ${(err as Error).message}`);
     }
     return null;
   }
 }
 
 async function main(): Promise<void> {
-  console.log("[hawkeye] booting...");
+  log.boot("initializing...");
   reportEnv();
 
   await checkOgBalance();
@@ -165,25 +180,18 @@ async function main(): Promise<void> {
   let wm: ReturnType<typeof createWalletManager> | null = null;
   try {
     wm = createWalletManager();
-    console.log("[hawkeye] Privy wallet manager ready");
+    log.privy("wallet manager ready");
   } catch (err) {
-    console.warn(
-      "[hawkeye] Privy unavailable — running without agent wallets:",
-      (err as Error).message,
-    );
+    log.warn(`Privy: ${(err as Error).message}`);
   }
 
   const keeperHub = initKeeperHub();
 
   const stopTracer = startSwarmTracer();
-
-  // 0G audit trail: writes to Storage + Chain on every bus event
   const stopAudit = startAuditTrail({ storage, registry });
-
-  // Gensyn AXL P2P bus (bridges events to remote nodes)
   const axl = await initAxlBus();
 
-  // Strategy MUST start BEFORE Safety and Quote.
+  // Strategy MUST start BEFORE Safety and Quote
   const stopStrategy = startStrategyAgent({ llm: llm ?? undefined });
   const stopSafety = startSafetyAgent();
   const stopQuote = startQuoteAgent();
@@ -192,7 +200,8 @@ async function main(): Promise<void> {
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
 
-  // Health subsystem registration
+  sponsors.uniswap.active = true;
+
   const agentNames = [
     "Safety",
     "Quote",
@@ -239,16 +248,15 @@ async function main(): Promise<void> {
 
   startHealthServer(Number(process.env["HEALTH_PORT"] ?? 8080));
 
-  // Bus event logging with health counter
   bus.on("ALPHA_FOUND", () => incrementBusEvents());
   bus.on("EXECUTE_SELL", (sell) => {
     incrementBusEvents();
-    console.log(`[bus] EXECUTE_SELL pos=${sell.positionId} fraction=${sell.fraction}`);
+    log.bus("EXECUTE_SELL", `pos=${sell.positionId} fraction=${sell.fraction}`);
   });
   bus.on("POSITION_UPDATE", () => incrementBusEvents());
   bus.on("QUOTE_FAILED", (qf) => {
     incrementBusEvents();
-    console.log(`[bus] QUOTE_FAILED intent=${qf.intentId} reason=${qf.reason}`);
+    log.bus("QUOTE_FAILED", `intent=${qf.intentId} reason=${qf.reason.slice(0, 80)}`);
   });
   bus.on("TRADE_REQUEST", () => incrementBusEvents());
   bus.on("SAFETY_RESULT", () => incrementBusEvents());
@@ -259,15 +267,26 @@ async function main(): Promise<void> {
   let gateway: Awaited<ReturnType<typeof startTelegramGateway>> | null = null;
   try {
     gateway = await startTelegramGateway({ walletManager: wm, llm });
-    console.log("[hawkeye] Telegram gateway live");
   } catch (err) {
-    console.warn(
-      "[hawkeye] Telegram gateway failed — running in headless mode:",
-      (err as Error).message,
-    );
+    log.warn(`Telegram gateway failed: ${(err as Error).message}`);
   }
 
-  console.log("[hawkeye] swarm ready — all agents online\n");
+  const ogActuallyHealthy = llm?.ogHealthy ?? false;
+  if (!ogActuallyHealthy) sponsors.og.compute = false;
+
+  log.ready({
+    ogCompute: ogActuallyHealthy,
+    ogStorage: sponsors.og.storage,
+    ogChain: sponsors.og.chain,
+    ogChainAddr: registry?.address,
+    gensyn: sponsors.gensyn.connected,
+    gensynPeers: sponsors.gensyn.peers,
+    uniswap: sponsors.uniswap.active,
+    keeperHub: sponsors.keeper.active,
+    privy: wm !== null,
+    llmFallback: llm?.usingFallback ? (llm.fallbackName ?? "OpenRouter") : null,
+    agentCount: agentNames.length,
+  });
 
   const cleanups = [
     stopTracer,
@@ -285,7 +304,7 @@ async function main(): Promise<void> {
   ];
 
   const shutdown = (): void => {
-    console.log("\n[hawkeye] shutting down...");
+    log.boot("shutting down...");
     for (const fn of cleanups) fn();
     process.exit(0);
   };
@@ -295,6 +314,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[hawkeye] fatal:", err);
+  log.error("fatal", err);
   process.exit(1);
 });

@@ -1,4 +1,5 @@
 import { bus } from "../../shared/event-bus";
+import { log } from "../../shared/logger";
 import type {
   SafetyReport,
   StrategyDecision,
@@ -22,11 +23,11 @@ function writeStorage(storage: OgStorageClient, key: string, payload: unknown): 
   writeQueue = writeQueue.then(async () => {
     try {
       const res = await storage.writeJson(key, payload);
-      console.log(`[audit] 0G: ${key} → ${res.rootHash.slice(0, 12)}...`);
+      log.og("storage", `${key} root=${res.rootHash.slice(0, 12)}...`);
     } catch (err) {
       if (!storage.circuitOpen) {
         const msg = (err as Error).message ?? "";
-        console.warn(`[audit] 0G write failed (${key}): ${msg.slice(0, 80)}`);
+        log.warn(`0G storage write failed (${key}): ${msg.slice(0, 80)}`);
       }
     }
   });
@@ -38,10 +39,10 @@ function writeChain(registry: RegistryClient, label: string, fn: () => Promise<s
   chainQueue = chainQueue.then(async () => {
     try {
       const hash = await fn();
-      console.log(`[audit] chain: ${label} → ${hash.slice(0, 14)}...`);
+      log.og("chain", `${label} tx=${hash.slice(0, 14)}...`);
     } catch (err) {
       const msg = (err as Error).message ?? "";
-      console.warn(`[audit] chain write failed (${label}): ${msg.slice(0, 80)}`);
+      log.warn(`0G chain write failed (${label}): ${msg.slice(0, 80)}`);
     }
   });
 }
@@ -52,13 +53,11 @@ export function startAuditTrail(deps: AuditDeps): () => void {
   const { storage, registry } = deps;
 
   if (!storage && !registry) {
-    console.warn("[audit] No 0G clients available — audit trail disabled");
+    log.warn("No 0G clients available, audit trail disabled");
     return () => {};
   }
 
-  console.log(
-    `[audit] trail active — storage=${storage ? "on" : "off"} registry=${registry ? "on" : "off"}`,
-  );
+  log.og("storage", `audit trail active storage=${storage ? "on" : "off"} registry=${registry ? "on" : "off"}`);
 
   const onTradeRequest = (intent: TradeIntent): void => {
     if (storage) {

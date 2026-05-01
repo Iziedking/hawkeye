@@ -47,7 +47,28 @@ const CHAIN_NUMERIC: Record<string, number> = {
   mantle: 5000,
   celo: 42220,
   sepolia: 11155111,
+  "base-sepolia": 84532,
+  basesepolia: 84532,
 };
+
+function humanizeQuoteError(status: number, raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as { errorCode?: string; detail?: string };
+    const detail = parsed.detail ?? parsed.errorCode ?? "";
+    if (detail.includes("No quotes available") || status === 404) {
+      return "No swap route found. The token might not be tradeable on this chain, or your wallet may not have enough native tokens for gas. Fund your wallet and try again.";
+    }
+    if (detail.includes("INSUFFICIENT") || detail.includes("insufficient")) {
+      return "Insufficient balance. Fund your wallet with native tokens (ETH/MATIC/etc.) and try again.";
+    }
+    if (status === 429) return "Uniswap rate limited. Try again in a few seconds.";
+    if (status >= 500) return "Uniswap API is temporarily down. Try again shortly.";
+    return `Swap failed: ${detail || `error ${status}`}. Try again or adjust your amount.`;
+  } catch {
+    if (status === 404) return "No swap route found for this token. It may not be listed on Uniswap for this chain.";
+    return `Swap failed (error ${status}). Try again shortly.`;
+  }
+}
 
 function nativeToWei(amount: number): string {
   const parts = amount.toFixed(18).split(".");
@@ -181,6 +202,10 @@ async function executeEvmSwap(
     ? nativeToWei(intent.amount.value)
     : String(Math.round(intent.amount.value * 1e6));
 
+  if (amountWei === "0" || intent.amount.value <= 0) {
+    throw new Error("No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.");
+  }
+
   // Step 1: Check approval (skipped for native ETH)
   await checkAndSubmitApproval(tokenIn, amountWei, swapperAddress, numChainId, apiKey, intent.userId);
 
@@ -203,8 +228,9 @@ async function executeEvmSwap(
   });
 
   if (!quoteResp.ok) {
-    const err = await quoteResp.text().catch(() => "");
-    throw new Error(`Uniswap quote ${quoteResp.status}: ${err.slice(0, 200)}`);
+    const raw = await quoteResp.text().catch(() => "");
+    console.error(`[execution] Uniswap quote ${quoteResp.status}: ${raw.slice(0, 300)}`);
+    throw new Error(humanizeQuoteError(quoteResp.status, raw));
   }
 
   const quoteData = (await quoteResp.json()) as Record<string, unknown>;
@@ -222,8 +248,9 @@ async function executeEvmSwap(
   });
 
   if (!swapResp.ok) {
-    const err = await swapResp.text().catch(() => "");
-    throw new Error(`Uniswap swap ${swapResp.status}: ${err.slice(0, 200)}`);
+    const raw = await swapResp.text().catch(() => "");
+    console.error(`[execution] Uniswap swap ${swapResp.status}: ${raw.slice(0, 300)}`);
+    throw new Error(humanizeQuoteError(swapResp.status, raw));
   }
 
   const swapData = (await swapResp.json()) as {

@@ -38,6 +38,27 @@ import {
 import type { DexPair, DexScreenerChain } from "../../tools/dexscreener-mcp/client";
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
+
+const CHAIN_KEYWORDS: Record<string, string> = {
+  ethereum: "ethereum", eth: "ethereum",
+  base: "base", arbitrum: "arbitrum", arb: "arbitrum",
+  optimism: "optimism", op: "optimism",
+  polygon: "polygon", matic: "polygon",
+  bsc: "bsc", bnb: "bsc", binance: "bsc",
+  avalanche: "avalanche", avax: "avalanche",
+  blast: "blast", scroll: "scroll", linea: "linea",
+  mantle: "mantle", zksync: "zksync",
+  solana: "solana", sol: "solana",
+};
+
+function detectChainFromText(text: string): string | null {
+  const lower = text.toLowerCase();
+  for (const [kw, cid] of Object.entries(CHAIN_KEYWORDS)) {
+    if (new RegExp(`\\b${kw}\\b`).test(lower)) return cid;
+  }
+  return null;
+}
+
 // Tickers that are industry-standard acronyms (EVM, NFT, DAO, etc.).
 // These generate structural false positives in every RSS/Reddit/news search by
 // design — skip trend signal for them entirely. They can still pass via the
@@ -1511,42 +1532,33 @@ function buildResearchPrompt(d: ResearchData): string {
     );
   lines.push(`\nUser question: ${d.question}`);
   lines.push(
-    "\nGive a concise 2-3 sentence verdict on this token based ONLY on the data above. Do NOT invent numbers, scores, or facts not present in the data. Be direct — mention the most important risk or opportunity. No filler.",
+    "\nBased ONLY on the data above, give a 2-sentence take: what's the main risk and is there opportunity? Write like a crypto trader talking to a friend, not a report. Do NOT invent numbers or facts not in the data.",
   );
   return lines.join("\n");
 }
 
 function buildTemplateSummary(d: ResearchData): string {
-  const risk =
-    d.security.flags.length > 0
-      ? `Risk flags: ${d.security.flags.join(", ")}.`
-      : "No major risk flags detected.";
-  const trend =
-    d.trend.sources.length > 0
-      ? `Active mentions in: ${d.trend.sources.join(", ")}.`
-      : "No trend signals detected.";
-  const age = d.age.ageHours != null ? `Token age: ${d.age.ageHours.toFixed(0)}h.` : "";
-  const whale =
-    d.age.whaleAlert === true
-      ? "Whale transfer detected."
-      : d.age.whaleAlert === false
-        ? "Whale movement: clean (in the last 50 txns, no large moves detected)"
-        : "";
-  const dist = d.age.distributingWallets
-    ? `${d.age.distributingWallets} wallet(s) distributing.`
-    : "";
-  const priceTrend = d.gecko ? `Price trend: ${d.gecko.priceTrend}.` : "";
-  return [
-    `${d.ticker}: safety ${d.security.score}/100, opportunity ${d.opportunityScore}/100.`,
-    risk,
-    trend,
-    age,
-    whale,
-    dist,
-    priceTrend,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const parts: string[] = [];
+  if (d.security.score >= 70 && d.security.flags.length === 0) {
+    parts.push("Contract looks clean.");
+  } else if (d.security.flags.length > 0) {
+    parts.push(`Watch out: ${d.security.flags.join(", ").toLowerCase()}.`);
+  }
+  if (d.trend.sources.length > 0) {
+    parts.push(`Getting attention on ${d.trend.sources.join(", ")}.`);
+  }
+  if (d.age.ageHours != null && d.age.ageHours < 48) {
+    parts.push(`Very new token (${d.age.ageHours.toFixed(0)}h old).`);
+  }
+  if (d.age.whaleAlert === true) parts.push("Whale transfer detected.");
+  if (d.age.distributingWallets) parts.push(`${d.age.distributingWallets} wallets distributing.`);
+  if (d.gecko?.priceTrend) parts.push(`Price trend: ${d.gecko.priceTrend}.`);
+  if (d.opportunityScore >= 70) {
+    parts.push("Looks promising, but always DYOR.");
+  } else if (d.opportunityScore < 40) {
+    parts.push("High risk. Proceed with caution.");
+  }
+  return parts.join(" ") || "No notable signals found. Paste the contract address for a deeper look.";
 }
 
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
@@ -1560,25 +1572,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
   try {
     const [profiles, boosts] = await Promise.all([getLatestTokenProfiles(), getLatestBoosts()]);
 
-    const CHAIN_KEYWORDS: Record<string, string> = {
-      ethereum: "ethereum", eth: "ethereum",
-      base: "base", arbitrum: "arbitrum", arb: "arbitrum",
-      optimism: "optimism", op: "optimism",
-      polygon: "polygon", matic: "polygon",
-      bsc: "bsc", bnb: "bsc", binance: "bsc",
-      avalanche: "avalanche", avax: "avalanche",
-      blast: "blast", scroll: "scroll", linea: "linea",
-      mantle: "mantle", zksync: "zksync",
-      solana: "solana", sol: "solana",
-    };
-    let filterChain: string | null = null;
-    const rawLower = (req.rawText ?? "").toLowerCase();
-    for (const [kw, cid] of Object.entries(CHAIN_KEYWORDS)) {
-      if (new RegExp(`\\b${kw}\\b`).test(rawLower)) {
-        filterChain = cid;
-        break;
-      }
-    }
+    const filterChain = detectChainFromText(req.rawText ?? "");
 
     const seen = new Set<string>();
     const candidates: Array<{ address: string; chainId: string }> = [];
@@ -1589,6 +1583,25 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       if (seen.has(key)) continue;
       seen.add(key);
       candidates.push({ address: item.tokenAddress, chainId: item.chainId });
+    }
+
+    // Supplement with searchPairs when chain-filtered results are sparse
+    if (filterChain && candidates.length < 6 && isValidChain(filterChain)) {
+      try {
+        const { pairs } = await searchPairs("token", { chain: filterChain as DexScreenerChain, limit: 20 });
+        const sorted = pairs
+          .filter((p) => (p.volume?.h24 ?? 0) > 5000 && (p.liquidity?.usd ?? 0) > 5000)
+          .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
+        for (const p of sorted) {
+          const addr = p.baseToken?.address;
+          if (!addr) continue;
+          const key = addr.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          candidates.push({ address: addr, chainId: p.chainId });
+          if (candidates.length >= 10) break;
+        }
+      } catch { /* searchPairs failed — continue with what we have */ }
     }
 
     const top = candidates.slice(0, 8);
@@ -1733,7 +1746,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
   }
 
   let address = req.address;
-  let resolvedChainId: DexScreenerChain = "ethereum";
+  const hintedChain = detectChainFromText(req.rawText ?? "");
+  let resolvedChainId: DexScreenerChain = (hintedChain && isValidChain(hintedChain) ? hintedChain : "ethereum") as DexScreenerChain;
 
   if (!address && req.tokenName) {
     const { pairs } = await searchPairs(req.tokenName, { limit: 5 }).catch(() => ({
@@ -1756,7 +1770,23 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Pro
   const chainClass = detectChainClass(address);
   if (req.chain === "solana" || chainClass === "solana") resolvedChainId = "solana";
 
-  const pairs = await getPairsByToken(resolvedChainId, address).catch(() => [] as DexPair[]);
+  let pairs = await getPairsByToken(resolvedChainId, address).catch(() => [] as DexPair[]);
+
+  // If no pairs found on default chain, try other popular chains
+  if (pairs.length === 0 && chainClass === "evm" && resolvedChainId === "ethereum") {
+    const tryChains: DexScreenerChain[] = ["base", "arbitrum", "bsc", "polygon", "optimism", "avalanche"];
+    const multiResults = await Promise.allSettled(
+      tryChains.map((c) => getPairsByToken(c, address)),
+    );
+    for (const r of multiResults) {
+      if (r.status === "fulfilled" && r.value.length > 0) {
+        pairs = r.value;
+        resolvedChainId = r.value[0]!.chainId as DexScreenerChain;
+        break;
+      }
+    }
+  }
+
   const best = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
 
   const ticker = best?.baseToken?.symbol ?? req.tokenName ?? address.slice(0, 8);
