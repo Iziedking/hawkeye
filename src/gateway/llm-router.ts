@@ -154,7 +154,7 @@ const ROUTER_SYSTEM_PROMPT = [
   '5. RESEARCH_WALLET — User wants info about a wallet. "what\'s 0xABC buying?", "track this wallet".',
   '6. COPY_TRADE — User wants to copy/follow a wallet. "copy this wallet", "mirror 0xABC".',
   '7. BRIDGE — Move assets between chains. "bridge 0.5 ETH to Base".',
-  '8. PORTFOLIO — Check positions/PnL/holdings. "show my bags", "how are my positions".',
+  '8. PORTFOLIO — Check wallet balances, positions, PnL, or holdings. "show my bags", "how are my positions", "what is my balance", "my sepolia eth balance", "check my wallet balance on base".',
   '9. SETTINGS — Change config. "set degen mode", "default amount 1 SOL".',
   '10. GENERAL_QUERY — Conversational messages, greetings, general crypto questions not about specific tokens or trends.',
   "11. UNKNOWN — Cannot classify.",
@@ -169,6 +169,7 @@ const ROUTER_SYSTEM_PROMPT = [
   '- "send/transfer [amount] to 0xWALLET" = SEND_TOKEN (recipient is a wallet, not a chain).',
   '- "bridge [amount] to [chain name]" = BRIDGE (target is a chain, not a wallet).',
   '- "what\'s trending", "what\'s hot", "any alpha", "top movers" = RESEARCH_TOKEN with question="trending" and chain if mentioned.',
+  '- "balance", "my balance", "check balance", "ETH balance", "what is my [chain] balance" = PORTFOLIO. Never GENERAL_QUERY.',
   "",
   "## Response Format",
   "{",
@@ -260,6 +261,10 @@ async function routeViaLlm(input: RouterInput, deps: RouterDeps): Promise<Router
 
   if (confidence < 0.3) {
     return buildResult(input, "UNKNOWN", confidence, { rawIntent: input.text });
+  }
+
+  if (category === "GENERAL_QUERY" && PORTFOLIO_KW.test(input.text.toLowerCase())) {
+    return buildResult(input, "PORTFOLIO", 0.8, { query: input.text });
   }
 
   return buildResult(input, category, confidence, data);

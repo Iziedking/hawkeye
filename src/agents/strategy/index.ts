@@ -162,7 +162,8 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
     console.log(`[strategy] ${intent.intentId} — REJECTED: unexpected testnet resolution`);
     return;
   }
-  if (quote.liquidityUsd < 500) {
+  const isTestnetTrade = intent.chainHint ? TESTNET_CHAINS.has(intent.chainHint) : false;
+  if (!isTestnetTrade && quote.liquidityUsd < 500) {
     emitDecision({
       intentId: intent.intentId,
       decision: "REJECT",
