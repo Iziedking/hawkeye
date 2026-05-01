@@ -38,6 +38,13 @@ import {
 } from "../../tools/dexscreener-mcp/client";
 import type { DexPair, DexScreenerChain } from "../../tools/dexscreener-mcp/client";
 
+function formatCompact(n: number): string {
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `$${(n / 1e3).toFixed(0)}k`;
+  return `$${n.toFixed(0)}`;
+}
+
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 const CHAIN_KEYWORDS: Record<string, string> = {
@@ -58,6 +65,71 @@ function detectChainFromText(text: string): string | null {
     if (new RegExp(`\\b${kw}\\b`).test(lower)) return cid;
   }
   return null;
+}
+
+function detectChainsFromText(text: string): string[] {
+  const lower = text.toLowerCase();
+  const found = new Set<string>();
+  for (const [kw, cid] of Object.entries(CHAIN_KEYWORDS)) {
+    if (new RegExp(`\\b${kw}\\b`).test(lower)) found.add(cid);
+  }
+  return [...found];
+}
+
+const COINGECKO_CHAIN_CATEGORIES: Record<string, string[]> = {
+  base: ["base-meme-coins"],
+  bsc: ["bnb-chain-meme-coins"],
+  solana: ["solana-meme-coins"],
+  ethereum: ["meme-token"],
+  arbitrum: ["meme-token"],
+  polygon: ["meme-token"],
+  optimism: ["meme-token"],
+  avalanche: ["meme-token"],
+};
+
+const TRENDING_EXCLUDE_SYMBOLS = new Set([
+  "USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD",
+  "USDE", "USD1", "USDB", "USDBC", "SUSDE", "EURC", "RUSD", "PYUSD",
+  "WETH", "WBNB", "WBTC", "WMATIC", "WAVAX", "WSOL", "WFTM", "WCRO",
+  "ETH", "BTC", "BNB", "SOL", "MATIC", "AVAX", "FTM", "DOT", "ADA",
+  "XRP", "LINK", "UNI", "AAVE", "CBBTC", "STETH", "RETH", "CBETH",
+]);
+
+type CoinGeckoMarketItem = {
+  id: string;
+  symbol: string;
+  name: string;
+  current_price: number | null;
+  market_cap: number | null;
+  total_volume: number | null;
+  price_change_percentage_24h: number | null;
+  fully_diluted_valuation: number | null;
+};
+
+async function fetchCoinGeckoTrending(chain: string, limit: number): Promise<CoinGeckoMarketItem[]> {
+  const categories = COINGECKO_CHAIN_CATEGORIES[chain];
+  if (!categories) return [];
+  const results: CoinGeckoMarketItem[] = [];
+  for (const cat of categories) {
+    try {
+      const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=${limit}&page=1&category=${cat}`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+      if (!resp.ok) continue;
+      const data = (await resp.json()) as CoinGeckoMarketItem[];
+      if (Array.isArray(data)) results.push(...data);
+    } catch { /* rate limited or timeout */ }
+  }
+  const seen = new Set<string>();
+  return results
+    .filter((c) => {
+      if (seen.has(c.id)) return false;
+      seen.add(c.id);
+      if (TRENDING_EXCLUDE_SYMBOLS.has(c.symbol.toUpperCase())) return false;
+      if ((c.total_volume ?? 0) < 10_000) return false;
+      return true;
+    })
+    .sort((a, b) => (b.total_volume ?? 0) - (a.total_volume ?? 0))
+    .slice(0, limit);
 }
 
 // Tickers that are industry-standard acronyms (EVM, NFT, DAO, etc.).
@@ -1568,53 +1640,55 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
   const isTrending = /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
   if (!isTrending) return false;
 
-  const filterChain = detectChainFromText(req.rawText ?? "");
-  log.agent("research", `trending query: chain=${filterChain ?? "all"} text="${q.slice(0, 60)}"`);
+  const filterChains = detectChainsFromText(req.rawText ?? "");
+  const chainsToQuery = filterChains.length > 0
+    ? filterChains
+    : ["ethereum", "base", "solana", "bsc"];
+  const chainLabel = filterChains.length > 0 ? filterChains.join(" + ") : "all chains";
+  log.agent("research", `trending query: chains=[${chainsToQuery.join(",")}] text="${q.slice(0, 60)}"`);
 
   try {
-    const [profiles, boosts] = await Promise.all([getLatestTokenProfiles(), getLatestBoosts()]);
+    type TaggedCGItem = CoinGeckoMarketItem & { _sourceChain: string };
+    const cgQueries = chainsToQuery.map(async (chain) => {
+      const items = await fetchCoinGeckoTrending(chain, 10);
+      return items.map((i) => ({ ...i, _sourceChain: chain }) as TaggedCGItem);
+    });
+    const cgResults = (await Promise.all(cgQueries)).flat()
+      .sort((a, b) => (b.total_volume ?? 0) - (a.total_volume ?? 0));
 
     const seen = new Set<string>();
-    const candidates: Array<{ address: string; chainId: string }> = [];
-    for (const item of [...boosts, ...profiles]) {
-      if (!isValidChain(item.chainId)) continue;
-      if (filterChain && item.chainId !== filterChain) continue;
-      const key = item.tokenAddress.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      candidates.push({ address: item.tokenAddress, chainId: item.chainId });
+    const uniqueTokens: TaggedCGItem[] = [];
+    for (const t of cgResults) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      uniqueTokens.push(t);
+      if (uniqueTokens.length >= 12) break;
     }
 
-    // Supplement with multi-keyword search when chain-filtered results are sparse
-    if (filterChain && candidates.length < 6 && isValidChain(filterChain)) {
-      const searches = ["pepe", "ai", "doge", "meme", "eth"].map(async (term) => {
+    const dexLookups = await Promise.all(
+      uniqueTokens.map(async (t) => {
         try {
-          const { pairs } = await searchPairs(term, { chain: filterChain as DexScreenerChain, limit: 10 });
-          return pairs
-            .filter((p) => (p.volume?.h24 ?? 0) > 5000 && (p.liquidity?.usd ?? 0) > 5000)
-            .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
-        } catch { return []; }
-      });
-      const allPairs = (await Promise.all(searches)).flat()
-        .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
-      for (const p of allPairs) {
-        const addr = p.baseToken?.address;
-        if (!addr) continue;
-        const key = addr.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
-        candidates.push({ address: addr, chainId: p.chainId });
-        if (candidates.length >= 10) break;
-      }
-    }
+          const { pairs } = await searchPairs(t.symbol, { limit: 8 });
+          const match = pairs
+            .filter((p) => {
+              const sym = p.baseToken?.symbol?.toUpperCase();
+              return sym === t.symbol.toUpperCase() && p.chainId === t._sourceChain;
+            })
+            .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+          return { cg: t as CoinGeckoMarketItem, pair: match ?? null, sourceChain: t._sourceChain };
+        } catch { return { cg: t as CoinGeckoMarketItem, pair: null, sourceChain: t._sourceChain }; }
+      }),
+    );
 
-    const top = candidates.slice(0, 8);
+    const top = dexLookups
+      .filter((d) => d.pair?.baseToken?.address)
+      .slice(0, 8);
     if (top.length === 0) {
       bus.emit("RESEARCH_RESULT", {
         requestId: req.requestId,
         address: "trending",
         chain: req.chain ?? "evm",
-        summary: `No trending tokens found${filterChain ? ` on ${filterChain}` : ""}. Try again in a few minutes.`,
+        summary: `No trending tokens found on ${chainLabel}. Try again in a few minutes.`,
         safetyScore: null,
         priceUsd: null,
         liquidityUsd: null,
@@ -1624,58 +1698,53 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       return true;
     }
 
-    const llamaChain = filterChain === "solana" ? "Solana" : filterChain === "ethereum" ? "Ethereum" : undefined;
-    const [pairResults, llamaTrending, smartMoney] = await Promise.all([
-      Promise.all(top.map(async (t) => {
-        const pairs = await getPairsByToken(t.chainId as DexScreenerChain, t.address).catch(() => [] as DexPair[]);
-        const best = pairs.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
-        return { ...t, pair: best ?? null };
-      })),
-      fetchDefiLlamaTrending(llamaChain, 5),
-      fetchDuneSmartMoney(filterChain ?? undefined),
-    ]);
-
-    // Safety scan top tokens in parallel (6s timeout per token)
-    const validPairs = pairResults.filter(
-      (r) => r.pair && (r.pair.liquidity?.usd ?? 0) >= 1000,
-    );
     const safetyMap = new Map<string, { score: number; flags: string[] }>();
+    const tokensWithAddr = top.filter((d) => d.pair?.baseToken?.address);
     try {
       const scans = await Promise.all(
-        validPairs.slice(0, 8).map(async (r) => {
-          const cc = r.chainId === "solana" ? "solana" as const : "evm" as const;
+        tokensWithAddr.slice(0, 8).map(async (d) => {
+          const addr = d.pair!.baseToken.address;
+          const cc = d.pair!.chainId === "solana" ? "solana" as const : "evm" as const;
           try {
             const result = await Promise.race([
-              runSecurityScan(r.address, cc, r.chainId),
+              runSecurityScan(addr, cc, d.pair!.chainId),
               new Promise<{ score: number; flags: string[]; ok: boolean }>((resolve) =>
                 setTimeout(() => resolve({ score: -1, flags: [], ok: false }), 6_000),
               ),
             ]);
-            return { address: r.address, ...result };
+            return { address: addr, ...result };
           } catch {
-            return { address: r.address, score: -1, flags: [] as string[], ok: false };
+            return { address: addr, score: -1, flags: [] as string[], ok: false };
           }
         }),
       );
       for (const s of scans) safetyMap.set(s.address, s);
-    } catch {
-      // Safety scan failed entirely — continue without labels
-    }
+    } catch { /* safety scan failed */ }
 
     const lines: string[] = [];
-    const chainLabel = filterChain ?? "all chains";
     lines.push(`Trending on ${chainLabel}:\n`);
     let rank = 0;
-    for (const r of validPairs) {
-      if (!r.pair) continue;
+    for (const d of top) {
       rank++;
-      const sym = r.pair.baseToken?.symbol ?? "???";
-      const name = r.pair.baseToken?.name ?? "";
-      const price = r.pair.priceUsd ? `$${parseFloat(r.pair.priceUsd).toPrecision(4)}` : "n/a";
-      const liq = r.pair.liquidity?.usd ? `$${(r.pair.liquidity.usd / 1000).toFixed(0)}k` : "n/a";
-      const h24 = r.pair.priceChange?.h24 != null ? `${r.pair.priceChange.h24 > 0 ? "+" : ""}${r.pair.priceChange.h24.toFixed(1)}%` : "";
-      const vol = r.pair.volume?.h24 ? `$${(r.pair.volume.h24 / 1000).toFixed(0)}k` : "";
-      const safety = safetyMap.get(r.address);
+      const sym = d.cg.symbol.toUpperCase();
+      const name = d.cg.name;
+      const price = d.pair?.priceUsd
+        ? `$${parseFloat(d.pair.priceUsd).toPrecision(4)}`
+        : d.cg.current_price != null ? `$${d.cg.current_price.toPrecision(4)}` : "n/a";
+      const vol = d.cg.total_volume
+        ? formatCompact(d.cg.total_volume)
+        : d.pair?.volume?.h24 ? formatCompact(d.pair.volume.h24) : "";
+      const liq = d.pair?.liquidity?.usd ? formatCompact(d.pair.liquidity.usd) : "";
+      const h24 = d.cg.price_change_percentage_24h != null
+        ? `${d.cg.price_change_percentage_24h > 0 ? "+" : ""}${d.cg.price_change_percentage_24h.toFixed(1)}%`
+        : d.pair?.priceChange?.h24 != null
+          ? `${d.pair.priceChange.h24 > 0 ? "+" : ""}${d.pair.priceChange.h24.toFixed(1)}%`
+          : "";
+      const mc = d.cg.market_cap ? formatCompact(d.cg.market_cap) : "";
+      const addr = d.pair?.baseToken?.address ?? "";
+      const chain = d.pair?.chainId ?? d.sourceChain;
+
+      const safety = addr ? safetyMap.get(addr) : undefined;
       let safetyLabel = "";
       if (safety && safety.score >= 0) {
         if (safety.flags.includes("HONEYPOT")) safetyLabel = " | HONEYPOT";
@@ -1683,34 +1752,15 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
         else if (safety.score >= 40) safetyLabel = " | CAUTION";
         else safetyLabel = " | RISKY";
       }
+
       lines.push(`${rank}. ${sym} (${name})${safetyLabel}`);
-      lines.push(`   ${r.chainId} | ${price} | liq ${liq} | 24h ${h24}${vol ? ` | vol ${vol}` : ""}`);
-      lines.push(`   ${r.address}`);
-    }
-    if (rank === 0) {
-      lines.push("No pairs with liquidity data found.");
-    }
-
-    if (llamaTrending.length > 0) {
-      lines.push(`\nTop TVL movers (DeFiLlama):`);
-      for (const p of llamaTrending) {
-        const tvl = `$${(p.tvl / 1_000_000).toFixed(1)}M`;
-        const chg = p.change1d != null ? ` | 1d ${p.change1d > 0 ? "+" : ""}${p.change1d.toFixed(1)}%` : "";
-        lines.push(`  ${p.name}${p.symbol ? ` (${p.symbol})` : ""} | TVL ${tvl}${chg} | ${p.category}`);
-      }
+      const details = [chain, price, liq ? `liq ${liq}` : "", `24h ${h24}`, vol ? `vol ${vol}` : "", mc ? `mc ${mc}` : ""]
+        .filter(Boolean).join(" | ");
+      lines.push(`   ${details}`);
+      if (addr) lines.push(`   ${addr}`);
     }
 
-    if (smartMoney.length > 0) {
-      lines.push(`\nSmart money flows (Dune):`);
-      for (const s of smartMoney) {
-        const flow = s.netFlow > 0 ? `+$${(s.netFlow / 1000).toFixed(0)}k` : `-$${(Math.abs(s.netFlow) / 1000).toFixed(0)}k`;
-        lines.push(`  ${s.token} | net ${flow} | ${s.txCount} txs`);
-      }
-    }
-
-    if (rank > 0) {
-      lines.push(`\nPaste any address above to research or trade.`);
-    }
+    lines.push(`\nPaste any address above to research or trade.`);
 
     bus.emit("RESEARCH_RESULT", {
       requestId: req.requestId,
@@ -1725,7 +1775,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       isTrending: true,
     });
   } catch (err) {
-    console.error("[research] trending query failed:", err);
+    log.error("trending query failed", err as Error);
     bus.emit("RESEARCH_RESULT", {
       requestId: req.requestId,
       address: "trending",
@@ -1742,7 +1792,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
 }
 
 async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient): Promise<void> {
-  console.log(`[research] RESEARCH_REQUEST for ${req.address ?? req.tokenName ?? "unknown"}`);
+  log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"}`);
 
   if (!req.address && !req.tokenName) {
     const handled = await handleTrendingRequest(req);

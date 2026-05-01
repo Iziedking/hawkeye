@@ -27,6 +27,7 @@ import { getChainRpc, getChainExplorer, getChainName, EVM_CHAIN_CONFIG, fetchNat
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 import { getPositionsByUser } from "../agents/execution/index";
 import { getWatchedWalletAddresses } from "../agents/copy-trade/index";
+import { searchPairs } from "../tools/dexscreener-mcp/client";
 
 loadEnvLocal();
 
@@ -36,6 +37,9 @@ type PendingReply = {
   ctx: ReplyCtx;
   rootHash: string | null;
   isTestnet?: boolean;
+  walletAddress?: string;
+  chainHint?: string;
+  tradeAmount?: number;
 };
 
 const CONVERSATIONAL_PROMPT = [
@@ -427,11 +431,39 @@ export async function startTelegramGateway(
     const pending = replyByRequestId.get(qf.intentId);
     if (!pending) return;
     replyByRequestId.delete(qf.intentId);
-    console.error(`[trade] quote failed: ${qf.reason}`);
-    void reply(
-      pending.ctx,
-      html(qf.reason.slice(0, 300)),
-    );
+    hlog.bus("QUOTE_FAILED", `intent=${qf.intentId.slice(0, 8)} reason=${qf.reason.slice(0, 80)}`);
+
+    if (/insufficient funds|exceeds the balance/i.test(qf.reason) && pending.walletAddress && pending.chainHint) {
+      void (async () => {
+        try {
+          const { balance } = await fetchNativeBalance(pending.chainHint!, pending.walletAddress!);
+          const ethBal = Number(balance) / 1e18;
+          const ethPrice = await fetchEthPrice().catch(() => 2500);
+          const usdBal = ethBal * ethPrice;
+          const chainName = getChainName(pending.chainHint!);
+          const needed = pending.tradeAmount ? ` You need ~${pending.tradeAmount.toFixed(6)} ETH.` : "";
+          void reply(pending.ctx,
+            `Insufficient funds on ${html(chainName)}.\n` +
+            `Balance: ${ethBal.toFixed(6)} ETH (~$${usdBal.toFixed(2)}).${needed}\n` +
+            `Use /wallet to check all balances.`,
+          );
+        } catch {
+          void reply(pending.ctx, "Insufficient funds. Check your wallet balance with /wallet.");
+        }
+      })();
+      return;
+    }
+
+    let userMsg = qf.reason;
+    if (/insufficient funds|exceeds the balance/i.test(qf.reason)) {
+      userMsg = "Insufficient funds. Check your wallet balance with /wallet.";
+    } else if (/No trade amount/i.test(qf.reason)) {
+      userMsg = "No trade amount specified. Say 'buy $5 worth' or 'buy 0.01 ETH'.";
+    } else if (/No trading pairs/i.test(qf.reason)) {
+      userMsg = "No trading pairs found on any DEX. The token may be too new, unlisted, or on an unsupported chain.";
+    }
+
+    void reply(pending.ctx, html(userMsg.slice(0, 300)));
   };
 
   const positionOwners = new Map<string, ReplyCtx>();
@@ -1350,8 +1382,25 @@ export async function startTelegramGateway(
     let chain: ChainClass | null =
       d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
     const fromToken = typeof d["fromToken"] === "string" ? d["fromToken"] : null;
-    const toToken = typeof d["toToken"] === "string" ? d["toToken"] : null;
+    let toToken = typeof d["toToken"] === "string" ? d["toToken"] : null;
     const chainHint = typeof d["chain"] === "string" ? d["chain"] : null;
+
+    if (toToken) {
+      toToken = toToken.replace(/[^a-zA-Z0-9]/g, "");
+      if (!toToken) toToken = null;
+    }
+
+    const WRAPPED_NATIVES = new Set([
+      "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+      "0x4200000000000000000000000000000000000006",
+      "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c",
+      "0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270",
+      "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+      "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7",
+    ]);
+    if (address && WRAPPED_NATIVES.has(address.toLowerCase())) {
+      address = null;
+    }
 
     if (walletMgr && !walletMgr.getWallet(userId)) {
       void llmReply(
@@ -1408,6 +1457,20 @@ export async function startTelegramGateway(
 
     if (!chain) chain = "evm";
 
+    if (address && !resolvedChainName && !chainHint) {
+      try {
+        const { pairs } = await searchPairs(address, { limit: 3 });
+        const best = pairs
+          .filter((p) => p.baseToken?.address?.toLowerCase() === address!.toLowerCase())
+          .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+        if (best) {
+          resolvedChainName = resolveChainAlias(best.chainId) ?? best.chainId;
+          chain = best.chainId === "solana" ? "solana" : "evm";
+          hlog.agent("gateway", `auto-detected chain: ${best.chainId} for ${address.slice(0, 10)}`);
+        }
+      } catch { /* DexScreener lookup failed, proceed with default */ }
+    }
+
     const amountRaw = d["amount"] as Record<string, unknown> | null | undefined;
     let amount: TradeAmount = { value: 0, unit: "NATIVE" };
     if (amountRaw && typeof amountRaw === "object") {
@@ -1444,9 +1507,12 @@ export async function startTelegramGateway(
       }
     }
 
+    let originalUsdAmount: number | null = null;
+
     // Convert USD amounts to approximate native token amount
     // Execution agent expects NATIVE; USD needs price lookup
     if (amount.unit === "USD" && amount.value > 0) {
+      originalUsdAmount = amount.value;
       const ethPriceUsd = await fetchEthPrice().catch(() => 2500);
       const ethEquiv = amount.value / ethPriceUsd;
       hlog.agent("gateway", `$${amount.value} → ${ethEquiv.toFixed(8)} ETH (price=$${ethPriceUsd})`);
@@ -1459,6 +1525,16 @@ export async function startTelegramGateway(
       if (defAmt && defAmt > 0) {
         amount = { value: defAmt, unit: "NATIVE" };
       }
+    }
+
+    if (amount.value <= 0) {
+      const sym = toToken ?? (address ? address.slice(0, 10) + "..." : "this token");
+      void reply(rctx,
+        `How much do you want to buy of ${html(sym)}?\n` +
+        `Example: "buy $5 worth" or "buy 0.01 ETH of ${html(sym)}"`,
+      );
+      lastResearchByUser.set(userId, { address: address!, chain: chain!, symbol: toToken ?? address!.slice(0, 10), at: Date.now() });
+      return;
     }
 
     const urgencyRaw = d["urgency"];
@@ -1486,8 +1562,13 @@ export async function startTelegramGateway(
     const isTestnet = specificChain
       ? ["sepolia", "goerli", "mumbai", "fuji", "base-sepolia"].includes(specificChain)
       : false;
+    const walletAddr = walletMgr?.getWallet(userId)?.address ?? undefined;
     const pending: PendingReply = { ctx: rctx, rootHash: null };
     if (isTestnet) pending.isTestnet = true;
+    if (walletAddr) pending.walletAddress = walletAddr;
+    if (specificChain) pending.chainHint = specificChain;
+    else if (chain === "evm") pending.chainHint = "ethereum";
+    if (amount.value > 0) pending.tradeAmount = amount.value;
     pendingMap.set(intent.intentId, pending);
     bus.emit("TRADE_REQUEST", intent);
 
@@ -1504,7 +1585,11 @@ export async function startTelegramGateway(
       : codeAddr(address);
     const chainLabel =
       specificChain && specificChain !== chain ? `${chain} (${html(specificChain)})` : chain;
-    const amountDisplay = amount.value > 0 ? `${amount.value.toFixed(6)} ${amount.unit === "NATIVE" ? "ETH" : amount.unit}` : "";
+    const amountDisplay = amount.value > 0
+      ? originalUsdAmount != null
+        ? `$${originalUsdAmount} (~${amount.value.toFixed(6)} ETH)`
+        : `${amount.value.toFixed(6)} ETH`
+      : "";
     const keeperHubActive = getHealth().subsystems.some((s) => s.name === "KeeperHub" && s.ok);
     const processingNote = keeperHubActive
       ? "Checking safety and getting best price. MEV protection active."
@@ -1513,7 +1598,7 @@ export async function startTelegramGateway(
       rctx,
       [
         fromToken && toToken
-          ? `Swapping${amountDisplay ? " " + amountDisplay : ""} ${html(fromToken.toUpperCase())} to ${html(toToken.toUpperCase())} on ${chainLabel}...`
+          ? `Swapping${amountDisplay ? " " + amountDisplay : ""} to ${html(toToken.toUpperCase())} on ${chainLabel}...`
           : `Buying${amountDisplay ? " " + amountDisplay + " of" : ""} ${tokenLabel} on ${chainLabel}...`,
         processingNote,
       ]

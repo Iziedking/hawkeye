@@ -176,7 +176,6 @@ async function checkAndSubmitApproval(
     data: data.approval.data ?? "",
     value: data.approval.value ?? "0",
     chainId,
-    gasLimit: "100000",
   });
   console.log(`[execution] approval confirmed: ${result.hash.slice(0, 16)}...`);
 }
@@ -265,12 +264,11 @@ async function executeEvmSwap(
 
   if (!walletMgr) throw new Error("Wallet manager not available");
 
-  const txParams = {
+  const txParams: import("../integrations/privy/index").SignTxInput = {
     to: swapData.swap.to!,
     data: swapData.swap.data!,
     value: swapData.swap.value ?? "0",
     chainId: numChainId,
-    gasLimit: "500000",
   };
 
   // Try KeeperHub for MEV-protected submission, fall back to direct Privy
