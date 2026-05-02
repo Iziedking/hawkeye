@@ -1815,9 +1815,9 @@ type TrendingCandidate = {
   source: "dexscreener" | "coingecko";
 };
 
-async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
+async function handleTrendingRequest(req: ResearchRequest, force = false): Promise<boolean> {
   const q = (req.question ?? req.rawText ?? "").toLowerCase();
-  const isTrending = /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
+  const isTrending = force || /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
   if (!isTrending) return false;
 
   const filterChains = detectChainsFromText(req.rawText ?? "");
@@ -2080,7 +2080,11 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     return;
   }
 
-  if (subIntent === "TRENDING" || (!req.address && !req.tokenName)) {
+  if (subIntent === "TRENDING") {
+    await handleTrendingRequest(req, true);
+    return;
+  }
+  if (!req.address && !req.tokenName) {
     const handled = await handleTrendingRequest(req);
     if (handled) return;
   }
