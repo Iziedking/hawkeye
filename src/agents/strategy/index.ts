@@ -243,15 +243,29 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
 
 function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote): StrategyDecision {
   const { urgency } = intent;
+  const isSell = intent.side === "sell";
 
-  // INSTANT mode: always execute, attach warnings inline
+  // Sells and swaps-out always execute — user already holds the token, blocking traps their funds
+  if (isSell) {
+    const warnings = safety.flags.length > 0
+      ? ` (Warning: ${safety.flags.join(", ")} — sell may fail if token has transfer restrictions)`
+      : "";
+    return {
+      intentId: intent.intentId,
+      decision: "EXECUTE",
+      reason: `${buildReason(safety, quote)}${warnings}`,
+      approvedAt: Date.now(),
+    };
+  }
+
+  // INSTANT mode: honeypot gets confirmation instead of hard reject
   if (urgency === "INSTANT") {
     if (safety.score === 0) {
       return {
         intentId: intent.intentId,
-        decision: "REJECT",
-        reason: `Token is a confirmed honeypot (score ${safety.score}/100)`,
-        rejectedAt: Date.now(),
+        decision: "AWAIT_USER_CONFIRM",
+        reason: `HONEYPOT DETECTED (score ${safety.score}/100). This token is very likely a scam. Flags: ${safety.flags.join(", ")}. ${buildReason(safety, quote)}. Proceed anyway?`,
+        expiresAt: Date.now() + 60_000,
       };
     }
     return {
@@ -262,17 +276,16 @@ function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote)
     };
   }
 
-  // CAREFUL mode: high bar, auto-reject below 70
+  // CAREFUL mode: high bar, confirm below 70
   if (urgency === "CAREFUL") {
     if (safety.score < 70) {
       return {
         intentId: intent.intentId,
-        decision: "REJECT",
-        reason: `Safety score ${safety.score}/100 is below the CAREFUL threshold (70). Flags: ${safety.flags.join(", ") || "none"}`,
-        rejectedAt: Date.now(),
+        decision: "AWAIT_USER_CONFIRM",
+        reason: `Safety score ${safety.score}/100 is below the CAREFUL threshold (70). Flags: ${safety.flags.join(", ") || "none"}. ${buildReason(safety, quote)}. Proceed anyway?`,
+        expiresAt: Date.now() + 60_000,
       };
     }
-    // Even above 70, ask for confirmation if there are any flags
     if (safety.flags.length > 0) {
       return {
         intentId: intent.intentId,
@@ -289,21 +302,13 @@ function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote)
     };
   }
 
-  // NORMAL mode: reject below 50, confirm between 50-69, auto-approve 70+
-  if (safety.score < 50) {
-    return {
-      intentId: intent.intentId,
-      decision: "REJECT",
-      reason: `Safety score ${safety.score}/100 too low. Flags: ${safety.flags.join(", ")}`,
-      rejectedAt: Date.now(),
-    };
-  }
-
+  // NORMAL mode: confirm below 70 (never hard reject — let user decide), auto-approve 70+
   if (safety.score < 70) {
+    const severity = safety.score === 0 ? "HONEYPOT DETECTED" : `Safety ${safety.score}/100`;
     return {
       intentId: intent.intentId,
       decision: "AWAIT_USER_CONFIRM",
-      reason: `Safety ${safety.score}/100, flags: ${safety.flags.join(", ") || "none"}. ${buildReason(safety, quote)}`,
+      reason: `${severity}, flags: ${safety.flags.join(", ") || "none"}. ${buildReason(safety, quote)}. Proceed anyway?`,
       expiresAt: Date.now() + 60_000,
     };
   }

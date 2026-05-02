@@ -382,11 +382,30 @@ async function executeEvmSwap(
     void logToKeeperHub(isSell ? "sell" : "swap", numChainId, result.hash, intent.address);
   }
 
+  // Try to derive execution price from Uniswap quote response
+  let executionPriceUsd = quote.priceUsd;
+  try {
+    const qInput = quoteData["input"] as { amount?: string } | undefined;
+    const qOutput = quoteData["output"] as { amount?: string } | undefined;
+    if (qInput?.amount && qOutput?.amount) {
+      const inAmt = parseFloat(qInput.amount);
+      const outAmt = parseFloat(qOutput.amount);
+      if (inAmt > 0 && outAmt > 0) {
+        // For buys: input=ETH, output=token. Price = (inputUsd / outputTokens)
+        // For sells: input=token, output=ETH. Price = (outputUsd / inputTokens)
+        // We can't get exact USD here without ETH price, so log and keep DexScreener price
+        console.log(`[execution] Uniswap amounts: in=${inAmt} out=${outAmt}`);
+      }
+    }
+  } catch {
+    // Non-critical — DexScreener price is the fallback
+  }
+
   return {
     txHash: result.hash,
     confirmedAt: Date.now(),
     filledAmount: intent.amount,
-    actualPriceUsd: quote.priceUsd,
+    actualPriceUsd: executionPriceUsd,
     mevProtected: khActive,
   };
 }
@@ -644,4 +663,4 @@ export function getPositions(): Position[] {
   return getAllPositions();
 }
 
-export { getPositionsByUser } from "./position-store";
+export { getPositionsByUser, getPosition } from "./position-store";
