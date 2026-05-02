@@ -31,9 +31,11 @@ import {
   EVM_CHAIN_CONFIG,
   fetchNativeBalance,
   fetchTokenHoldings,
+  fetchTokenBalance,
 } from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 import { getPositionsByUser, getPosition } from "../agents/execution/index";
+import { getTradeHistory } from "../shared/trade-history";
 import { getWatchedWalletAddresses } from "../agents/copy-trade/index";
 import { searchPairs } from "../tools/dexscreener-mcp/client";
 import { loadSeenTokens, trackToken, getSeenTokens } from "../shared/seen-tokens";
@@ -50,6 +52,7 @@ type PendingReply = {
   walletAddress?: string;
   chainHint?: string;
   tradeAmount?: number;
+  isSell?: boolean;
 };
 
 const CONVERSATIONAL_PROMPT = [
@@ -396,6 +399,7 @@ export async function startTelegramGateway(
   const onSafety = (r: import("../shared/types").SafetyReport): void => {
     const pending = replyByRequestId.get(r.intentId);
     if (!pending) return;
+    if (pending.isSell) return;
     if (r.score >= 70 && r.flags.length === 0) return;
     if (r.flags.length > 0) {
       const flagText = r.flags.join(", ");
@@ -707,6 +711,35 @@ export async function startTelegramGateway(
       ].join("\n"),
       { parse_mode: "HTML" },
     );
+  });
+
+  bot.command("history", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    const trades = getTradeHistory(userId, 10);
+    if (trades.length === 0) {
+      await ctx.reply("No trades yet. Start trading to build your history.", {
+        parse_mode: "HTML",
+      });
+      return;
+    }
+    const lines = trades
+      .slice()
+      .reverse()
+      .map((t) => {
+        const side = t.side === "buy" ? "BUY" : "SELL";
+        const sym = t.symbol ?? t.address.slice(0, 8) + "...";
+        const price = t.priceUsd >= 1 ? `$${t.priceUsd.toFixed(2)}` : `$${t.priceUsd.toFixed(6)}`;
+        const amt =
+          t.filled.unit === "USD" ? `$${t.filled.value}` : `${t.filled.value} ${t.filled.unit}`;
+        const explorer = getChainExplorer(t.chainId);
+        const date = new Date(t.timestamp);
+        const ts = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, "0")}:${date.getMinutes().toString().padStart(2, "0")}`;
+        return `${ts}  ${side} ${html(sym)} ${amt} at ${price}\n<a href="${explorer}/tx/${t.txHash}">${t.txHash.slice(0, 12)}...</a>`;
+      });
+    await ctx.reply(`<b>Trade History</b> (last ${trades.length})\n\n${lines.join("\n\n")}`, {
+      parse_mode: "HTML",
+      link_preview_options: { is_disabled: true },
+    });
   });
 
   // /balance — show native token balances across chains
@@ -1900,7 +1933,7 @@ export async function startTelegramGateway(
             resolvedChainName = resolveChainAlias(best.chainId) ?? best.chainId;
             chain = best.chainId === "solana" ? "solana" : "evm";
           }
-          if (toToken && verifiedTokenSymbol) toToken = verifiedTokenSymbol;
+          if (toToken && verifiedTokenSymbol && !swapFromTokenAmount) toToken = verifiedTokenSymbol;
           hlog.agent(
             "gateway",
             `DexScreener verified: ${verifiedTokenSymbol} (${verifiedTokenName}) on ${resolvedChainName}`,
@@ -1963,8 +1996,9 @@ export async function startTelegramGateway(
       }
     }
 
-    // "swap 0.1 USDC to ETH" — amount is in source token, not ETH
-    if (swapFromTokenAmount && amount.value > 0 && amount.unit !== "USD") {
+    // "swap 0.1 USDC to ETH" — amount is in source token, not ETH.
+    // Override even if the $ regex fired: "$0.1 USDC" = 0.1 USDC tokens, not $0.10 USD.
+    if (swapFromTokenAmount && amount.value > 0) {
       amount = { value: amount.value, unit: "TOKEN" };
     }
 
@@ -2102,7 +2136,27 @@ export async function startTelegramGateway(
     if (specificChain) pending.chainHint = specificChain;
     else if (chain === "evm") pending.chainHint = "ethereum";
     if (amount.value > 0) pending.tradeAmount = amount.value;
+    if (side === "sell") pending.isSell = true;
     pendingMap.set(intent.intentId, pending);
+
+    // Upfront balance check for sells: verify user holds the token before pipeline
+    if (side === "sell" && walletAddr && specificChain) {
+      try {
+        const { balance } = await fetchTokenBalance(specificChain, address, walletAddr, 4_000);
+        if (balance === 0n) {
+          pendingMap.delete(intent.intentId);
+          const sym = verifiedTokenSymbol ?? toToken ?? address.slice(0, 10);
+          void reply(
+            rctx,
+            `You don't hold any ${html(sym)} on ${html(getChainName(specificChain))}. Check /balance to see what you have.`,
+          );
+          return;
+        }
+      } catch {
+        // RPC failed — let execution agent handle it
+      }
+    }
+
     trackToken(
       userId,
       address,

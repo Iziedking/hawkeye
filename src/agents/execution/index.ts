@@ -12,6 +12,7 @@ import type { WalletManager } from "../../integrations/privy/index";
 import type { KeeperHubClient } from "../../integrations/keeperhub/index";
 import { randomUUID } from "node:crypto";
 import { fetchTokenBalance } from "../../shared/evm-chains";
+import { recordTrade, loadTradeHistory } from "../../shared/trade-history";
 import {
   loadPositions,
   getPosition,
@@ -541,26 +542,17 @@ async function handleExecute(intentId: string): Promise<void> {
     return;
   }
 
-  // Handle user-initiated sell: use tracked position if available, otherwise
-  // execute a direct sell swap (user may have bought externally or bot restarted)
+  // Track which position to clean up after a successful sell
+  let sellPositionId: string | null = null;
   if (intent.side === "sell") {
     const userPositions = getPositionsByUserInternal(intent.userId).filter(
       (p) => p.address.toLowerCase() === intent.address.toLowerCase(),
     );
     if (userPositions.length > 0) {
-      const pos = userPositions[0]!;
-      await handleSell({
-        positionId: pos.positionId,
-        fraction: 1.0,
-        triggeredBy: { kind: "multiplier", value: 0 },
-        emittedAt: Date.now(),
-      });
-      contextCache.delete(intentId);
-      return;
+      sellPositionId = userPositions[0]!.positionId;
     }
-    // No tracked position: execute sell swap directly (token → native)
     console.log(
-      `[execution] sell without tracked position — direct swap for ${intent.address.slice(0, 10)}...`,
+      `[execution] sell swap for ${intent.address.slice(0, 10)}...${sellPositionId ? ` (position ${sellPositionId.slice(0, 8)})` : " (no tracked position)"}`,
     );
   }
 
@@ -606,6 +598,25 @@ async function handleExecute(intentId: string): Promise<void> {
   setPosition(position.positionId, position);
   bus.emit("TRADE_EXECUTED", position);
   contextCache.delete(intentId);
+
+  recordTrade({
+    intentId,
+    userId: intent.userId,
+    side: intent.side === "sell" ? "sell" : "buy",
+    address: intent.address,
+    chainId: quote.chainId,
+    symbol: intent.symbol,
+    filled: receipt.filledAmount,
+    priceUsd: receipt.actualPriceUsd,
+    txHash: receipt.txHash,
+    mevProtected: receipt.mevProtected,
+    timestamp: Date.now(),
+  });
+
+  if (sellPositionId) {
+    deletePosition(sellPositionId);
+    console.log(`[execution] cleaned up position ${sellPositionId.slice(0, 8)} after sell`);
+  }
 
   console.log(`[execution] done tx=${receipt.txHash.slice(0, 16)}...`);
 }
@@ -659,6 +670,20 @@ async function handleSell(payload: ExecuteSellPayload): Promise<void> {
     }
     console.log(`[execution] sell done tx=${receipt.txHash.slice(0, 16)}...`);
 
+    recordTrade({
+      intentId: sellIntent.intentId,
+      userId: position.userId,
+      side: "sell",
+      address: position.address,
+      chainId: position.chainId,
+      symbol: position.symbol,
+      filled: { value: position.filled.value * payload.fraction, unit: position.filled.unit },
+      priceUsd: receipt.actualPriceUsd,
+      txHash: receipt.txHash,
+      mevProtected: receipt.mevProtected,
+      timestamp: Date.now(),
+    });
+
     const soldPosition: Position = {
       ...position,
       txHash: receipt.txHash,
@@ -682,6 +707,7 @@ async function handleSell(payload: ExecuteSellPayload): Promise<void> {
 
 export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
   loadPositions();
+  loadTradeHistory();
   walletMgr = deps.walletManager ?? null;
   keeperHubClient = deps.keeperHub ?? null;
 
