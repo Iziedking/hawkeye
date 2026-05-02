@@ -4,7 +4,7 @@
  * Deduplicates by txHash and pair window. Reconnects with exponential back-off.
  */
 
-import { bus } from  "../../shared/event-bus";
+import { bus } from "../../shared/event-bus";
 import type {
   TradeIntent,
   ChainClass,
