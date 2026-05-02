@@ -137,7 +137,14 @@ function buildRouteLabel(chainId: string, chain: "evm" | "solana"): string {
 // Agent entry point
 // ---------------------------------------------------------------------------
 
-const TESTNET_CHAIN_IDS = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+const TESTNET_CHAIN_IDS = new Set([
+  "sepolia",
+  "goerli",
+  "mumbai",
+  "fuji",
+  "base-sepolia",
+  "basesepolia",
+]);
 
 export function startQuoteAgent(): () => void {
   const handler = async (intent: TradeIntent): Promise<void> => {
@@ -165,9 +172,7 @@ export function startQuoteAgent(): () => void {
         };
         // Defer to next tick so all TRADE_REQUEST listeners (including execution) cache the intent first
         process.nextTick(() => bus.emit("QUOTE_RESULT", testnetQuote));
-        console.log(
-          `[QuoteAgent] testnet quote emitted for ${chainHint}, skipping DexScreener`,
-        );
+        console.log(`[QuoteAgent] testnet quote emitted for ${chainHint}, skipping DexScreener`);
         return;
       }
 
@@ -194,8 +199,7 @@ export function startQuoteAgent(): () => void {
       // If our target is the quote token, derive its price from priceNative.
       const basePriceUsd = parseFloat(pair.priceUsd ?? "0");
       const priceNative = parseFloat(pair.priceNative ?? "0");
-      const isQuoteSide =
-        pair.quoteToken?.address?.toLowerCase() === intent.address.toLowerCase();
+      const isQuoteSide = pair.quoteToken?.address?.toLowerCase() === intent.address.toLowerCase();
 
       let finalPriceUsd: number;
       if (isQuoteSide && priceNative > 0) {

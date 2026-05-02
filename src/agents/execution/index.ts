@@ -61,7 +61,12 @@ const CHAIN_NUMERIC: Record<string, number> = {
 
 function humanizeQuoteError(status: number, raw: string): string {
   try {
-    const parsed = JSON.parse(raw) as { errorCode?: string; detail?: string; error?: string; code?: string };
+    const parsed = JSON.parse(raw) as {
+      errorCode?: string;
+      detail?: string;
+      error?: string;
+      code?: string;
+    };
     const detail = parsed.detail ?? parsed.error ?? parsed.errorCode ?? "";
     if (detail.includes("No quotes available") || status === 404) {
       return "No swap route found. The token might not be tradeable on this chain, or your wallet may not have enough native tokens for gas. Fund your wallet and try again.";
@@ -69,14 +74,19 @@ function humanizeQuoteError(status: number, raw: string): string {
     if (detail.includes("INSUFFICIENT") || detail.includes("insufficient")) {
       return "Insufficient balance. Fund your wallet with native tokens (ETH/MATIC/etc.) and try again.";
     }
-    if (detail.includes("Execution reverted") || detail.includes("execution reverted") || parsed.code === "transaction_broadcast_failure") {
+    if (
+      detail.includes("Execution reverted") ||
+      detail.includes("execution reverted") ||
+      parsed.code === "transaction_broadcast_failure"
+    ) {
       return "Transaction reverted on-chain. Most likely your wallet doesn't hold enough of this token to sell, or doesn't have enough ETH for gas. Check your balance and try again.";
     }
     if (status === 429) return "Uniswap rate limited. Try again in a few seconds.";
     if (status >= 500) return "Uniswap API is temporarily down. Try again shortly.";
     return `Swap failed: ${detail || `error ${status}`}. Try again or adjust your amount.`;
   } catch {
-    if (status === 404) return "No swap route found for this token. It may not be listed on Uniswap for this chain.";
+    if (status === 404)
+      return "No swap route found for this token. It may not be listed on Uniswap for this chain.";
     if (raw.includes("execution reverted") || raw.includes("Execution reverted")) {
       return "Transaction reverted on-chain. Your wallet may not hold this token or may lack gas. Check your balance and try again.";
     }
@@ -154,8 +164,12 @@ async function logToKeeperHub(
   if (!keeperHubClient || keeperHubClient.circuitOpen) return;
   try {
     const network = keeperHubClient.networkFromChainId(chainId);
-    await keeperHubClient.getExecutionStatus(`hawkeye-${action}-${txHash.slice(0, 10)}`).catch(() => {});
-    console.log(`[execution] KeeperHub: logged ${action} on ${network} tx=${txHash.slice(0, 12)}...`);
+    await keeperHubClient
+      .getExecutionStatus(`hawkeye-${action}-${txHash.slice(0, 10)}`)
+      .catch(() => {});
+    console.log(
+      `[execution] KeeperHub: logged ${action} on ${network} tx=${txHash.slice(0, 12)}...`,
+    );
   } catch {
     // monitoring is best-effort, don't block trade flow
   }
@@ -236,7 +250,9 @@ async function checkAndSubmitApproval(
     return;
   }
 
-  const data = (await resp.json()) as { approval?: { to?: string; data?: string; value?: string } | null };
+  const data = (await resp.json()) as {
+    approval?: { to?: string; data?: string; value?: string } | null;
+  };
 
   if (!data.approval) {
     console.log("[execution] token already approved for Permit2");
@@ -255,10 +271,7 @@ async function checkAndSubmitApproval(
   console.log(`[execution] approval confirmed: ${result.hash.slice(0, 16)}...`);
 }
 
-async function executeEvmSwap(
-  intent: TradeIntent,
-  quote: Quote,
-): Promise<ExecutionReceipt> {
+async function executeEvmSwap(intent: TradeIntent, quote: Quote): Promise<ExecutionReceipt> {
   const numChainId = CHAIN_NUMERIC[quote.chainId] ?? 1;
   const apiKey = envOr("UNISWAP_API_KEY", "");
 
@@ -273,40 +286,55 @@ async function executeEvmSwap(
 
   const isSell = intent.side === "sell";
   const hasFromToken = !!intent.fromTokenAddress;
-  const tokenIn = hasFromToken ? intent.fromTokenAddress! : (isSell ? intent.address : ETH_ADDRESS);
-  const tokenOut = hasFromToken ? intent.address : (isSell ? ETH_ADDRESS : intent.address);
+  const tokenIn = hasFromToken ? intent.fromTokenAddress! : isSell ? intent.address : ETH_ADDRESS;
+  const tokenOut = hasFromToken ? intent.address : isSell ? ETH_ADDRESS : intent.address;
 
   // Pre-check: verify wallet holds the input token before attempting the swap
   if (isSell || hasFromToken) {
     const { balance: tokenBal, error: balErr } = await fetchTokenBalance(
-      quote.chainId, tokenIn, swapperAddress, 5_000,
+      quote.chainId,
+      tokenIn,
+      swapperAddress,
+      5_000,
     ).catch(() => ({ balance: 0n, error: "fetch_failed" }));
 
     if (!balErr && tokenBal === 0n) {
       throw new Error(
         `Your wallet doesn't hold any of this token on ${quote.chainId}. ` +
-        `Buy it first, then sell. Use /wallet to check your balances.`,
+          `Buy it first, then sell. Use /wallet to check your balances.`,
       );
     }
     if (tokenBal > 0n) {
-      console.log(`[execution] token balance check: ${tokenBal.toString()} raw units on ${quote.chainId}`);
+      console.log(
+        `[execution] token balance check: ${tokenBal.toString()} raw units on ${quote.chainId}`,
+      );
     }
   }
 
   const inputDecimals = getTokenDecimals(tokenIn);
   // NATIVE unit with ETH as tokenIn → 18 decimals (wei)
   // NATIVE unit with non-ETH tokenIn (e.g. "swap 0.1 USDC to ETH") → use token's decimals
-  const amountDecimals = intent.amount.unit === "NATIVE" && tokenIn === ETH_ADDRESS ? 18 : inputDecimals;
+  const amountDecimals =
+    intent.amount.unit === "NATIVE" && tokenIn === ETH_ADDRESS ? 18 : inputDecimals;
   const amountRaw = toSmallestUnit(intent.amount.value, amountDecimals);
 
   if (amountRaw === "0" || intent.amount.value <= 0) {
-    throw new Error("No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.");
+    throw new Error(
+      "No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.",
+    );
   }
 
   // Step 1: Check approval (skipped for native ETH, required for ERC-20 input tokens)
   const MAX_UINT = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
   if (tokenIn !== ETH_ADDRESS) {
-    await checkAndSubmitApproval(tokenIn, isSell || hasFromToken ? MAX_UINT : amountRaw, swapperAddress, numChainId, apiKey, intent.userId);
+    await checkAndSubmitApproval(
+      tokenIn,
+      isSell || hasFromToken ? MAX_UINT : amountRaw,
+      swapperAddress,
+      numChainId,
+      apiKey,
+      intent.userId,
+    );
   }
 
   // Step 2: Get quote (chainId as string per Uniswap API spec)
@@ -321,7 +349,8 @@ async function executeEvmSwap(
       tokenInChainId: String(numChainId),
       tokenOutChainId: String(numChainId),
       amount: amountRaw,
-      type: isSell && !hasFromToken && intent.amount.unit === "NATIVE" ? "EXACT_OUTPUT" : "EXACT_INPUT",
+      type:
+        isSell && !hasFromToken && intent.amount.unit === "NATIVE" ? "EXACT_OUTPUT" : "EXACT_INPUT",
       slippageTolerance: parseFloat(slippage.toFixed(2)),
       routingPreference: "BEST_PRICE",
     }),
@@ -335,7 +364,7 @@ async function executeEvmSwap(
   }
 
   const quoteData = (await quoteResp.json()) as Record<string, unknown>;
-  const routingType = quoteData["routing"] as string ?? "CLASSIC";
+  const routingType = (quoteData["routing"] as string) ?? "CLASSIC";
   console.log(`[execution] Uniswap routing: ${routingType}`);
 
   // Step 3: Prepare and submit swap — routing-aware Permit2 handling
@@ -417,11 +446,15 @@ async function executeEvmSwap(
       const gasField = quoteData["gasFeeUSD"] as string | undefined;
       if (gasField) gasFeeUsd = parseFloat(gasField);
       if (qOutput?.amount) {
-        console.log(`[execution] CLASSIC output=${qOutput.amount}${gasFeeUsd ? ` gas=$${gasFeeUsd.toFixed(2)}` : ""}`);
+        console.log(
+          `[execution] CLASSIC output=${qOutput.amount}${gasFeeUsd ? ` gas=$${gasFeeUsd.toFixed(2)}` : ""}`,
+        );
       }
     } else {
       // UniswapX: orderInfo.outputs[0].startAmount
-      const orderInfo = quoteData["orderInfo"] as { outputs?: Array<{ startAmount?: string }> } | undefined;
+      const orderInfo = quoteData["orderInfo"] as
+        | { outputs?: Array<{ startAmount?: string }> }
+        | undefined;
       const startAmt = orderInfo?.outputs?.[0]?.startAmount;
       if (startAmt) {
         console.log(`[execution] ${routingType} orderInfo.outputs[0].startAmount=${startAmt}`);
@@ -440,10 +473,7 @@ async function executeEvmSwap(
   };
 }
 
-async function executeSolanaSwap(
-  intent: TradeIntent,
-  quote: Quote,
-): Promise<ExecutionReceipt> {
+async function executeSolanaSwap(intent: TradeIntent, quote: Quote): Promise<ExecutionReceipt> {
   const slippageBps = Math.floor(quote.expectedSlippagePct * 100);
   const SOL_MINT = "So11111111111111111111111111111111111111112";
   const isSell = intent.side === "sell";
@@ -489,15 +519,25 @@ async function handleExecute(intentId: string): Promise<void> {
   console.log(`[execution] handleExecute called for ${intentId.slice(0, 8)}...`);
   const ctx = contextCache.get(intentId);
   if (!ctx) {
-    console.error(`[execution] no context for ${intentId} — cached IDs: [${[...contextCache.keys()].map(k => k.slice(0, 8)).join(", ")}]`);
-    bus.emit("QUOTE_FAILED", { intentId, address: "", reason: "Execution context lost. Try again." });
+    console.error(
+      `[execution] no context for ${intentId} — cached IDs: [${[...contextCache.keys()].map((k) => k.slice(0, 8)).join(", ")}]`,
+    );
+    bus.emit("QUOTE_FAILED", {
+      intentId,
+      address: "",
+      reason: "Execution context lost. Try again.",
+    });
     return;
   }
 
   const { intent, quote } = ctx;
   if (!quote) {
     console.error(`[execution] no quote for ${intentId}`);
-    bus.emit("QUOTE_FAILED", { intentId, address: intent.address, reason: "Quote not received in time. Try again." });
+    bus.emit("QUOTE_FAILED", {
+      intentId,
+      address: intent.address,
+      reason: "Quote not received in time. Try again.",
+    });
     return;
   }
 
@@ -509,12 +549,19 @@ async function handleExecute(intentId: string): Promise<void> {
     );
     if (userPositions.length > 0) {
       const pos = userPositions[0]!;
-      await handleSell({ positionId: pos.positionId, fraction: 1.0, triggeredBy: { kind: "multiplier", value: 0 }, emittedAt: Date.now() });
+      await handleSell({
+        positionId: pos.positionId,
+        fraction: 1.0,
+        triggeredBy: { kind: "multiplier", value: 0 },
+        emittedAt: Date.now(),
+      });
       contextCache.delete(intentId);
       return;
     }
     // No tracked position: execute sell swap directly (token → native)
-    console.log(`[execution] sell without tracked position — direct swap for ${intent.address.slice(0, 10)}...`);
+    console.log(
+      `[execution] sell without tracked position — direct swap for ${intent.address.slice(0, 10)}...`,
+    );
   }
 
   const swapDesc = intent.fromTokenAddress
@@ -643,10 +690,17 @@ export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
   }
   if (keeperHubClient) {
     console.log("[execution] KeeperHub active — checking connectivity...");
-    keeperHubClient.checkReachable().then((ok) => {
-      if (ok) console.log("[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected");
-      else console.warn("[execution] KeeperHub unreachable — mainnet swaps will proceed without MEV protection");
-    }).catch(() => {});
+    keeperHubClient
+      .checkReachable()
+      .then((ok) => {
+        if (ok)
+          console.log("[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected");
+        else
+          console.warn(
+            "[execution] KeeperHub unreachable — mainnet swaps will proceed without MEV protection",
+          );
+      })
+      .catch(() => {});
   }
 
   const onTradeRequest = (intent: TradeIntent) => {

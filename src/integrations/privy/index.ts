@@ -134,7 +134,8 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
   }
   const restored = walletCache.size;
   const restoredSol = solanaWalletCache.size;
-  if (restored > 0) log.privy(`restored ${restored} EVM + ${restoredSol} Solana wallet(s) from disk`);
+  if (restored > 0)
+    log.privy(`restored ${restored} EVM + ${restoredSol} Solana wallet(s) from disk`);
 
   function resolveEmail(userId: string): string | undefined {
     if (userId.includes("@")) return userId;
@@ -195,7 +196,10 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
 
     // Create Solana wallet in background (don't block EVM wallet return)
     void createSolanaWalletForEmail(email).catch((err) => {
-      console.warn("[privy] background Solana wallet creation failed:", (err as Error).message?.slice(0, 80));
+      console.warn(
+        "[privy] background Solana wallet creation failed:",
+        (err as Error).message?.slice(0, 80),
+      );
     });
 
     return pw;
@@ -254,14 +258,15 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     let privyUserId: string | null = null;
     try {
       const privyUser = await client.users().create({
-        linked_accounts: [
-          { type: "email", address: email },
-        ],
+        linked_accounts: [{ type: "email", address: email }],
       });
       privyUserId = privyUser.id;
       console.log("[privy] created Privy user", privyUserId, "for", email);
     } catch (err) {
-      console.warn("[privy] user creation failed, wallet-only mode:", (err as Error).message?.slice(0, 80));
+      console.warn(
+        "[privy] user creation failed, wallet-only mode:",
+        (err as Error).message?.slice(0, 80),
+      );
     }
 
     const walletOpts: Record<string, unknown> = { chain_type: "ethereum" };
@@ -308,7 +313,10 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
 
     // Create Solana wallet in background
     void createSolanaWalletForEmail(email).catch((err) => {
-      console.warn("[privy] background Solana wallet creation failed:", (err as Error).message?.slice(0, 80));
+      console.warn(
+        "[privy] background Solana wallet creation failed:",
+        (err as Error).message?.slice(0, 80),
+      );
     });
 
     return pw;
@@ -324,14 +332,15 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     if (!privyUserId) {
       try {
         const privyUser = await client.users().create({
-          linked_accounts: [
-            { type: "email", address: email },
-          ],
+          linked_accounts: [{ type: "email", address: email }],
         });
         privyUserId = privyUser.id;
         console.log("[privy] created Privy user", privyUserId, "for", email);
       } catch (err) {
-        console.warn("[privy] user creation for link failed:", (err as Error).message?.slice(0, 80));
+        console.warn(
+          "[privy] user creation for link failed:",
+          (err as Error).message?.slice(0, 80),
+        );
       }
     }
 
@@ -416,9 +425,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     if (!profile) return false;
 
     const lower = address.toLowerCase();
-    const idx = profile.externalWallets.findIndex(
-      (w) => w.address.toLowerCase() === lower,
-    );
+    const idx = profile.externalWallets.findIndex((w) => w.address.toLowerCase() === lower);
     if (idx === -1) return false;
 
     profile.externalWallets.splice(idx, 1);

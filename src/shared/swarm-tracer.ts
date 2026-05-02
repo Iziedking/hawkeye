@@ -22,7 +22,10 @@ function delta(id: string, map: Map<string, number>): string {
 export function startSwarmTracer(): () => void {
   const onRequest = (intent: TradeIntent): void => {
     tradeT0.set(intent.intentId, Date.now());
-    log.bus("TRADE_REQUEST", `intent=${intent.intentId.slice(0, 8)} addr=${intent.address.slice(0, 12)}...`);
+    log.bus(
+      "TRADE_REQUEST",
+      `intent=${intent.intentId.slice(0, 8)} addr=${intent.address.slice(0, 12)}...`,
+    );
   };
 
   const onSafety = (r: SafetyReport): void => {
@@ -37,7 +40,10 @@ export function startSwarmTracer(): () => void {
       q.liquidityUsd >= 1_000_000
         ? `$${(q.liquidityUsd / 1_000_000).toFixed(1)}M`
         : `$${(q.liquidityUsd / 1_000).toFixed(0)}K`;
-    log.uniswap("quote", `$${q.priceUsd} liq=${liq} slip=${q.expectedSlippagePct.toFixed(1)}% ${delta(q.intentId, tradeT0)}`);
+    log.uniswap(
+      "quote",
+      `$${q.priceUsd} liq=${liq} slip=${q.expectedSlippagePct.toFixed(1)}% ${delta(q.intentId, tradeT0)}`,
+    );
   };
 
   const onStrategy = (d: StrategyDecision): void => {
@@ -58,7 +64,10 @@ export function startSwarmTracer(): () => void {
 
   const onResearchRes = (res: ResearchResult): void => {
     if (!researchT0.has(res.requestId)) return;
-    log.agent("research", `done safety=${res.safetyScore ?? "-"} price=$${res.priceUsd ?? "?"} ${delta(res.requestId, researchT0)}`);
+    log.agent(
+      "research",
+      `done safety=${res.safetyScore ?? "-"} price=$${res.priceUsd ?? "?"} ${delta(res.requestId, researchT0)}`,
+    );
     researchT0.delete(res.requestId);
   };
 

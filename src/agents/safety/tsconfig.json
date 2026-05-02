@@ -4,5 +4,10 @@
     "rootDir": "../..",
     "outDir": "../../../dist/agents/safety"
   },
-  "include": ["./**/*.ts", "../../shared/**/*.ts", "../../tools/**/*.ts", "../../integrations/**/*.ts"]
+  "include": [
+    "./**/*.ts",
+    "../../shared/**/*.ts",
+    "../../tools/**/*.ts",
+    "../../integrations/**/*.ts"
+  ]
 }

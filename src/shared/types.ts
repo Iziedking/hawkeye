@@ -335,9 +335,7 @@ export type ExternalWalletEntry = {
   delegated: boolean;
 };
 
-export type ActiveWalletRef =
-  | { kind: "agent" }
-  | { kind: "external"; address: string };
+export type ActiveWalletRef = { kind: "agent" } | { kind: "external"; address: string };
 
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",

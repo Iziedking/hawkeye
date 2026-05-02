@@ -76,20 +76,19 @@ export class ArkhamClient {
     return resp.json() as Promise<T>;
   }
 
-  async getTokenHolders(
-    chain: string,
-    address: string,
-    limit = 10,
-  ): Promise<ArkhamHolder[]> {
+  async getTokenHolders(chain: string, address: string, limit = 10): Promise<ArkhamHolder[]> {
     const arkChain = toArkhamChain(chain);
     type HoldersResp = {
-      holders?: Record<string, Array<{
-        address?: string;
-        entity?: { name?: string } | string;
-        usd?: number;
-        balance?: number;
-        percentage?: number;
-      }>>;
+      holders?: Record<
+        string,
+        Array<{
+          address?: string;
+          entity?: { name?: string } | string;
+          usd?: number;
+          balance?: number;
+          percentage?: number;
+        }>
+      >;
     };
     const data = await this.get<HoldersResp>(
       `/token/holders/${arkChain}/${address}?groupByEntity=true`,
@@ -98,9 +97,7 @@ export class ArkhamClient {
     if (!data.holders) return holders;
     for (const [, chainHolders] of Object.entries(data.holders)) {
       for (const h of chainHolders) {
-        const entityName = typeof h.entity === "string"
-          ? h.entity
-          : h.entity?.name ?? null;
+        const entityName = typeof h.entity === "string" ? h.entity : (h.entity?.name ?? null);
         holders.push({
           entity: entityName,
           address: h.address ?? "",
@@ -110,9 +107,7 @@ export class ArkhamClient {
         });
       }
     }
-    return holders
-      .sort((a, b) => b.usd - a.usd)
-      .slice(0, limit);
+    return holders.sort((a, b) => b.usd - a.usd).slice(0, limit);
   }
 
   async getTokenFlows(
@@ -183,9 +178,7 @@ export class ArkhamClient {
       tvTicker?: string | null;
     };
     try {
-      const data = await this.get<IntelResp>(
-        `/intelligence/token/${arkChain}/${address}`,
-      );
+      const data = await this.get<IntelResp>(`/intelligence/token/${arkChain}/${address}`);
       if (!data.name) return null;
       return {
         name: data.name,
@@ -198,7 +191,10 @@ export class ArkhamClient {
     }
   }
 
-  async getAddressIntel(address: string, chain = "ethereum"): Promise<{
+  async getAddressIntel(
+    address: string,
+    chain = "ethereum",
+  ): Promise<{
     entity: string | null;
     entityType: string | null;
     labels: string[];
@@ -209,9 +205,7 @@ export class ArkhamClient {
       arkhamLabel?: { name?: string } | null;
     };
     try {
-      const data = await this.get<AddrResp>(
-        `/intelligence/address/${address}?chain=${arkChain}`,
-      );
+      const data = await this.get<AddrResp>(`/intelligence/address/${address}?chain=${arkChain}`);
       return {
         entity: data.arkhamEntity?.name ?? null,
         entityType: data.arkhamEntity?.type ?? null,

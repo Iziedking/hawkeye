@@ -29,7 +29,12 @@ export function loadSeenTokens(): void {
   } catch {}
 }
 
-export function trackToken(userId: string, address: string, chainId: string, symbol?: string): void {
+export function trackToken(
+  userId: string,
+  address: string,
+  chainId: string,
+  symbol?: string,
+): void {
   const tokens = store[userId] ?? [];
   const lower = address.toLowerCase();
   const existing = tokens.find((t) => t.address.toLowerCase() === lower && t.chainId === chainId);

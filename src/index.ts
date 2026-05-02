@@ -44,7 +44,10 @@ function reportEnv(): void {
   }
 }
 
-async function initLlm(): Promise<{ llm: FallbackLlmClient | null; compute: OgComputeClient | null }> {
+async function initLlm(): Promise<{
+  llm: FallbackLlmClient | null;
+  compute: OgComputeClient | null;
+}> {
   let ogClient: OgComputeClient | null = null;
   try {
     ogClient = new OgComputeClient();
@@ -265,9 +268,7 @@ async function main(): Promise<void> {
   registerHealthCheck(() => ({
     name: "KeeperHub",
     ok: keeperHub !== null && !keeperHub.circuitOpen,
-    detail: keeperHub
-      ? keeperHub.circuitOpen ? "circuit open" : "active"
-      : "unavailable",
+    detail: keeperHub ? (keeperHub.circuitOpen ? "circuit open" : "active") : "unavailable",
   }));
   registerHealthCheck(() => ({
     name: "Gensyn AXL",

@@ -58,10 +58,12 @@ function weiToHumanReadable(wei: string): string {
   return `${whole}.${fracStr}`.replace(/0+$/, "").replace(/\.$/, "") || "0";
 }
 
-export function createKeeperHubWalletManager(opts: {
-  keeperHub?: KeeperHubClient;
-  walletAddress?: string;
-} = {}): WalletManager {
+export function createKeeperHubWalletManager(
+  opts: {
+    keeperHub?: KeeperHubClient;
+    walletAddress?: string;
+  } = {},
+): WalletManager {
   const khAddress = opts.walletAddress ?? envOr("KH_WALLET_ADDRESS", "");
   if (!khAddress) {
     throw new Error(
@@ -138,10 +140,7 @@ export function createKeeperHubWalletManager(opts: {
     return khWallet;
   }
 
-  async function createWalletWithEmail(
-    userId: string,
-    email: string,
-  ): Promise<PrivyWallet> {
+  async function createWalletWithEmail(userId: string, email: string): Promise<PrivyWallet> {
     const existing = resolveEmail(userId);
     if (existing) {
       const profile = store.getUser(existing);
@@ -225,19 +224,14 @@ export function createKeeperHubWalletManager(opts: {
     return profile.activeWallet.address;
   }
 
-  function connectExternalWallet(
-    userId: string,
-    address: string,
-    label?: string,
-  ): void {
+  function connectExternalWallet(userId: string, address: string, label?: string): void {
     const email = resolveEmail(userId);
     if (!email) return;
     const profile = store.getUser(email);
     if (!profile) return;
 
     const lower = address.toLowerCase();
-    if (profile.externalWallets.some((w) => w.address.toLowerCase() === lower))
-      return;
+    if (profile.externalWallets.some((w) => w.address.toLowerCase() === lower)) return;
 
     profile.externalWallets.push({
       address,
@@ -258,9 +252,7 @@ export function createKeeperHubWalletManager(opts: {
     if (!profile) return false;
 
     const lower = address.toLowerCase();
-    const idx = profile.externalWallets.findIndex(
-      (w) => w.address.toLowerCase() === lower,
-    );
+    const idx = profile.externalWallets.findIndex((w) => w.address.toLowerCase() === lower);
     if (idx === -1) return false;
 
     profile.externalWallets.splice(idx, 1);
@@ -319,8 +311,7 @@ export function createKeeperHubWalletManager(opts: {
         activeAddress: null,
       };
     }
-    const mode: WalletMode =
-      profile.activeWallet.kind === "agent" ? "agent" : "external";
+    const mode: WalletMode = profile.activeWallet.kind === "agent" ? "agent" : "external";
     const active = walletAddress(userId) ?? null;
     const externalAddress = profile.externalWallets[0]?.address ?? null;
     return { mode, agentWallet: profile.agentWallet, externalAddress, activeAddress: active };
@@ -342,11 +333,7 @@ export function createKeeperHubWalletManager(opts: {
     return store.resolveByWallet(address);
   }
 
-  function linkPlatform(
-    platform: string,
-    platformId: string,
-    userId: string,
-  ): void {
+  function linkPlatform(platform: string, platformId: string, userId: string): void {
     const email = resolveEmail(userId);
     if (!email) return;
     store.linkPlatform(platform, platformId, email);
@@ -361,8 +348,7 @@ export function createKeeperHubWalletManager(opts: {
     while (Date.now() - start < maxWaitMs) {
       try {
         const status = await kh.getExecutionStatus(executionId);
-        if (status.status === "completed" || status.status === "failed")
-          return status;
+        if (status.status === "completed" || status.status === "failed") return status;
       } catch {
         /* transient */
       }
@@ -371,19 +357,11 @@ export function createKeeperHubWalletManager(opts: {
     return { executionId, status: "pending" };
   }
 
-  async function signTransaction(
-    _userId: string,
-    _tx: SignTxInput,
-  ): Promise<string> {
-    throw new Error(
-      "KeeperHub wallet does not support raw signing. Use sendTransaction.",
-    );
+  async function signTransaction(_userId: string, _tx: SignTxInput): Promise<string> {
+    throw new Error("KeeperHub wallet does not support raw signing. Use sendTransaction.");
   }
 
-  async function sendTransaction(
-    _userId: string,
-    tx: SignTxInput,
-  ): Promise<SendTxResult> {
+  async function sendTransaction(_userId: string, tx: SignTxInput): Promise<SendTxResult> {
     const network = CHAIN_NUMERIC_TO_NAME[tx.chainId] ?? "ethereum";
 
     if (!tx.data || tx.data === "" || tx.data === "0x") {
@@ -438,8 +416,7 @@ export function createKeeperHubWalletManager(opts: {
 
     if (selector === "3593564c") {
       const decoded = decodeUniversalRouterExecute(tx.data);
-      if (!decoded)
-        throw new Error("Failed to decode Universal Router calldata");
+      if (!decoded) throw new Error("Failed to decode Universal Router calldata");
 
       const value = toDecimalWei(tx.value);
 
@@ -473,9 +450,7 @@ export function createKeeperHubWalletManager(opts: {
     return undefined;
   }
 
-  async function ensureSolanaWallet(
-    _userId: string,
-  ): Promise<PrivyWallet | null> {
+  async function ensureSolanaWallet(_userId: string): Promise<PrivyWallet | null> {
     return null;
   }
 

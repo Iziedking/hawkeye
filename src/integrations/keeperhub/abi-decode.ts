@@ -79,25 +79,29 @@ export function decodeUniversalRouterExecute(data: string): DecodedExecute | nul
   return { functionName: "execute", args: [commands, inputs, deadline] };
 }
 
-export const UNIVERSAL_ROUTER_EXECUTE_ABI = JSON.stringify([{
-  inputs: [
-    { name: "commands", type: "bytes" },
-    { name: "inputs", type: "bytes[]" },
-    { name: "deadline", type: "uint256" },
-  ],
-  name: "execute",
-  outputs: [],
-  stateMutability: "payable",
-  type: "function",
-}]);
+export const UNIVERSAL_ROUTER_EXECUTE_ABI = JSON.stringify([
+  {
+    inputs: [
+      { name: "commands", type: "bytes" },
+      { name: "inputs", type: "bytes[]" },
+      { name: "deadline", type: "uint256" },
+    ],
+    name: "execute",
+    outputs: [],
+    stateMutability: "payable",
+    type: "function",
+  },
+]);
 
-export const ERC20_APPROVE_ABI = JSON.stringify([{
-  inputs: [
-    { name: "spender", type: "address" },
-    { name: "amount", type: "uint256" },
-  ],
-  name: "approve",
-  outputs: [{ name: "", type: "bool" }],
-  stateMutability: "nonpayable",
-  type: "function",
-}]);
+export const ERC20_APPROVE_ABI = JSON.stringify([
+  {
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    name: "approve",
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+]);

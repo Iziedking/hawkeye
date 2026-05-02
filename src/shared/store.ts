@@ -22,9 +22,7 @@ export type StoredExternalWallet = {
   delegated: boolean;
 };
 
-export type StoredActiveWallet =
-  | { kind: "agent" }
-  | { kind: "external"; address: string };
+export type StoredActiveWallet = { kind: "agent" } | { kind: "external"; address: string };
 
 // V1 format (pre-upgrade) -- kept for migration detection
 type StoredUserV1 = {
@@ -137,7 +135,10 @@ export class JsonStore {
         if (!this.masterKey) {
           throw new Error("Encrypted store found but HAWKEYE_MASTER_KEY not set");
         }
-        const decrypted = JSON.parse(decryptStore(parsed, this.masterKey)) as Record<string, unknown>;
+        const decrypted = JSON.parse(decryptStore(parsed, this.masterKey)) as Record<
+          string,
+          unknown
+        >;
         return {
           users: (decrypted["users"] ?? {}) as Record<string, StoredUser>,
           platformIndex: (decrypted["platformIndex"] ?? {}) as Record<string, string>,

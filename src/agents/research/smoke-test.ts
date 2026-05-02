@@ -13,8 +13,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "TOKEN_LOOKUP",
     req: {
       requestId: "smoke-token-lookup",
-      userId: "samuel", channel: "webchat", chain: "evm",
-      address: PEPE, tokenName: "PEPE",
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
+      address: PEPE,
+      tokenName: "PEPE",
       question: "Tell me about PEPE",
       rawText: "tell me about PEPE",
       createdAt: Date.now(),
@@ -26,8 +29,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "SAFETY_CHECK",
     req: {
       requestId: "smoke-safety-check",
-      userId: "samuel", channel: "webchat", chain: "evm",
-      address: PEPE, tokenName: "PEPE",
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
+      address: PEPE,
+      tokenName: "PEPE",
       question: "Is PEPE safe?",
       rawText: "is PEPE safe?",
       createdAt: Date.now(),
@@ -39,8 +45,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "WHALE_ANALYSIS",
     req: {
       requestId: "smoke-whale-analysis",
-      userId: "samuel", channel: "webchat", chain: "evm",
-      address: PEPE, tokenName: "PEPE",
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
+      address: PEPE,
+      tokenName: "PEPE",
       question: "Who holds PEPE?",
       rawText: "who holds the most PEPE",
       createdAt: Date.now(),
@@ -52,8 +61,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "PRICE_ACTION",
     req: {
       requestId: "smoke-price-action",
-      userId: "samuel", channel: "webchat", chain: "evm",
-      address: PEPE, tokenName: "PEPE",
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
+      address: PEPE,
+      tokenName: "PEPE",
       question: "How is PEPE doing price-wise?",
       rawText: "how is PEPE doing",
       createdAt: Date.now(),
@@ -65,8 +77,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "TRENDING",
     req: {
       requestId: "smoke-trending",
-      userId: "samuel", channel: "webchat", chain: "evm",
-      address: null, tokenName: null,
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
+      address: null,
+      tokenName: null,
       question: "What's trending on base?",
       rawText: "what's trending on base",
       createdAt: Date.now(),
@@ -78,8 +93,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "MARKET_OVERVIEW",
     req: {
       requestId: "smoke-market-overview",
-      userId: "samuel", channel: "webchat", chain: null,
-      address: null, tokenName: null,
+      userId: "samuel",
+      channel: "webchat",
+      chain: null,
+      address: null,
+      tokenName: null,
       question: "What's the market doing?",
       rawText: "what's the market doing",
       createdAt: Date.now(),
@@ -91,8 +109,11 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "CATEGORY",
     req: {
       requestId: "smoke-category",
-      userId: "samuel", channel: "webchat", chain: "evm",
-      address: null, tokenName: null,
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
+      address: null,
+      tokenName: null,
       question: "Show me top memecoins on base",
       rawText: "show me top memecoins on base",
       createdAt: Date.now(),
@@ -104,7 +125,9 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
     label: "RESEARCH_WALLET",
     req: {
       requestId: "smoke-research-wallet",
-      userId: "samuel", channel: "webchat", chain: "evm",
+      userId: "samuel",
+      channel: "webchat",
+      chain: "evm",
       address: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", // vitalik.eth
       tokenName: null,
       question: "Who is this wallet and what have they been doing?",
@@ -141,7 +164,9 @@ bus.on("RESEARCH_RESULT", (result: ResearchResult) => {
     console.error(`[smoke] FAIL  ${label} — empty summary`);
     failed++;
   } else {
-    console.log(`[smoke] PASS  ${label} (subIntent=${result.subIntent ?? "—"}, score=${result.safetyScore ?? "—"})`);
+    console.log(
+      `[smoke] PASS  ${label} (subIntent=${result.subIntent ?? "—"}, score=${result.safetyScore ?? "—"})`,
+    );
     console.log(`       ${result.summary.slice(0, 120)}...`);
     passed++;
   }

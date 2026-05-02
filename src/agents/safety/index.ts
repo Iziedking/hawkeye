@@ -37,7 +37,12 @@ function setCache(address: string, data: Omit<SafetyReport, "intentId">): void {
 
 // ─── Testnet chains ───────────────────────────────────────────────────────────
 const TESTNET_CHAIN_IDS = new Set<string>([
-  "sepolia", "base-sepolia", "basesepolia", "goerli", "mumbai", "fuji",
+  "sepolia",
+  "base-sepolia",
+  "basesepolia",
+  "goerli",
+  "mumbai",
+  "fuji",
 ]);
 
 // ─── GoPlus retry delays ──────────────────────────────────────────────────────
@@ -518,11 +523,11 @@ async function checkAgeAndHolders(
 
 // Maps DexScreener chain IDs to their block explorer API. All use the same Etherscan API format.
 const ETHERSCAN_EXPLORER: Record<string, { url: string; keyEnv: string }> = {
-  ethereum: { url: "https://api.etherscan.io/api",    keyEnv: "ETHERSCAN_API_KEY" },
-  base:     { url: "https://api.basescan.org/api",    keyEnv: "BASESCAN_API_KEY" },
-  arbitrum: { url: "https://api.arbiscan.io/api",     keyEnv: "ARBISCAN_API_KEY" },
-  bsc:      { url: "https://api.bscscan.com/api",     keyEnv: "BSCSCAN_API_KEY" },
-  polygon:  { url: "https://api.polygonscan.com/api", keyEnv: "POLYGONSCAN_API_KEY" },
+  ethereum: { url: "https://api.etherscan.io/api", keyEnv: "ETHERSCAN_API_KEY" },
+  base: { url: "https://api.basescan.org/api", keyEnv: "BASESCAN_API_KEY" },
+  arbitrum: { url: "https://api.arbiscan.io/api", keyEnv: "ARBISCAN_API_KEY" },
+  bsc: { url: "https://api.bscscan.com/api", keyEnv: "BSCSCAN_API_KEY" },
+  polygon: { url: "https://api.polygonscan.com/api", keyEnv: "POLYGONSCAN_API_KEY" },
 };
 
 async function checkEtherscan(address: string, chainId: string): Promise<AgeAndHolders> {
@@ -670,23 +675,28 @@ async function scanToken(
   try {
     const dexResult = await searchPairs(address);
     const NON_EVM = new Set(["solana", "sui", "aptos", "tron"]);
-    const pair = chainClass === "solana"
-      ? dexResult.pairs.find((p) => p.chainId === "solana")
-      : dexResult.pairs
-          .filter((p) => !NON_EVM.has(p.chainId))
-          .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    const pair =
+      chainClass === "solana"
+        ? dexResult.pairs.find((p) => p.chainId === "solana")
+        : dexResult.pairs
+            .filter((p) => !NON_EVM.has(p.chainId))
+            .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
     if (pair?.txns?.h24) {
       const buys = pair.txns.h24.buys ?? 0;
       const sells = pair.txns.h24.sells ?? 0;
       if (buys > 100 && sells > 0 && buys / sells > 50) {
-        console.log(`[safety] HONEYPOT signal: ${buys} buys vs ${sells} sells (${(buys / sells).toFixed(0)}:1 ratio)`);
+        console.log(
+          `[safety] HONEYPOT signal: ${buys} buys vs ${sells} sells (${(buys / sells).toFixed(0)}:1 ratio)`,
+        );
         allFlags.push({ flag: "HONEYPOT", source: "dexscreener" });
       } else if (buys > 50 && sells === 0) {
         console.log(`[safety] HONEYPOT signal: ${buys} buys, zero sells`);
         allFlags.push({ flag: "HONEYPOT", source: "dexscreener" });
       }
     }
-  } catch { /* DexScreener check is best-effort */ }
+  } catch {
+    /* DexScreener check is best-effort */
+  }
 
   let jupiterBonus = false;
 

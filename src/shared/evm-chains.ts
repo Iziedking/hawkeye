@@ -318,14 +318,18 @@ async function fetchTokenDecimals(chainId: string, tokenAddress: string): Promis
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jsonrpc: "2.0", id: 1, method: "eth_call",
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
           params: [{ to: tokenAddress, data: "0x313ce567" }, "latest"],
         }),
         signal: AbortSignal.timeout(3_000),
       });
       const data = (await resp.json()) as { result?: string };
       if (data.result && data.result !== "0x") return Number(BigInt(data.result));
-    } catch { continue; }
+    } catch {
+      continue;
+    }
   }
   return 18;
 }
@@ -338,7 +342,9 @@ async function fetchTokenSymbol(chainId: string, tokenAddress: string): Promise<
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jsonrpc: "2.0", id: 1, method: "eth_call",
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
           params: [{ to: tokenAddress, data: "0x95d89b41" }, "latest"],
         }),
         signal: AbortSignal.timeout(3_000),
@@ -349,7 +355,9 @@ async function fetchTokenSymbol(chainId: string, tokenAddress: string): Promise<
         const bytes = Buffer.from(hex, "hex");
         return bytes.toString("utf8").replace(/\0/g, "").trim();
       }
-    } catch { continue; }
+    } catch {
+      continue;
+    }
   }
   return tokenAddress.slice(0, 8);
 }
@@ -399,7 +407,12 @@ export async function fetchTokenHoldings(
 
   const results = await Promise.allSettled(
     checks.map(async ({ chainId, token }) => {
-      const { balance, error } = await fetchTokenBalance(chainId, token.address, walletAddress, 5_000);
+      const { balance, error } = await fetchTokenBalance(
+        chainId,
+        token.address,
+        walletAddress,
+        5_000,
+      );
       if (error || balance === 0n) return null;
 
       let decimals = token.decimals;
@@ -407,7 +420,9 @@ export async function fetchTokenHoldings(
       if (decimals < 0) {
         [decimals, symbol] = await Promise.all([
           fetchTokenDecimals(chainId, token.address),
-          token.symbol === "???" ? fetchTokenSymbol(chainId, token.address) : Promise.resolve(token.symbol),
+          token.symbol === "???"
+            ? fetchTokenSymbol(chainId, token.address)
+            : Promise.resolve(token.symbol),
         ]);
       }
 

@@ -23,7 +23,14 @@ import type {
 
 const POLL_INTERVAL_MS = 5_000;
 const MAX_CONSECUTIVE_ERRORS = 5;
-const TESTNET_CHAIN_IDS = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+const TESTNET_CHAIN_IDS = new Set([
+  "sepolia",
+  "goerli",
+  "mumbai",
+  "fuji",
+  "base-sepolia",
+  "basesepolia",
+]);
 
 // State
 
@@ -127,7 +134,9 @@ function spawnPriceWatcher(position: Position): void {
   }
 
   if (TESTNET_CHAIN_IDS.has(chainId)) {
-    console.log(`[Monitor] Skipping watcher for testnet position — positionId=${positionId} chainId=${chainId}`);
+    console.log(
+      `[Monitor] Skipping watcher for testnet position — positionId=${positionId} chainId=${chainId}`,
+    );
     return;
   }
 
@@ -151,7 +160,9 @@ function spawnPriceWatcher(position: Position): void {
     if (priceUsd === null) {
       errorCount++;
       if (errorCount >= MAX_CONSECUTIVE_ERRORS) {
-        console.warn(`[Monitor] Too many price fetch failures — removing watcher positionId=${positionId}`);
+        console.warn(
+          `[Monitor] Too many price fetch failures — removing watcher positionId=${positionId}`,
+        );
         destroyWatcher(positionId);
         return;
       }

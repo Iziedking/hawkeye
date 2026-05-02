@@ -48,15 +48,15 @@ A bare contract address skips the LLM entirely and hits the bus in under 1ms.
 
 ## Agents
 
-| Agent | Responsibility | Data sources |
-|---|---|---|
-| **Safety** | Token risk scoring, honeypot detection, rug pull analysis | GoPlus, Honeypot.is, RugCheck |
-| **Quote** | Price discovery, liquidity depth, routing | DexScreener, Uniswap Trading API |
-| **Strategy** | Risk/reward merge, trading mode enforcement, trade decisions | Safety + Quote results |
-| **Execution** | On-chain swap submission with MEV protection | Uniswap Trading API, KeeperHub, Privy wallets |
-| **Monitor** | Position tracking, exit triggers, trailing stops | DexScreener price polling |
-| **Research** | Token analysis, trending discovery, alpha scanning | DexScreener, DeFiLlama, Dune Analytics |
-| **Copy Trade** | Wallet watching, trade mirroring | On-chain tx monitoring |
+| Agent          | Responsibility                                               | Data sources                                  |
+| -------------- | ------------------------------------------------------------ | --------------------------------------------- |
+| **Safety**     | Token risk scoring, honeypot detection, rug pull analysis    | GoPlus, Honeypot.is, RugCheck                 |
+| **Quote**      | Price discovery, liquidity depth, routing                    | DexScreener, Uniswap Trading API              |
+| **Strategy**   | Risk/reward merge, trading mode enforcement, trade decisions | Safety + Quote results                        |
+| **Execution**  | On-chain swap submission with MEV protection                 | Uniswap Trading API, KeeperHub, Privy wallets |
+| **Monitor**    | Position tracking, exit triggers, trailing stops             | DexScreener price polling                     |
+| **Research**   | Token analysis, trending discovery, alpha scanning           | DexScreener, DeFiLlama, Dune Analytics        |
+| **Copy Trade** | Wallet watching, trade mirroring                             | On-chain tx monitoring                        |
 
 All agents talk exclusively through the event bus. No agent imports another directly.
 
@@ -125,57 +125,57 @@ npm start                        # starts Telegram bot
 
 ### Environment variables
 
-| Variable | Purpose | Required |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Telegram bot via BotFather | Yes |
-| `HAWKEYE_EVM_PRIVATE_KEY` | 0G Compute + Storage + Chain | Yes |
-| `OPENROUTER_API_KEY` | LLM fallback (any model) | Recommended |
-| `PRIVY_APP_ID` / `PRIVY_APP_SECRET` | Per-user agent wallets | Recommended |
-| `UNISWAP_API_KEY` | Swap routing | Optional |
-| `GOPLUS_API_KEY` | Token safety scanning | Optional |
-| `KH_API_KEY` | KeeperHub MEV protection | Optional |
-| `DUNE_API_KEY` | Smart money flow data | Optional |
+| Variable                            | Purpose                      | Required    |
+| ----------------------------------- | ---------------------------- | ----------- |
+| `TELEGRAM_BOT_TOKEN`                | Telegram bot via BotFather   | Yes         |
+| `HAWKEYE_EVM_PRIVATE_KEY`           | 0G Compute + Storage + Chain | Yes         |
+| `OPENROUTER_API_KEY`                | LLM fallback (any model)     | Recommended |
+| `PRIVY_APP_ID` / `PRIVY_APP_SECRET` | Per-user agent wallets       | Recommended |
+| `UNISWAP_API_KEY`                   | Swap routing                 | Optional    |
+| `GOPLUS_API_KEY`                    | Token safety scanning        | Optional    |
+| `KH_API_KEY`                        | KeeperHub MEV protection     | Optional    |
+| `DUNE_API_KEY`                      | Smart money flow data        | Optional    |
 
 See `.env.example` for the full list with descriptions.
 
 ## Commands
 
-| Script | What it does |
-|---|---|
-| `npm start` | Run the bot |
-| `npm run typecheck` | Typecheck all modules |
-| `npm test` | Run smoke tests |
-| `npm run lint` | ESLint |
-| `npm run format:check` | Prettier check |
+| Script                 | What it does          |
+| ---------------------- | --------------------- |
+| `npm start`            | Run the bot           |
+| `npm run typecheck`    | Typecheck all modules |
+| `npm test`             | Run smoke tests       |
+| `npm run lint`         | ESLint                |
+| `npm run format:check` | Prettier check        |
 
 ## Telegram commands
 
-| Command | What it does |
-|---|---|
-| `/start` | Welcome message and setup |
-| `/wallet` | Create or view agent wallet |
+| Command    | What it does                          |
+| ---------- | ------------------------------------- |
+| `/start`   | Welcome message and setup             |
+| `/wallet`  | Create or view agent wallet           |
 | `/balance` | Check native balances across 7 chains |
-| `/status` | System health and agent status |
-| `/help` | Full command guide |
+| `/status`  | System health and agent status        |
+| `/help`    | Full command guide                    |
 
 Paste any contract address to trigger an instant trade flow. Natural language queries like "What's trending on Ethereum?" are routed through the LLM to the appropriate agent.
 
 ## Sponsor integrations
 
-| Sponsor | Usage | Integration |
-|---|---|---|
-| **0G** | Compute (LLM), Storage (audit trail), Chain (registry) | Core infrastructure, every message |
-| **Gensyn AXL** | P2P bus transport between agent nodes | Event bus bridge, MCP server |
-| **KeeperHub** | MEV-protected EVM transaction submission | Execution pipeline with circuit breaker |
-| **Uniswap** | DEX swaps via Trading API (3-step flow) | check_approval, quote, swap |
-| **Privy** | Per-user agent wallets and signing | Wallet provisioning in gateway |
+| Sponsor        | Usage                                                  | Integration                             |
+| -------------- | ------------------------------------------------------ | --------------------------------------- |
+| **0G**         | Compute (LLM), Storage (audit trail), Chain (registry) | Core infrastructure, every message      |
+| **Gensyn AXL** | P2P bus transport between agent nodes                  | Event bus bridge, MCP server            |
+| **KeeperHub**  | MEV-protected EVM transaction submission               | Execution pipeline with circuit breaker |
+| **Uniswap**    | DEX swaps via Trading API (3-step flow)                | check_approval, quote, swap             |
+| **Privy**      | Per-user agent wallets and signing                     | Wallet provisioning in gateway          |
 
 ## On-chain deployments
 
-| Network | Contract | Chain ID |
-|---|---|---|
-| 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602 |
-| 0G Mainnet | Pending | 16661 |
+| Network            | Contract                                     | Chain ID |
+| ------------------ | -------------------------------------------- | -------- |
+| 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602    |
+| 0G Mainnet         | Pending                                      | 16661    |
 
 ## Contributing
 

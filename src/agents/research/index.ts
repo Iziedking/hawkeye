@@ -53,15 +53,27 @@ function formatCompact(n: number): string {
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 const CHAIN_KEYWORDS: Record<string, string> = {
-  ethereum: "ethereum", eth: "ethereum",
-  base: "base", arbitrum: "arbitrum", arb: "arbitrum",
-  optimism: "optimism", op: "optimism",
-  polygon: "polygon", matic: "polygon",
-  bsc: "bsc", bnb: "bsc", binance: "bsc",
-  avalanche: "avalanche", avax: "avalanche",
-  blast: "blast", scroll: "scroll", linea: "linea",
-  mantle: "mantle", zksync: "zksync",
-  solana: "solana", sol: "solana",
+  ethereum: "ethereum",
+  eth: "ethereum",
+  base: "base",
+  arbitrum: "arbitrum",
+  arb: "arbitrum",
+  optimism: "optimism",
+  op: "optimism",
+  polygon: "polygon",
+  matic: "polygon",
+  bsc: "bsc",
+  bnb: "bsc",
+  binance: "bsc",
+  avalanche: "avalanche",
+  avax: "avalanche",
+  blast: "blast",
+  scroll: "scroll",
+  linea: "linea",
+  mantle: "mantle",
+  zksync: "zksync",
+  solana: "solana",
+  sol: "solana",
 };
 
 function detectChainFromText(text: string): string | null {
@@ -93,11 +105,48 @@ const COINGECKO_CHAIN_CATEGORIES: Record<string, string[]> = {
 };
 
 const TRENDING_EXCLUDE_SYMBOLS = new Set([
-  "USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD",
-  "USDE", "USD1", "USDB", "USDBC", "SUSDE", "EURC", "RUSD", "PYUSD",
-  "WETH", "WBNB", "WBTC", "WMATIC", "WAVAX", "WSOL", "WFTM", "WCRO",
-  "ETH", "BTC", "BNB", "SOL", "MATIC", "AVAX", "FTM", "DOT", "ADA",
-  "XRP", "LINK", "UNI", "AAVE", "CBBTC", "STETH", "RETH", "CBETH",
+  "USDC",
+  "USDT",
+  "DAI",
+  "BUSD",
+  "TUSD",
+  "USDP",
+  "GUSD",
+  "FRAX",
+  "LUSD",
+  "USDE",
+  "USD1",
+  "USDB",
+  "USDBC",
+  "SUSDE",
+  "EURC",
+  "RUSD",
+  "PYUSD",
+  "WETH",
+  "WBNB",
+  "WBTC",
+  "WMATIC",
+  "WAVAX",
+  "WSOL",
+  "WFTM",
+  "WCRO",
+  "ETH",
+  "BTC",
+  "BNB",
+  "SOL",
+  "MATIC",
+  "AVAX",
+  "FTM",
+  "DOT",
+  "ADA",
+  "XRP",
+  "LINK",
+  "UNI",
+  "AAVE",
+  "CBBTC",
+  "STETH",
+  "RETH",
+  "CBETH",
 ]);
 
 type CoinGeckoMarketItem = {
@@ -111,7 +160,10 @@ type CoinGeckoMarketItem = {
   fully_diluted_valuation: number | null;
 };
 
-async function fetchCoinGeckoTrending(chain: string, limit: number): Promise<CoinGeckoMarketItem[]> {
+async function fetchCoinGeckoTrending(
+  chain: string,
+  limit: number,
+): Promise<CoinGeckoMarketItem[]> {
   const categories = COINGECKO_CHAIN_CATEGORIES[chain];
   if (!categories) return [];
   const results: CoinGeckoMarketItem[] = [];
@@ -122,7 +174,9 @@ async function fetchCoinGeckoTrending(chain: string, limit: number): Promise<Coi
       if (!resp.ok) continue;
       const data = (await resp.json()) as CoinGeckoMarketItem[];
       if (Array.isArray(data)) results.push(...data);
-    } catch { /* rate limited or timeout */ }
+    } catch {
+      /* rate limited or timeout */
+    }
   }
   const seen = new Set<string>();
   return results
@@ -324,14 +378,14 @@ function buildMarketFlags(
 }
 
 const TOOL_DEFAULTS: Record<ResearchSubIntent, string[]> = {
-  TOKEN_LOOKUP:     ["dexscreener", "goplus", "coingecko", "etherscan"],
-  WHALE_ANALYSIS:   ["arkham", "etherscan", "nansen", "dexscreener", "dune"],
-  TRENDING:         ["dexscreener", "coingecko", "arkham_trending"],
-  MARKET_OVERVIEW:  ["coingecko", "feargreed"],
-  CATEGORY:         ["coingecko", "dexscreener"],
-  SAFETY_CHECK:     ["goplus", "honeypot", "etherscan", "dexscreener"],
-  PRICE_ACTION:     ["dexscreener", "coingecko", "geckoterminal"],
-  RESEARCH_WALLET:  ["arkham"],
+  TOKEN_LOOKUP: ["dexscreener", "goplus", "coingecko", "etherscan"],
+  WHALE_ANALYSIS: ["arkham", "etherscan", "nansen", "dexscreener", "dune"],
+  TRENDING: ["dexscreener", "coingecko", "arkham_trending"],
+  MARKET_OVERVIEW: ["coingecko", "feargreed"],
+  CATEGORY: ["coingecko", "dexscreener"],
+  SAFETY_CHECK: ["goplus", "honeypot", "etherscan", "dexscreener"],
+  PRICE_ACTION: ["dexscreener", "coingecko", "geckoterminal"],
+  RESEARCH_WALLET: ["arkham"],
 };
 
 let goplusToken: { token: string; expiresAt: number } | null = null;
@@ -1461,7 +1515,13 @@ type DefiLlamaData = {
 };
 
 async function _fetchDefiLlama(tokenName: string, ticker: string): Promise<DefiLlamaData | null> {
-  const empty: DefiLlamaData = { tvl: null, tvlChange1d: null, mcapTvlRatio: null, category: null, chains: [] };
+  const empty: DefiLlamaData = {
+    tvl: null,
+    tvlChange1d: null,
+    mcapTvlRatio: null,
+    category: null,
+    chains: [],
+  };
   try {
     const resp = await fetch("https://api.llama.fi/protocols", {
       signal: AbortSignal.timeout(8_000),
@@ -1524,9 +1584,7 @@ async function fetchDefiLlamaTrending(chain?: string, limit = 10): Promise<DefiL
     );
     if (chain) {
       const cl = chain.toLowerCase();
-      filtered = filtered.filter((p) =>
-        p.chains?.some((c) => c.toLowerCase() === cl),
-      );
+      filtered = filtered.filter((p) => p.chains?.some((c) => c.toLowerCase() === cl));
     }
     filtered.sort((a, b) => (b.change_1d ?? 0) - (a.change_1d ?? 0));
     return filtered.slice(0, limit).map((p) => ({
@@ -1555,16 +1613,15 @@ async function fetchDuneSmartMoney(chain?: string): Promise<DuneSmartMoneyFlow[]
   // Query 3521429 = "Smart Money Token Inflows Last 24h"
   const queryId = chain === "solana" ? "3521430" : "3521429";
   try {
-    const resp = await fetch(
-      `https://api.dune.com/api/v1/query/${queryId}/results?limit=10`,
-      {
-        headers: { "X-Dune-Api-Key": key },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
+    const resp = await fetch(`https://api.dune.com/api/v1/query/${queryId}/results?limit=10`, {
+      headers: { "X-Dune-Api-Key": key },
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!resp.ok) return [];
     const body = (await resp.json()) as {
-      result?: { rows?: Array<{ token_symbol?: string; net_flow_usd?: number; tx_count?: number }> };
+      result?: {
+        rows?: Array<{ token_symbol?: string; net_flow_usd?: number; tx_count?: number }>;
+      };
     };
     return (body.result?.rows ?? []).map((r) => ({
       token: r.token_symbol ?? "?",
@@ -1710,7 +1767,9 @@ function buildResearchPrompt(d: ResearchData): string {
     lines.push(`\nTop holders (Arkham Intelligence):`);
     for (const h of d.arkhamHolders.slice(0, 5)) {
       const label = h.entity ?? h.address.slice(0, 10) + "...";
-      lines.push(`  ${label}: ${h.percentage.toFixed(1)}% ($${formatCompact(h.usd).replace("$", "")})`);
+      lines.push(
+        `  ${label}: ${h.percentage.toFixed(1)}% ($${formatCompact(h.usd).replace("$", "")})`,
+      );
     }
     const top5Pct = d.arkhamHolders.slice(0, 5).reduce((s, h) => s + h.percentage, 0);
     if (top5Pct > 40) lines.push(`  ⚠ Top-5 holders control ${top5Pct.toFixed(0)}% of supply`);
@@ -1721,21 +1780,29 @@ function buildResearchPrompt(d: ResearchData): string {
     for (const f of d.arkhamFlows.slice(0, 5)) {
       const label = f.entityName ?? f.address.slice(0, 10) + "...";
       const dir = f.netUSD >= 0 ? "net inflow" : "net outflow";
-      lines.push(`  ${label} (${f.entityType ?? "unknown"}): ${dir} $${formatCompact(Math.abs(f.netUSD)).replace("$", "")}`);
+      lines.push(
+        `  ${label} (${f.entityType ?? "unknown"}): ${dir} $${formatCompact(Math.abs(f.netUSD)).replace("$", "")}`,
+      );
     }
     const totalNet = d.arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
-    lines.push(`  Net flow: ${totalNet >= 0 ? "+" : ""}$${formatCompact(Math.abs(totalNet)).replace("$", "")}`);
+    lines.push(
+      `  Net flow: ${totalNet >= 0 ? "+" : ""}$${formatCompact(Math.abs(totalNet)).replace("$", "")}`,
+    );
   }
 
   if (d.nansenFlows) {
     lines.push(`\nNansen smart money flows:`);
     if (d.nansenFlows.smartMoney) {
       const net = d.nansenFlows.smartMoney.inflow - d.nansenFlows.smartMoney.outflow;
-      lines.push(`  Smart Money: inflow $${formatCompact(d.nansenFlows.smartMoney.inflow)} / outflow $${formatCompact(d.nansenFlows.smartMoney.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`);
+      lines.push(
+        `  Smart Money: inflow $${formatCompact(d.nansenFlows.smartMoney.inflow)} / outflow $${formatCompact(d.nansenFlows.smartMoney.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`,
+      );
     }
     if (d.nansenFlows.whales) {
       const net = d.nansenFlows.whales.inflow - d.nansenFlows.whales.outflow;
-      lines.push(`  Whales: inflow $${formatCompact(d.nansenFlows.whales.inflow)} / outflow $${formatCompact(d.nansenFlows.whales.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`);
+      lines.push(
+        `  Whales: inflow $${formatCompact(d.nansenFlows.whales.inflow)} / outflow $${formatCompact(d.nansenFlows.whales.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`,
+      );
     }
     if (d.nansenFlows.label) lines.push(`  Nansen label: ${d.nansenFlows.label}`);
   }
@@ -1744,19 +1811,29 @@ function buildResearchPrompt(d: ResearchData): string {
     lines.push(`\nDune smart money flows (top tokens by net flow):`);
     for (const f of top) {
       const dir = f.netFlow >= 0 ? "inflow" : "outflow";
-      lines.push(`  ${f.token}: net ${dir} $${formatCompact(Math.abs(f.netFlow))} (${f.txCount} txs)`);
+      lines.push(
+        `  ${f.token}: net ${dir} $${formatCompact(Math.abs(f.netFlow))} (${f.txCount} txs)`,
+      );
     }
   }
 
   const SUBINTENT_FOCUS: Record<ResearchSubIntent, string> = {
-    TOKEN_LOOKUP:     "Give a full breakdown: price, liquidity, safety score, holder concentration, smart money signals. 4-5 sentences. End with a bullish/bearish/neutral call.",
-    WHALE_ANALYSIS:   "Focus on who holds this token, smart money direction, and concentration risk. 3-4 sentences. Name specific entities if Arkham data is present.",
-    TRENDING:         "List the top tokens with their key stats. 1-2 lines per token. Include price, volume, and a one-word signal.",
-    MARKET_OVERVIEW:  "Cover BTC/ETH prices, 24h changes, fear & greed index, and top movers. 3-4 sentences.",
-    CATEGORY:         "List top tokens in this category sorted by 24h volume. 1-2 lines each with price and volume.",
-    SAFETY_CHECK:     "Lead with the safety score and each flag. Explain the specific risk each flag represents. 3-4 sentences. End with a clear safe/caution/avoid verdict.",
-    PRICE_ACTION:     "Cover recent price movement, volume trend, momentum direction, and support/resistance hints from candle data if available. 3-4 sentences. End with a momentum call.",
-    RESEARCH_WALLET:  "Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences.",
+    TOKEN_LOOKUP:
+      "Give a full breakdown: price, liquidity, safety score, holder concentration, smart money signals. 4-5 sentences. End with a bullish/bearish/neutral call.",
+    WHALE_ANALYSIS:
+      "Focus on who holds this token, smart money direction, and concentration risk. 3-4 sentences. Name specific entities if Arkham data is present.",
+    TRENDING:
+      "List the top tokens with their key stats. 1-2 lines per token. Include price, volume, and a one-word signal.",
+    MARKET_OVERVIEW:
+      "Cover BTC/ETH prices, 24h changes, fear & greed index, and top movers. 3-4 sentences.",
+    CATEGORY:
+      "List top tokens in this category sorted by 24h volume. 1-2 lines each with price and volume.",
+    SAFETY_CHECK:
+      "Lead with the safety score and each flag. Explain the specific risk each flag represents. 3-4 sentences. End with a clear safe/caution/avoid verdict.",
+    PRICE_ACTION:
+      "Cover recent price movement, volume trend, momentum direction, and support/resistance hints from candle data if available. 3-4 sentences. End with a momentum call.",
+    RESEARCH_WALLET:
+      "Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences.",
   };
 
   lines.push(`\nUser question: ${d.question}`);
@@ -1798,19 +1875,29 @@ function buildTemplateSummary(d: ResearchData): string {
   } else if (d.opportunityScore < 40) {
     parts.push("High risk. Proceed with caution.");
   }
-  return parts.join(" ") || "No notable signals found. Paste the contract address for a deeper look.";
+  return (
+    parts.join(" ") || "No notable signals found. Paste the contract address for a deeper look."
+  );
 }
 
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
-async function fetchCoinGeckoSearchTrending(): Promise<Array<{ id: string; name: string; symbol: string; market_cap_rank: number | null }>> {
+async function fetchCoinGeckoSearchTrending(): Promise<
+  Array<{ id: string; name: string; symbol: string; market_cap_rank: number | null }>
+> {
   try {
     const resp = await fetch("https://api.coingecko.com/api/v3/search/trending", {
       signal: AbortSignal.timeout(8_000),
     });
     if (!resp.ok) return [];
-    const data = (await resp.json()) as { coins?: Array<{ item: { id: string; name: string; symbol: string; market_cap_rank: number | null } }> };
+    const data = (await resp.json()) as {
+      coins?: Array<{
+        item: { id: string; name: string; symbol: string; market_cap_rank: number | null };
+      }>;
+    };
     return (data.coins ?? []).map((c) => c.item);
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 type TrendingCandidate = {
@@ -1828,12 +1915,16 @@ type TrendingCandidate = {
 
 async function handleTrendingRequest(req: ResearchRequest, force = false): Promise<boolean> {
   const q = (req.question ?? req.rawText ?? "").toLowerCase();
-  const isTrending = force || /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
+  const isTrending =
+    force || /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
   if (!isTrending) return false;
 
   const filterChains = detectChainsFromText(req.rawText ?? "");
   const chainLabel = filterChains.length > 0 ? filterChains.join(" + ") : "all chains";
-  log.agent("research", `trending query: chains=[${filterChains.join(",") || "all"}] text="${q.slice(0, 60)}"`);
+  log.agent(
+    "research",
+    `trending query: chains=[${filterChains.join(",") || "all"}] text="${q.slice(0, 60)}"`,
+  );
 
   try {
     // Source 1: DexScreener profiles + boosts (real DEX activity)
@@ -1850,7 +1941,8 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
     // Process DexScreener profiles + boosts
     const dexTokens = [...profiles, ...boosts];
     for (const t of dexTokens) {
-      const addr = (t as { tokenAddress?: string }).tokenAddress ?? (t as { address?: string }).address ?? "";
+      const addr =
+        (t as { tokenAddress?: string }).tokenAddress ?? (t as { address?: string }).address ?? "";
       const cid = (t as { chainId?: string }).chainId ?? "";
       if (!addr || !cid) continue;
       const key = `${cid}:${addr.toLowerCase()}`;
@@ -1888,7 +1980,9 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
             })
             .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
           return filtered[0] ?? null;
-        } catch { return null; }
+        } catch {
+          return null;
+        }
       }),
     );
 
@@ -1931,7 +2025,9 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
               c.priceChange24h = match.priceChange?.h24 ?? null;
               c.marketCap = match.marketCap ?? null;
             }
-          } catch { /* skip */ }
+          } catch {
+            /* skip */
+          }
         }),
       );
     }
@@ -1963,7 +2059,7 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
     try {
       const scans = await Promise.all(
         filtered.map(async (d) => {
-          const cc = d.chainId === "solana" ? "solana" as const : "evm" as const;
+          const cc = d.chainId === "solana" ? ("solana" as const) : ("evm" as const);
           try {
             const result = await Promise.race([
               runSecurityScan(d.address, cc, d.chainId),
@@ -1978,7 +2074,9 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
         }),
       );
       for (const s of scans) safetyMap.set(s.address, s);
-    } catch { /* safety scan failed */ }
+    } catch {
+      /* safety scan failed */
+    }
 
     // Format output
     const lines: string[] = [];
@@ -1990,9 +2088,10 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
       const price = d.priceUsd ? `$${parseFloat(d.priceUsd).toPrecision(4)}` : "n/a";
       const vol = d.volume24h > 0 ? formatCompact(d.volume24h) : "";
       const liq = d.liquidity > 0 ? formatCompact(d.liquidity) : "";
-      const h24 = d.priceChange24h != null
-        ? `${d.priceChange24h > 0 ? "+" : ""}${d.priceChange24h.toFixed(1)}%`
-        : "";
+      const h24 =
+        d.priceChange24h != null
+          ? `${d.priceChange24h > 0 ? "+" : ""}${d.priceChange24h.toFixed(1)}%`
+          : "";
       const mc = d.marketCap ? formatCompact(d.marketCap) : "";
 
       const safety = safetyMap.get(d.address);
@@ -2005,8 +2104,16 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
       }
 
       lines.push(`${rank}. ${sym} (${d.name})${safetyLabel}`);
-      const details = [d.chainId, price, liq ? `liq ${liq}` : "", h24 ? `24h ${h24}` : "", vol ? `vol ${vol}` : "", mc ? `mc ${mc}` : ""]
-        .filter(Boolean).join(" | ");
+      const details = [
+        d.chainId,
+        price,
+        liq ? `liq ${liq}` : "",
+        h24 ? `24h ${h24}` : "",
+        vol ? `vol ${vol}` : "",
+        mc ? `mc ${mc}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
       lines.push(`   ${details}`);
       lines.push(`   ${d.address}`);
     }
@@ -2055,7 +2162,10 @@ async function handleMarketOverviewRequest(req: ResearchRequest, llm?: LlmClient
 
   const lines: string[] = [`Fear & Greed Index: ${fg}/100`];
   for (const coin of topCoins.slice(0, 5)) {
-    const change = coin.price_change_percentage_24h != null ? ` (${coin.price_change_percentage_24h.toFixed(1)}% 24h)` : "";
+    const change =
+      coin.price_change_percentage_24h != null
+        ? ` (${coin.price_change_percentage_24h.toFixed(1)}% 24h)`
+        : "";
     const price = coin.current_price != null ? ` $${coin.current_price.toLocaleString()}` : "";
     lines.push(`${coin.symbol?.toUpperCase() ?? coin.name}:${price}${change}`);
   }
@@ -2080,7 +2190,11 @@ async function handleMarketOverviewRequest(req: ResearchRequest, llm?: LlmClient
   } satisfies ResearchResult);
 }
 
-async function handleWalletRequest(req: ResearchRequest, arkham?: ArkhamClient, llm?: LlmClient): Promise<boolean> {
+async function handleWalletRequest(
+  req: ResearchRequest,
+  arkham?: ArkhamClient,
+  llm?: LlmClient,
+): Promise<boolean> {
   if (!req.address || !arkham) return false;
   log.agent("research", `wallet research: ${req.address.slice(0, 10)}...`);
 
@@ -2088,24 +2202,26 @@ async function handleWalletRequest(req: ResearchRequest, arkham?: ArkhamClient, 
     arkham.getAddressIntel(req.address),
     arkham.getTokenFlows("ethereum", req.address, "24h", 10),
   ]);
-  const intel = intelS.status === "fulfilled" ? intelS.value : { entity: null, entityType: null, labels: [] };
+  const intel =
+    intelS.status === "fulfilled" ? intelS.value : { entity: null, entityType: null, labels: [] };
   const flows = flowsS.status === "fulfilled" ? flowsS.value : [];
 
   const lines: string[] = [];
-  if (intel.entity) lines.push(`Entity: ${intel.entity}${intel.entityType ? ` (${intel.entityType})` : ""}`);
+  if (intel.entity)
+    lines.push(`Entity: ${intel.entity}${intel.entityType ? ` (${intel.entityType})` : ""}`);
   if (intel.labels.length > 0) lines.push(`Labels: ${intel.labels.join(", ")}`);
   if (flows.length > 0) {
     lines.push(`\nRecent 24h flows:`);
     for (const f of flows.slice(0, 5)) {
       const dir = f.netUSD >= 0 ? "net inflow" : "net outflow";
-      lines.push(`  ${f.entityName ?? f.address.slice(0, 8)}: ${dir} $${formatCompact(Math.abs(f.netUSD))}`);
+      lines.push(
+        `  ${f.entityName ?? f.address.slice(0, 8)}: ${dir} $${formatCompact(Math.abs(f.netUSD))}`,
+      );
     }
   }
 
   const contextStr = lines.join("\n") || "No Arkham data found for this address.";
-  const prompt = `Wallet: ${req.address}\n${contextStr}\n\nQuestion: ${req.question ?? "Who is this wallet and what have they been doing?"}\n\nFocus: ${
-    "Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences."
-  }\n\nONLY use numbers and facts from the provided data.`;
+  const prompt = `Wallet: ${req.address}\n${contextStr}\n\nQuestion: ${req.question ?? "Who is this wallet and what have they been doing?"}\n\nFocus: ${"Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences."}\n\nONLY use numbers and facts from the provided data.`;
 
   let summary = await callLLM(prompt, llm);
   if (!summary) summary = contextStr || "No wallet data available.";
@@ -2145,11 +2261,15 @@ async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
       for (const c of coins.slice(0, 10)) {
         rank++;
         const price = c.current_price != null ? `$${c.current_price.toPrecision(4)}` : "n/a";
-        const vol = c.total_volume != null && c.total_volume > 0 ? formatCompact(c.total_volume) : "";
-        const h24 = c.price_change_percentage_24h != null
-          ? `${c.price_change_percentage_24h > 0 ? "+" : ""}${c.price_change_percentage_24h.toFixed(1)}%`
-          : "";
-        lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24 ? ` (${h24})` : ""}${vol ? ` | vol ${vol}` : ""}`);
+        const vol =
+          c.total_volume != null && c.total_volume > 0 ? formatCompact(c.total_volume) : "";
+        const h24 =
+          c.price_change_percentage_24h != null
+            ? `${c.price_change_percentage_24h > 0 ? "+" : ""}${c.price_change_percentage_24h.toFixed(1)}%`
+            : "";
+        lines.push(
+          `${rank}. ${c.symbol.toUpperCase()} — ${price}${h24 ? ` (${h24})` : ""}${vol ? ` | vol ${vol}` : ""}`,
+        );
       }
       bus.emit("RESEARCH_RESULT", {
         requestId: req.requestId,
@@ -2191,7 +2311,9 @@ async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
   // searching common meme keywords directly on DexScreener filtered to the chain.
   if (candidates.length === 0) {
     for (const term of ["meme", "pepe", "dog", "inu", "cat", "shib"]) {
-      const { pairs } = await searchPairs(term, { limit: 10 }).catch(() => ({ pairs: [] as DexPair[] }));
+      const { pairs } = await searchPairs(term, { limit: 10 }).catch(() => ({
+        pairs: [] as DexPair[],
+      }));
       for (const p of pairs) {
         if (p.chainId !== chain || (p.volume?.h24 ?? 0) === 0) continue;
         const addr = p.baseToken?.address ?? "";
@@ -2221,24 +2343,29 @@ async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
   }
 
   // Enrich candidates with pair data
-  const enriched = (await Promise.all(
-    candidates.slice(0, 15).map(async (c) => {
-      try {
-        const { pairs } = await searchPairs(c.address, { limit: 3 });
-        const best = pairs
-          .filter((p) => p.chainId === chain && (p.volume?.h24 ?? 0) > 0)
-          .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0))[0];
-        if (!best?.baseToken?.address) return null;
-        return {
-          symbol: best.baseToken.symbol ?? "?",
-          name: best.baseToken.name ?? "?",
-          price: parseFloat(best.priceUsd ?? "0") || null,
-          volume24h: best.volume?.h24 ?? 0,
-          priceChange24h: best.priceChange?.h24 ?? null,
-        };
-      } catch { return null; }
-    }),
-  )).filter((x): x is NonNullable<typeof x> => x !== null)
+  const enriched = (
+    await Promise.all(
+      candidates.slice(0, 15).map(async (c) => {
+        try {
+          const { pairs } = await searchPairs(c.address, { limit: 3 });
+          const best = pairs
+            .filter((p) => p.chainId === chain && (p.volume?.h24 ?? 0) > 0)
+            .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0))[0];
+          if (!best?.baseToken?.address) return null;
+          return {
+            symbol: best.baseToken.symbol ?? "?",
+            name: best.baseToken.name ?? "?",
+            price: parseFloat(best.priceUsd ?? "0") || null,
+            volume24h: best.volume?.h24 ?? 0,
+            priceChange24h: best.priceChange?.h24 ?? null,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    )
+  )
+    .filter((x): x is NonNullable<typeof x> => x !== null)
     .sort((a, b) => b.volume24h - a.volume24h)
     .slice(0, 10);
 
@@ -2263,9 +2390,10 @@ async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
   for (const c of enriched) {
     rank++;
     const price = c.price != null ? `$${c.price.toPrecision(4)}` : "n/a";
-    const h24 = c.priceChange24h != null
-      ? ` (${c.priceChange24h > 0 ? "+" : ""}${c.priceChange24h.toFixed(1)}%)`
-      : "";
+    const h24 =
+      c.priceChange24h != null
+        ? ` (${c.priceChange24h > 0 ? "+" : ""}${c.priceChange24h.toFixed(1)}%)`
+        : "";
     const vol = c.volume24h > 0 ? ` | vol ${formatCompact(c.volume24h)}` : "";
     lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24}${vol}`);
   }
@@ -2285,7 +2413,12 @@ async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
   return true;
 }
 
-async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkham?: ArkhamClient, nansen?: NansenClient): Promise<void> {
+async function handleResearchRequest(
+  req: ResearchRequest,
+  llm?: LlmClient,
+  arkham?: ArkhamClient,
+  nansen?: NansenClient,
+): Promise<void> {
   const subIntent: ResearchSubIntent = req.subIntent ?? "TOKEN_LOOKUP";
   log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"} [${subIntent}]`);
 
@@ -2334,7 +2467,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
       requestId: req.requestId,
       address: "unknown",
       chain: req.chain ?? "evm",
-      summary: "I need a token address or name to look that up. Try asking about a specific token, or say 'what's trending' to see current movers.",
+      summary:
+        "I need a token address or name to look that up. Try asking about a specific token, or say 'what's trending' to see current movers.",
       safetyScore: null,
       priceUsd: null,
       liquidityUsd: null,
@@ -2346,7 +2480,9 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
 
   let address = req.address;
   const hintedChain = detectChainFromText(req.rawText ?? "");
-  let resolvedChainId: DexScreenerChain = (hintedChain && isValidChain(hintedChain) ? hintedChain : "ethereum") as DexScreenerChain;
+  let resolvedChainId: DexScreenerChain = (
+    hintedChain && isValidChain(hintedChain) ? hintedChain : "ethereum"
+  ) as DexScreenerChain;
 
   if (!address && req.tokenName) {
     const { pairs } = await searchPairs(req.tokenName, { limit: 5 }).catch(() => ({
@@ -2373,7 +2509,14 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
 
   // If no pairs found on default chain, try other popular chains
   if (pairs.length === 0 && chainClass === "evm" && resolvedChainId === "ethereum") {
-    const tryChains: DexScreenerChain[] = ["base", "arbitrum", "bsc", "polygon", "optimism", "avalanche"];
+    const tryChains: DexScreenerChain[] = [
+      "base",
+      "arbitrum",
+      "bsc",
+      "polygon",
+      "optimism",
+      "avalanche",
+    ];
     const multiResults = await Promise.allSettled(
       tryChains.map((c) => getPairsByToken(c, address)),
     );
@@ -2401,33 +2544,46 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
       }
     : null;
 
-  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS, nansenS, duneS] = await Promise.allSettled([
-    toolSet.has("goplus") || toolSet.has("honeypot")
-      ? runSecurityScan(address, chainClass, resolvedChainId)
-      : Promise.resolve({ flags: [] as SafetyFlag[], score: 100, ok: true }),
-    toolSet.has("etherscan")
-      ? checkAgeAndHolders(address, chainClass, resolvedChainId)
-      : Promise.resolve({ ageHours: null, top3Pct: null, holderCount: null, whaleAlert: null, distributingWallets: null }),
-    subIntent === "TOKEN_LOOKUP" || subIntent === "PRICE_ACTION"
-      ? checkTrendSignal(ticker, tokenName, true)
-      : Promise.resolve({ mentionCount: 0, sources: [] as string[], fearGreed: 50 }),
-    toolSet.has("coingecko") ? fetchCoinGecko(ticker) : Promise.resolve(null),
-    toolSet.has("birdeye") && chainClass === "solana" ? fetchBirdeye(address) : Promise.resolve(null),
-    subIntent === "TOKEN_LOOKUP" ? searchBrave(`${ticker} ${tokenName} crypto`) : Promise.resolve([]),
-    toolSet.has("geckoterminal") ? fetchGeckoTerminal(address, resolvedChainId) : Promise.resolve(null),
-    toolSet.has("arkham") && arkham
-      ? arkham.getTokenHolders(resolvedChainId, address, 10)
-      : Promise.resolve([] as ArkhamHolder[]),
-    toolSet.has("arkham") && arkham
-      ? arkham.getTokenFlows(resolvedChainId, address, "24h", 10)
-      : Promise.resolve([] as ArkhamFlow[]),
-    toolSet.has("nansen") && nansen
-      ? nansen.getSmartMoneyFlows(address, resolvedChainId)
-      : Promise.resolve(null),
-    toolSet.has("dune")
-      ? fetchDuneSmartMoney(chainClass === "solana" ? "solana" : undefined)
-      : Promise.resolve([] as DuneSmartMoneyFlow[]),
-  ]);
+  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS, nansenS, duneS] =
+    await Promise.allSettled([
+      toolSet.has("goplus") || toolSet.has("honeypot")
+        ? runSecurityScan(address, chainClass, resolvedChainId)
+        : Promise.resolve({ flags: [] as SafetyFlag[], score: 100, ok: true }),
+      toolSet.has("etherscan")
+        ? checkAgeAndHolders(address, chainClass, resolvedChainId)
+        : Promise.resolve({
+            ageHours: null,
+            top3Pct: null,
+            holderCount: null,
+            whaleAlert: null,
+            distributingWallets: null,
+          }),
+      subIntent === "TOKEN_LOOKUP" || subIntent === "PRICE_ACTION"
+        ? checkTrendSignal(ticker, tokenName, true)
+        : Promise.resolve({ mentionCount: 0, sources: [] as string[], fearGreed: 50 }),
+      toolSet.has("coingecko") ? fetchCoinGecko(ticker) : Promise.resolve(null),
+      toolSet.has("birdeye") && chainClass === "solana"
+        ? fetchBirdeye(address)
+        : Promise.resolve(null),
+      subIntent === "TOKEN_LOOKUP"
+        ? searchBrave(`${ticker} ${tokenName} crypto`)
+        : Promise.resolve([]),
+      toolSet.has("geckoterminal")
+        ? fetchGeckoTerminal(address, resolvedChainId)
+        : Promise.resolve(null),
+      toolSet.has("arkham") && arkham
+        ? arkham.getTokenHolders(resolvedChainId, address, 10)
+        : Promise.resolve([] as ArkhamHolder[]),
+      toolSet.has("arkham") && arkham
+        ? arkham.getTokenFlows(resolvedChainId, address, "24h", 10)
+        : Promise.resolve([] as ArkhamFlow[]),
+      toolSet.has("nansen") && nansen
+        ? nansen.getSmartMoneyFlows(address, resolvedChainId)
+        : Promise.resolve(null),
+      toolSet.has("dune")
+        ? fetchDuneSmartMoney(chainClass === "solana" ? "solana" : undefined)
+        : Promise.resolve([] as DuneSmartMoneyFlow[]),
+    ]);
 
   const security =
     secS.status === "fulfilled" ? secS.value : { flags: [] as SafetyFlag[], score: 50, ok: false };
@@ -2463,7 +2619,12 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   // Merge market-based flags with contract flags and recompute final score.
   const pairAgeHours = best?.pairCreatedAt ? (Date.now() - best.pairCreatedAt) / 3_600_000 : null;
   const top3Pct = age.top3Pct ?? null;
-  const marketFlags = buildMarketFlags(liquidityUsd, best?.volume?.h24 ?? null, pairAgeHours, top3Pct);
+  const marketFlags = buildMarketFlags(
+    liquidityUsd,
+    best?.volume?.h24 ?? null,
+    pairAgeHours,
+    top3Pct,
+  );
   if (marketFlags.length > 0) {
     const mergedResult = computeScore([
       ...security.flags.map((f) => ({ flag: f, source: "goplus" as const })),
@@ -2487,7 +2648,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   }
   const smartMoneyNetFlow = (() => {
     let net = 0;
-    if (nansenFlows?.smartMoney) net += nansenFlows.smartMoney.inflow - nansenFlows.smartMoney.outflow;
+    if (nansenFlows?.smartMoney)
+      net += nansenFlows.smartMoney.inflow - nansenFlows.smartMoney.outflow;
     if (arkhamFlows.length > 0) net += arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
     return net;
   })();
@@ -2565,7 +2727,11 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
  * Job 1: background polling loop — emits ALPHA_FOUND for tokens that pass all gates.
  * Job 2: RESEARCH_REQUEST listener — emits RESEARCH_RESULT with synthesised verdict.
  */
-export function startResearchAgent(deps?: { llm?: LlmClient; arkham?: ArkhamClient; nansen?: NansenClient }): { stop(): void } {
+export function startResearchAgent(deps?: {
+  llm?: LlmClient;
+  arkham?: ArkhamClient;
+  nansen?: NansenClient;
+}): { stop(): void } {
   _pollingArkham = deps?.arkham;
   void runPollingCycle();
   const timer = setInterval(() => {

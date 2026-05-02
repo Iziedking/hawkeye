@@ -58,13 +58,13 @@ export function getHealth(): HealthReport {
 
 // Map health check names to sponsor-facing display names and detail labels
 const SPONSOR_DISPLAY: Record<string, { label: string; detailMap: (detail?: string) => string }> = {
-  "LLM": {
+  LLM: {
     label: "0G Compute",
-    detailMap: (d) => d === "0G Compute" ? "qwen-2.5-7b" : d ?? "",
+    detailMap: (d) => (d === "0G Compute" ? "qwen-2.5-7b" : (d ?? "")),
   },
   "0G Storage": {
     label: "0G Storage",
-    detailMap: (d) => d === "active" ? "testnet" : d ?? "",
+    detailMap: (d) => (d === "active" ? "testnet" : (d ?? "")),
   },
   "0G Registry": {
     label: "0G Chain",
@@ -74,13 +74,13 @@ const SPONSOR_DISPLAY: Record<string, { label: string; detailMap: (detail?: stri
     label: "Gensyn AXL",
     detailMap: (d) => d ?? "",
   },
-  "KeeperHub": {
+  KeeperHub: {
     label: "KeeperHub",
-    detailMap: (d) => d === "active" ? "MEV protection" : d ?? "",
+    detailMap: (d) => (d === "active" ? "MEV protection" : (d ?? "")),
   },
-  "Wallets": {
+  Wallets: {
     label: "Privy",
-    detailMap: (d) => d === "Privy" ? "agent wallets" : d ?? "",
+    detailMap: (d) => (d === "Privy" ? "agent wallets" : (d ?? "")),
   },
 };
 

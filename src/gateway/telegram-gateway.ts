@@ -24,7 +24,14 @@ import type {
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias, lookupKnownAddress } from "../shared/tokens";
 import { formatHealthForTelegram, getHealth } from "../shared/health";
-import { getChainRpc, getChainExplorer, getChainName, EVM_CHAIN_CONFIG, fetchNativeBalance, fetchTokenHoldings } from "../shared/evm-chains";
+import {
+  getChainRpc,
+  getChainExplorer,
+  getChainName,
+  EVM_CHAIN_CONFIG,
+  fetchNativeBalance,
+  fetchTokenHoldings,
+} from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 import { getPositionsByUser, getPosition } from "../agents/execution/index";
 import { getWatchedWalletAddresses } from "../agents/copy-trade/index";
@@ -169,7 +176,9 @@ async function fetchNativePrice(currency: string): Promise<number> {
         return price;
       }
     }
-  } catch { /* use cached */ }
+  } catch {
+    /* use cached */
+  }
   return cached?.usd ?? 0;
 }
 
@@ -303,12 +312,12 @@ export async function startTelegramGateway(
     const explorer = getChainExplorer(pos.chainId);
     const chainName = getChainName(pos.chainId);
     const tokenLabel = pos.symbol ?? pos.address.slice(0, 10) + "...";
-    const priceStr = pos.entryPriceUsd >= 1
-      ? `$${pos.entryPriceUsd.toFixed(2)}`
-      : `$${pos.entryPriceUsd.toFixed(6)}`;
-    const amtStr = pos.filled.unit === "USD"
-      ? `$${pos.filled.value}`
-      : `${pos.filled.value} ${pos.filled.unit}`;
+    const priceStr =
+      pos.entryPriceUsd >= 1
+        ? `$${pos.entryPriceUsd.toFixed(2)}`
+        : `$${pos.entryPriceUsd.toFixed(6)}`;
+    const amtStr =
+      pos.filled.unit === "USD" ? `$${pos.filled.value}` : `${pos.filled.value} ${pos.filled.unit}`;
     const tags: string[] = [];
     if (pos.mevProtected) tags.push("MEV Protected");
     if (pending.rootHash) tags.push("0G Verified");
@@ -323,7 +332,12 @@ export async function startTelegramGateway(
     void reply(pending.ctx, msgLines.join("\n"));
   };
 
-  type PendingConfirmation = { ctx: ReplyCtx; intentId: string; messageId?: number; timer: ReturnType<typeof setTimeout> };
+  type PendingConfirmation = {
+    ctx: ReplyCtx;
+    intentId: string;
+    messageId?: number;
+    timer: ReturnType<typeof setTimeout>;
+  };
   const pendingConfirmations = new Map<string, PendingConfirmation>();
 
   const onStrategy = (d: import("../shared/types").StrategyDecision): void => {
@@ -359,11 +373,9 @@ export async function startTelegramGateway(
       if (!pc) return;
       pendingConfirmations.delete(d.intentId);
       if (pc.messageId) {
-        void bot.api.editMessageText(
-          pc.ctx.chatId,
-          pc.messageId,
-          `Confirmation expired for this trade.`,
-        ).catch(() => {});
+        void bot.api
+          .editMessageText(pc.ctx.chatId, pc.messageId, `Confirmation expired for this trade.`)
+          .catch(() => {});
       }
     }, 60_000);
 
@@ -395,11 +407,23 @@ export async function startTelegramGateway(
   const trendingChainCache = new Map<string, string>();
 
   // Per-user last researched token — so "buy $2" uses the token from conversation context
-  type LastResearch = { address: string; chain: ChainClass; specificChain?: string; symbol: string; at: number };
+  type LastResearch = {
+    address: string;
+    chain: ChainClass;
+    specificChain?: string;
+    symbol: string;
+    at: number;
+  };
   const lastResearchByUser = new Map<string, LastResearch>();
 
   // Per-user pending buy from inline keyboard — holds full context until user provides amount
-  type PendingBuy = { address: string; chain: ChainClass; specificChain: string; symbol: string; at: number };
+  type PendingBuy = {
+    address: string;
+    chain: ChainClass;
+    specificChain: string;
+    symbol: string;
+    at: number;
+  };
   const pendingBuyByUser = new Map<string, PendingBuy>();
 
   const onResearchResult = (res: import("../shared/types").ResearchResult): void => {
@@ -423,23 +447,28 @@ export async function startTelegramGateway(
 
     const lines: string[] = [];
     const subIntentHeaders: Partial<Record<ResearchSubIntent, string>> = {
-      WHALE_ANALYSIS:   "<b>Whale Intelligence</b>",
-      SAFETY_CHECK:     "<b>Safety Analysis</b>",
-      PRICE_ACTION:     "<b>Price Action</b>",
-      MARKET_OVERVIEW:  "<b>Market Overview</b>",
-      CATEGORY:         "<b>Category Tokens</b>",
-      RESEARCH_WALLET:  "<b>Wallet Intelligence</b>",
+      WHALE_ANALYSIS: "<b>Whale Intelligence</b>",
+      SAFETY_CHECK: "<b>Safety Analysis</b>",
+      PRICE_ACTION: "<b>Price Action</b>",
+      MARKET_OVERVIEW: "<b>Market Overview</b>",
+      CATEGORY: "<b>Category Tokens</b>",
+      RESEARCH_WALLET: "<b>Wallet Intelligence</b>",
     };
     if (res.subIntent && subIntentHeaders[res.subIntent]) {
       lines.push(subIntentHeaders[res.subIntent]!);
       lines.push("");
     }
-    const hasName = (res.symbol && !res.symbol.startsWith("0x")) || (res.tokenName && !res.tokenName.startsWith("0x"));
-    const label = hasName ? (res.symbol ?? res.tokenName ?? res.address.slice(0, 10)) : res.address.slice(0, 10);
+    const hasName =
+      (res.symbol && !res.symbol.startsWith("0x")) ||
+      (res.tokenName && !res.tokenName.startsWith("0x"));
+    const label = hasName
+      ? (res.symbol ?? res.tokenName ?? res.address.slice(0, 10))
+      : res.address.slice(0, 10);
 
     // Header
     if (hasName) {
-      const nameTag = res.tokenName && !res.tokenName.startsWith("0x") ? ` (${html(res.tokenName)})` : "";
+      const nameTag =
+        res.tokenName && !res.tokenName.startsWith("0x") ? ` (${html(res.tokenName)})` : "";
       lines.push(`<b>${html(res.symbol ?? "")}${nameTag}</b>`);
     } else {
       lines.push(`<b>${codeAddr(res.address)}</b>`);
@@ -500,7 +529,11 @@ export async function startTelegramGateway(
     replyByRequestId.delete(qf.intentId);
     hlog.bus("QUOTE_FAILED", `intent=${qf.intentId.slice(0, 8)} reason=${qf.reason.slice(0, 80)}`);
 
-    if (/insufficient funds|exceeds the balance/i.test(qf.reason) && pending.walletAddress && pending.chainHint) {
+    if (
+      /insufficient funds|exceeds the balance/i.test(qf.reason) &&
+      pending.walletAddress &&
+      pending.chainHint
+    ) {
       void (async () => {
         try {
           const { balance } = await fetchNativeBalance(pending.chainHint!, pending.walletAddress!);
@@ -508,10 +541,13 @@ export async function startTelegramGateway(
           const ethPrice = await fetchEthPrice().catch(() => 2500);
           const usdBal = ethBal * ethPrice;
           const chainName = getChainName(pending.chainHint!);
-          const needed = pending.tradeAmount ? `  Need ~${pending.tradeAmount.toFixed(6)} ETH.` : "";
-          void reply(pending.ctx,
+          const needed = pending.tradeAmount
+            ? `  Need ~${pending.tradeAmount.toFixed(6)} ETH.`
+            : "";
+          void reply(
+            pending.ctx,
             `Not enough funds on ${html(chainName)}.\n` +
-            `Balance: ${ethBal.toFixed(6)} ETH (~$${usdBal.toFixed(2)})${needed}`,
+              `Balance: ${ethBal.toFixed(6)} ETH (~$${usdBal.toFixed(2)})${needed}`,
           );
         } catch {
           void reply(pending.ctx, "Insufficient funds. Check your wallet balance with /wallet.");
@@ -526,9 +562,11 @@ export async function startTelegramGateway(
     } else if (/No trade amount/i.test(qf.reason)) {
       userMsg = "No trade amount specified. Say 'buy $5 worth' or 'buy 0.01 ETH'.";
     } else if (/No trading pairs/i.test(qf.reason)) {
-      userMsg = "No trading pairs found on any DEX. The token may be too new, unlisted, or on an unsupported chain.";
+      userMsg =
+        "No trading pairs found on any DEX. The token may be too new, unlisted, or on an unsupported chain.";
     } else if (/execution reverted|transaction_broadcast_failure/i.test(qf.reason)) {
-      userMsg = "Transaction reverted. Your wallet may not hold this token or may not have enough ETH for gas. Use /wallet to check.";
+      userMsg =
+        "Transaction reverted. Your wallet may not hold this token or may not have enough ETH for gas. Use /wallet to check.";
     } else if (/fetch failed/i.test(qf.reason)) {
       userMsg = "Network error reaching the swap API. Try again in a moment.";
     }
@@ -539,7 +577,9 @@ export async function startTelegramGateway(
   const positionOwners = new Map<string, ReplyCtx>();
   const lastPnlNotify = new Map<string, number>();
 
-  const onTradeExecutedForTracking = (pos: import("../shared/types").TradeExecutedPayload): void => {
+  const onTradeExecutedForTracking = (
+    pos: import("../shared/types").TradeExecutedPayload,
+  ): void => {
     const pending = replyByRequestId.get(pos.intentId);
     if (pending) positionOwners.set(pos.positionId, pending.ctx);
   };
@@ -563,13 +603,9 @@ export async function startTelegramGateway(
     const sign = update.pnlPct >= 0 ? "+" : "";
     const pos = getPosition(update.positionId);
     const label = pos?.symbol ?? update.positionId.slice(0, 8) + "...";
-    const priceStr = update.priceUsd >= 1
-      ? `$${update.priceUsd.toFixed(2)}`
-      : `$${update.priceUsd.toFixed(6)}`;
-    void reply(
-      owner,
-      `${label}  ${priceStr}  ${sign}${update.pnlPct.toFixed(1)}%`,
-    );
+    const priceStr =
+      update.priceUsd >= 1 ? `$${update.priceUsd.toFixed(2)}` : `$${update.priceUsd.toFixed(6)}`;
+    void reply(owner, `${label}  ${priceStr}  ${sign}${update.pnlPct.toFixed(1)}%`);
     lastPnlNotify.set(update.positionId, Date.now());
     lastPnlValue.set(update.positionId, update.pnlPct);
   };
@@ -604,7 +640,9 @@ export async function startTelegramGateway(
           : "",
         "Greet them warmly but briefly. Mention what they can do right now.",
         "Don't list commands. Be conversational, 2-3 sentences max.",
-      ].filter(Boolean).join(" ");
+      ]
+        .filter(Boolean)
+        .join(" ");
 
       try {
         const resp = await llm.infer({
@@ -695,7 +733,8 @@ export async function startTelegramGateway(
     const userPositions = getPositionsByUser(userId);
     const seenTokens = getSeenTokens(userId);
     const extraSet = new Set<string>();
-    const extraTokens: Array<{ address: string; chainId: string; symbol?: string | undefined }> = [];
+    const extraTokens: Array<{ address: string; chainId: string; symbol?: string | undefined }> =
+      [];
     for (const p of userPositions) {
       const key = `${p.chainId}:${p.address.toLowerCase()}`;
       if (!extraSet.has(key)) {
@@ -714,29 +753,31 @@ export async function startTelegramGateway(
     // Fetch native balances and token holdings in parallel
     const nonTestnetChains = chains.filter((c) => c !== "sepolia");
     const [nativeResults, tokenData] = await Promise.all([
-      Promise.all(chains.map(async (chain) => {
-        const cfg = EVM_CHAIN_CONFIG[chain];
-        const currency = cfg?.nativeCurrency ?? "ETH";
-        const { balance, error } = await fetchNativeBalance(chain, addr);
-        if (error) return { line: `  ${getChainName(chain)}: error`, usd: 0, hasBalance: false };
-        const ethVal = Number(balance) / 1e18;
-        if (ethVal > 0.00001) {
-          const isTestnet = chain === "sepolia";
-          let usdStr = "";
-          let usd = 0;
-          if (!isTestnet) {
-            const price = await fetchNativePrice(currency);
-            usd = ethVal * price;
-            usdStr = usd >= 0.01 ? ` (~$${formatUsd(usd)})` : "";
+      Promise.all(
+        chains.map(async (chain) => {
+          const cfg = EVM_CHAIN_CONFIG[chain];
+          const currency = cfg?.nativeCurrency ?? "ETH";
+          const { balance, error } = await fetchNativeBalance(chain, addr);
+          if (error) return { line: `  ${getChainName(chain)}: error`, usd: 0, hasBalance: false };
+          const ethVal = Number(balance) / 1e18;
+          if (ethVal > 0.00001) {
+            const isTestnet = chain === "sepolia";
+            let usdStr = "";
+            let usd = 0;
+            if (!isTestnet) {
+              const price = await fetchNativePrice(currency);
+              usd = ethVal * price;
+              usdStr = usd >= 0.01 ? ` (~$${formatUsd(usd)})` : "";
+            }
+            return {
+              line: `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${currency}${usdStr}`,
+              usd,
+              hasBalance: true,
+            };
           }
-          return {
-            line: `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${currency}${usdStr}`,
-            usd,
-            hasBalance: true,
-          };
-        }
-        return { line: `  ${getChainName(chain)}: 0`, usd: 0, hasBalance: false };
-      })),
+          return { line: `  ${getChainName(chain)}: 0`, usd: 0, hasBalance: false };
+        }),
+      ),
       fetchTokenHoldings(addr, nonTestnetChains, 10_000, extraTokens),
     ]);
 
@@ -754,11 +795,7 @@ export async function startTelegramGateway(
 
     const totalUsd = nativeUsd;
 
-    const lines = [
-      `<b>Balances</b>  ${codeAddr(addr)}`,
-      ``,
-      ...balanceLines,
-    ];
+    const lines = [`<b>Balances</b>  ${codeAddr(addr)}`, ``, ...balanceLines];
 
     if (tokenLines.length > 0) {
       lines.push(``);
@@ -782,7 +819,11 @@ export async function startTelegramGateway(
       return;
     }
     const emailArg = (ctx.match as string).trim();
-    if (emailArg && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailArg) && !emailArg.endsWith("@hawkeye.local")) {
+    if (
+      emailArg &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailArg) &&
+      !emailArg.endsWith("@hawkeye.local")
+    ) {
       try {
         const ok = await wm.linkEmail(userId, emailArg);
         if (ok) {
@@ -838,11 +879,14 @@ export async function startTelegramGateway(
     if (solWallet) {
       lines.push(`SOL  ${codeAddr(solWallet.address)}`);
     } else if (full.agentWallet) {
-      void wm.ensureSolanaWallet(userId).then((sw) => {
-        if (sw) {
-          void ctx.reply(`Solana wallet: ${codeAddr(sw.address)}`, { parse_mode: "HTML" });
-        }
-      }).catch(() => {});
+      void wm
+        .ensureSolanaWallet(userId)
+        .then((sw) => {
+          if (sw) {
+            void ctx.reply(`Solana wallet: ${codeAddr(sw.address)}`, { parse_mode: "HTML" });
+          }
+        })
+        .catch(() => {});
     }
 
     if (full.externalWallets.length > 0) {
@@ -941,7 +985,8 @@ export async function startTelegramGateway(
 
     if (!arg) {
       const current = userSettings.get(userId)?.mode ?? "NORMAL";
-      const friendlyName = current === "INSTANT" ? "degen" : current === "CAREFUL" ? "safe" : "normal";
+      const friendlyName =
+        current === "INSTANT" ? "degen" : current === "CAREFUL" ? "safe" : "normal";
       const defAmt = userSettings.get(userId)?.defaultAmount;
       await ctx.reply(
         [
@@ -953,7 +998,9 @@ export async function startTelegramGateway(
           `<code>/mode normal</code>  confirm risky`,
           `<code>/mode safe</code>  strict safety`,
           `<code>/mode amount 0.01</code>  set default`,
-        ].filter(Boolean).join("\n"),
+        ]
+          .filter(Boolean)
+          .join("\n"),
         { parse_mode: "HTML" },
       );
       return;
@@ -964,15 +1011,14 @@ export async function startTelegramGateway(
     if (amountMatch) {
       const val = parseFloat(amountMatch[1]!);
       if (!Number.isFinite(val) || val <= 0) {
-        await ctx.reply("Invalid amount. Example: <code>/mode amount 0.01</code>", { parse_mode: "HTML" });
+        await ctx.reply("Invalid amount. Example: <code>/mode amount 0.01</code>", {
+          parse_mode: "HTML",
+        });
         return;
       }
       const existing = userSettings.get(userId);
       userSettings.set(userId, { mode: existing?.mode ?? "NORMAL", defaultAmount: val });
-      await ctx.reply(
-        `Default buy: ${val} ETH`,
-        { parse_mode: "HTML" },
-      );
+      await ctx.reply(`Default buy: ${val} ETH`, { parse_mode: "HTML" });
       return;
     }
 
@@ -988,10 +1034,7 @@ export async function startTelegramGateway(
     if (defAmt !== undefined) entry.defaultAmount = defAmt;
     userSettings.set(userId, entry);
     const friendlyName = mode === "INSTANT" ? "degen" : mode === "CAREFUL" ? "safe" : "normal";
-    await ctx.reply(
-      `Mode: ${friendlyName}. ${MODE_DESC[mode]}`,
-      { parse_mode: "HTML" },
-    );
+    await ctx.reply(`Mode: ${friendlyName}. ${MODE_DESC[mode]}`, { parse_mode: "HTML" });
   });
 
   // /watch — add wallet to copy-trade watch list
@@ -1058,9 +1101,10 @@ export async function startTelegramGateway(
       const chain = getChainName(pos.chainId);
       const age = Math.round((Date.now() - pos.openedAt) / 60_000);
       const ageStr = age < 60 ? `${age}m` : `${Math.round(age / 60)}h`;
-      const priceStr = pos.entryPriceUsd >= 1
-        ? `$${pos.entryPriceUsd.toFixed(2)}`
-        : `$${pos.entryPriceUsd.toFixed(6)}`;
+      const priceStr =
+        pos.entryPriceUsd >= 1
+          ? `$${pos.entryPriceUsd.toFixed(2)}`
+          : `$${pos.entryPriceUsd.toFixed(6)}`;
       lines.push(
         `<b>${html(label)}</b> on ${chain}`,
         `${pos.filled.value} ${pos.filled.unit} at ${priceStr}  ${ageStr} ago`,
@@ -1109,7 +1153,8 @@ export async function startTelegramGateway(
 
       // Resolve specific chain (e.g. "base") via DexScreener lookup or cache
       const lastRes = lastResearchByUser.get(userId);
-      const specificChain = lastRes?.specificChain ?? trendingChainCache.get(addr.toLowerCase()) ?? null;
+      const specificChain =
+        lastRes?.specificChain ?? trendingChainCache.get(addr.toLowerCase()) ?? null;
       const symbol = lastRes?.symbol ?? addr.slice(0, 10);
 
       const defaultAmount = userSettings.get(userId)?.defaultAmount;
@@ -1219,20 +1264,11 @@ export async function startTelegramGateway(
         try {
           const wallet = await wm.createWalletWithEmail(userId, emailInput);
           const solWallet = await wm.ensureSolanaWallet(userId);
-          const lines = [
-            `<b>Wallet created</b>`,
-            ``,
-            `EVM  ${codeAddr(wallet.address)}`,
-          ];
+          const lines = [`<b>Wallet created</b>`, ``, `EVM  ${codeAddr(wallet.address)}`];
           if (solWallet) {
             lines.push(`SOL  ${codeAddr(solWallet.address)}`);
           }
-          lines.push(
-            ``,
-            `${emailInput}`,
-            ``,
-            `Send ETH to your EVM address to start trading.`,
-          );
+          lines.push(``, `${emailInput}`, ``, `Send ETH to your EVM address to start trading.`);
           await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
         } catch (err) {
           await ctx.reply(`Failed to create wallet: ${(err as Error).message}`);
@@ -1294,10 +1330,9 @@ export async function startTelegramGateway(
       if (ok) {
         await ctx.reply(`Active wallet: ${codeAddr(useAddrMatch[1]!)}`, { parse_mode: "HTML" });
       } else {
-        await ctx.reply(
-          `That wallet is not connected. Use <code>connect 0x...</code> first.`,
-          { parse_mode: "HTML" },
-        );
+        await ctx.reply(`That wallet is not connected. Use <code>connect 0x...</code> first.`, {
+          parse_mode: "HTML",
+        });
       }
       return;
     }
@@ -1321,10 +1356,9 @@ export async function startTelegramGateway(
       if (full && full.externalWallets.length > 0) {
         const first = full.externalWallets[0]!;
         wm.setActiveWallet(userId, { kind: "external", address: first.address });
-        await ctx.reply(
-          `Switched to: ${codeAddr(first.address)} (${first.label})`,
-          { parse_mode: "HTML" },
-        );
+        await ctx.reply(`Switched to: ${codeAddr(first.address)} (${first.label})`, {
+          parse_mode: "HTML",
+        });
       } else {
         await ctx.reply(
           `No external wallet connected. Say <code>connect 0x... [label]</code> to link one.`,
@@ -1359,7 +1393,9 @@ export async function startTelegramGateway(
               toToken: pendingBuy.symbol,
             },
           };
-          console.log(`[telegram] pendingBuy intercepted — user=${userId} amount=${rawVal} ${isUsd ? "USD" : "NATIVE"} token=${pendingBuy.symbol}`);
+          console.log(
+            `[telegram] pendingBuy intercepted — user=${userId} amount=${rawVal} ${isUsd ? "USD" : "NATIVE"} token=${pendingBuy.symbol}`,
+          );
           return handleTrade(syntheticResult, rctx, storage, replyByRequestId, wm, userId);
         }
       }
@@ -1620,7 +1656,10 @@ export async function startTelegramGateway(
     const chainHint = typeof d["chain"] === "string" ? d["chain"] : null;
 
     if (chain === "solana" || chainHint === "solana") {
-      void reply(rctx, "Solana trading is not supported yet. HAWKEYE currently works on EVM chains only (Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Sepolia).");
+      void reply(
+        rctx,
+        "Solana trading is not supported yet. HAWKEYE currently works on EVM chains only (Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Sepolia).",
+      );
       return;
     }
 
@@ -1653,10 +1692,20 @@ export async function startTelegramGateway(
 
     let resolvedChainName: string | null = null;
     const rawSide = typeof d["side"] === "string" ? d["side"] : "buy";
-    let sideHint: "buy" | "sell" | "swap" = rawSide === "sell" ? "sell" : rawSide === "swap" ? "swap" : "buy";
+    let sideHint: "buy" | "sell" | "swap" =
+      rawSide === "sell" ? "sell" : rawSide === "swap" ? "swap" : "buy";
 
     // Native tokens that Uniswap wraps automatically — user says "ETH" but means native
-    const NATIVE_SYMBOLS = new Set(["ETH", "WETH", "BNB", "WBNB", "MATIC", "WMATIC", "AVAX", "WAVAX"]);
+    const NATIVE_SYMBOLS = new Set([
+      "ETH",
+      "WETH",
+      "BNB",
+      "WBNB",
+      "MATIC",
+      "WMATIC",
+      "AVAX",
+      "WAVAX",
+    ]);
 
     // Swap logic: "swap X to Y"
     // Three cases:
@@ -1672,7 +1721,10 @@ export async function startTelegramGateway(
       if (NATIVE_SYMBOLS.has(fromUpper)) {
         // "swap ETH to USDC" = buy USDC with ETH
         sideHint = "buy";
-        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" treated as BUY ${toToken} (paying with native ${fromToken})`);
+        hlog.agent(
+          "gateway",
+          `swap: "${fromToken} → ${toToken}" treated as BUY ${toToken} (paying with native ${fromToken})`,
+        );
       } else if (NATIVE_SYMBOLS.has(toUpper)) {
         // "swap USDC to ETH" = sell USDC for native — amount is in fromToken terms
         const fromAddr = await resolveSwapSource(fromToken, chainHint, userId);
@@ -1684,7 +1736,10 @@ export async function startTelegramGateway(
         sideHint = "sell";
         // Mark that amount is in source token units, not native ETH
         swapFromTokenAmount = true;
-        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" treated as SELL ${fromToken} for native`);
+        hlog.agent(
+          "gateway",
+          `swap: "${fromToken} → ${toToken}" treated as SELL ${fromToken} for native`,
+        );
       } else {
         // "swap USDC to PEPE" = token-to-token: resolve both, route through Uniswap
         const fromAddr = await resolveSwapSource(fromToken, chainHint, userId);
@@ -1695,7 +1750,10 @@ export async function startTelegramGateway(
         }
         // toToken (target) will be resolved below via the normal address resolution path
         sideHint = "buy";
-        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" token-to-token, fromAddr=${fromTokenAddress?.slice(0, 10) ?? "?"}`);
+        hlog.agent(
+          "gateway",
+          `swap: "${fromToken} → ${toToken}" token-to-token, fromAddr=${fromTokenAddress?.slice(0, 10) ?? "?"}`,
+        );
       }
     } else if (sideHint === "swap") {
       sideHint = "buy";
@@ -1714,18 +1772,26 @@ export async function startTelegramGateway(
           address = symbolMatch.address;
           resolvedChainName = symbolMatch.chainId;
           chain = symbolMatch.chainId === "solana" ? "solana" : "evm";
-          hlog.agent("gateway", `sell: matched position ${symbolMatch.positionId.slice(0, 8)} by symbol ${sym} on ${symbolMatch.chainId}`);
+          hlog.agent(
+            "gateway",
+            `sell: matched position ${symbolMatch.positionId.slice(0, 8)} by symbol ${sym} on ${symbolMatch.chainId}`,
+          );
         }
         // Fallback: check conversation context
         if (!address) {
           const last = lastResearchByUser.get(userId);
           if (last && last.symbol.toUpperCase() === sym) {
-            const posMatch = positions.find((p) => p.address.toLowerCase() === last.address.toLowerCase());
+            const posMatch = positions.find(
+              (p) => p.address.toLowerCase() === last.address.toLowerCase(),
+            );
             if (posMatch) {
               address = posMatch.address;
               resolvedChainName = posMatch.chainId;
               chain = posMatch.chainId === "solana" ? "solana" : "evm";
-              hlog.agent("gateway", `sell: matched position ${posMatch.positionId.slice(0, 8)} via research context (${sym} on ${posMatch.chainId})`);
+              hlog.agent(
+                "gateway",
+                `sell: matched position ${posMatch.positionId.slice(0, 8)} via research context (${sym} on ${posMatch.chainId})`,
+              );
             }
           }
         }
@@ -1735,7 +1801,10 @@ export async function startTelegramGateway(
           address = only.address;
           resolvedChainName = only.chainId;
           chain = only.chainId === "solana" ? "solana" : "evm";
-          hlog.agent("gateway", `sell: only one position, using ${only.positionId.slice(0, 8)} (${only.chainId})`);
+          hlog.agent(
+            "gateway",
+            `sell: only one position, using ${only.positionId.slice(0, 8)} (${only.chainId})`,
+          );
         }
       }
     }
@@ -1743,7 +1812,8 @@ export async function startTelegramGateway(
     if (!address && (fromToken || toToken)) {
       const targetSymbol = toToken ?? fromToken;
       if (targetSymbol) {
-        const resolveHint = chainHint && chainHint !== "evm" && chainHint !== "solana" ? chainHint : undefined;
+        const resolveHint =
+          chainHint && chainHint !== "evm" && chainHint !== "solana" ? chainHint : undefined;
         const resolved = await resolveToken(targetSymbol, resolveHint);
         if (resolved) {
           address = resolved.address;
@@ -1762,7 +1832,10 @@ export async function startTelegramGateway(
       if (last && Date.now() - last.at < 10 * 60 * 1_000) {
         address = last.address;
         chain = last.chain;
-        hlog.agent("gateway", `context: last researched ${last.symbol} (${last.address.slice(0, 10)}...)`);
+        hlog.agent(
+          "gateway",
+          `context: last researched ${last.symbol} (${last.address.slice(0, 10)}...)`,
+        );
       }
     }
 
@@ -1813,7 +1886,9 @@ export async function startTelegramGateway(
           .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
         // If we already know the chain, prefer pairs on that chain
         if (resolvedChainName && candidates.length > 0) {
-          const onChain = candidates.filter((p) => (resolveChainAlias(p.chainId) ?? p.chainId) === resolvedChainName);
+          const onChain = candidates.filter(
+            (p) => (resolveChainAlias(p.chainId) ?? p.chainId) === resolvedChainName,
+          );
           if (onChain.length > 0) candidates = onChain;
         }
         const best = candidates[0];
@@ -1826,9 +1901,14 @@ export async function startTelegramGateway(
             chain = best.chainId === "solana" ? "solana" : "evm";
           }
           if (toToken && verifiedTokenSymbol) toToken = verifiedTokenSymbol;
-          hlog.agent("gateway", `DexScreener verified: ${verifiedTokenSymbol} (${verifiedTokenName}) on ${resolvedChainName}`);
+          hlog.agent(
+            "gateway",
+            `DexScreener verified: ${verifiedTokenSymbol} (${verifiedTokenName}) on ${resolvedChainName}`,
+          );
         }
-      } catch { /* DexScreener lookup failed, proceed with LLM data */ }
+      } catch {
+        /* DexScreener lookup failed, proceed with LLM data */
+      }
     }
 
     const amountRaw = d["amount"] as Record<string, unknown> | null | undefined;
@@ -1854,8 +1934,8 @@ export async function startTelegramGateway(
       const stableMatch = raw.match(/([\d.]+)\s*(usdc|usdt|dai|busd)\b/i);
       if (stableMatch) {
         const matchedStable = stableMatch[2]!.toUpperCase();
-        const tradingThisStable = fromToken?.toUpperCase() === matchedStable
-          || toToken?.toUpperCase() === matchedStable;
+        const tradingThisStable =
+          fromToken?.toUpperCase() === matchedStable || toToken?.toUpperCase() === matchedStable;
         if (!tradingThisStable) {
           const val = parseFloat(stableMatch[1]!);
           if (val > 0 && Math.abs(val - amount.value) < 0.001) {
@@ -1890,7 +1970,14 @@ export async function startTelegramGateway(
 
     let originalUsdAmount: number | null = null;
     const specificChainEarly = resolvedChainName ?? chainHint ?? null;
-    const TESTNET_SET = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+    const TESTNET_SET = new Set([
+      "sepolia",
+      "goerli",
+      "mumbai",
+      "fuji",
+      "base-sepolia",
+      "basesepolia",
+    ]);
     const isTestnetTrade = specificChainEarly ? TESTNET_SET.has(specificChainEarly) : false;
 
     // Convert USD amounts to approximate native token amount
@@ -1898,18 +1985,30 @@ export async function startTelegramGateway(
     if (amount.unit === "USD" && amount.value > 0) {
       if (isTestnetTrade) {
         const sym = verifiedTokenSymbol ?? toToken ?? "this token";
-        void reply(rctx,
+        void reply(
+          rctx,
           `Testnet tokens have no real-world price, so dollar amounts don't apply.\n` +
-          `Specify the amount in ETH instead.\n` +
-          `Example: "buy 0.01 ETH of ${html(sym)} on ${specificChainEarly}"`,
+            `Specify the amount in ETH instead.\n` +
+            `Example: "buy 0.01 ETH of ${html(sym)} on ${specificChainEarly}"`,
         );
-        lastResearchByUser.set(userId, { address: address!, chain: chain!, ...(resolvedChainName ?? chainHint ? { specificChain: (resolvedChainName ?? chainHint)! } : {}), symbol: toToken ?? address!.slice(0, 10), at: Date.now() });
+        lastResearchByUser.set(userId, {
+          address: address!,
+          chain: chain!,
+          ...((resolvedChainName ?? chainHint)
+            ? { specificChain: (resolvedChainName ?? chainHint)! }
+            : {}),
+          symbol: toToken ?? address!.slice(0, 10),
+          at: Date.now(),
+        });
         return;
       }
       originalUsdAmount = amount.value;
       const ethPriceUsd = await fetchEthPrice().catch(() => 2500);
       const ethEquiv = amount.value / ethPriceUsd;
-      hlog.agent("gateway", `$${amount.value} → ${ethEquiv.toFixed(8)} ETH (price=$${ethPriceUsd})`);
+      hlog.agent(
+        "gateway",
+        `$${amount.value} → ${ethEquiv.toFixed(8)} ETH (price=$${ethPriceUsd})`,
+      );
       amount = { value: ethEquiv, unit: "NATIVE" };
     }
 
@@ -1921,27 +2020,39 @@ export async function startTelegramGateway(
       }
     }
 
-    const side: "buy" | "sell" = sideHint === "sell" ? "sell" : (d["side"] === "sell" ? "sell" : "buy");
+    const side: "buy" | "sell" =
+      sideHint === "sell" ? "sell" : d["side"] === "sell" ? "sell" : "buy";
 
     if (amount.value <= 0) {
-      const sym = verifiedTokenSymbol ?? toToken ?? (address ? address.slice(0, 10) + "..." : "this token");
+      const sym =
+        verifiedTokenSymbol ?? toToken ?? (address ? address.slice(0, 10) + "..." : "this token");
       const chainLabel = specificChainEarly ?? "evm";
       if (side === "sell") {
-        void reply(rctx,
+        void reply(
+          rctx,
           `How much do you want to sell of ${html(sym)}?\n` +
-          (isTestnetTrade
-            ? `Example: "sell 0.005 ETH of ${html(sym)}"`
-            : `Example: "sell $5 worth" or "sell 50% of ${html(sym)}"`),
+            (isTestnetTrade
+              ? `Example: "sell 0.005 ETH of ${html(sym)}"`
+              : `Example: "sell $5 worth" or "sell 50% of ${html(sym)}"`),
         );
       } else {
-        void reply(rctx,
+        void reply(
+          rctx,
           `How much do you want to buy of ${html(sym)} on ${html(chainLabel)}?\n` +
-          (isTestnetTrade
-            ? `Example: "buy 0.01 ETH of ${html(sym)} on ${html(chainLabel)}"`
-            : `Example: "buy $5 worth" or "buy 0.01 ETH of ${html(sym)}"`),
+            (isTestnetTrade
+              ? `Example: "buy 0.01 ETH of ${html(sym)} on ${html(chainLabel)}"`
+              : `Example: "buy $5 worth" or "buy 0.01 ETH of ${html(sym)}"`),
         );
       }
-      lastResearchByUser.set(userId, { address: address!, chain: chain!, ...(resolvedChainName ?? chainHint ? { specificChain: (resolvedChainName ?? chainHint)! } : {}), symbol: toToken ?? address!.slice(0, 10), at: Date.now() });
+      lastResearchByUser.set(userId, {
+        address: address!,
+        chain: chain!,
+        ...((resolvedChainName ?? chainHint)
+          ? { specificChain: (resolvedChainName ?? chainHint)! }
+          : {}),
+        symbol: toToken ?? address!.slice(0, 10),
+        at: Date.now(),
+      });
       return;
     }
 
@@ -1952,12 +2063,13 @@ export async function startTelegramGateway(
 
     const specificChain = resolvedChainName ?? chainHint ?? null;
 
-    const defaultExits: TradeIntent["exits"] = side === "buy"
-      ? [
-          { target: { kind: "multiplier", value: 2.0 }, percent: 50 },
-          { target: { kind: "multiplier", value: 5.0 }, percent: 100 },
-        ]
-      : [];
+    const defaultExits: TradeIntent["exits"] =
+      side === "buy"
+        ? [
+            { target: { kind: "multiplier", value: 2.0 }, percent: 50 },
+            { target: { kind: "multiplier", value: 5.0 }, percent: 100 },
+          ]
+        : [];
 
     const tokenSymbol = verifiedTokenSymbol ?? toToken ?? undefined;
     const intentBase = {
@@ -1991,14 +2103,21 @@ export async function startTelegramGateway(
     else if (chain === "evm") pending.chainHint = "ethereum";
     if (amount.value > 0) pending.tradeAmount = amount.value;
     pendingMap.set(intent.intentId, pending);
-    trackToken(userId, address, specificChain ?? (chain === "evm" ? "ethereum" : chain), tokenSymbol);
+    trackToken(
+      userId,
+      address,
+      specificChain ?? (chain === "evm" ? "ethereum" : chain),
+      tokenSymbol,
+    );
     bus.emit("TRADE_REQUEST", intent);
 
     // Save to conversation context so "buy $2" works after "ape this 0xCA..."
     lastResearchByUser.set(userId, {
       address,
       chain,
-      ...(resolvedChainName ?? chainHint ? { specificChain: (resolvedChainName ?? chainHint)! } : {}),
+      ...((resolvedChainName ?? chainHint)
+        ? { specificChain: (resolvedChainName ?? chainHint)! }
+        : {}),
       symbol: toToken ?? address.slice(0, 10),
       at: Date.now(),
     });
@@ -2007,18 +2126,17 @@ export async function startTelegramGateway(
     const tokenLabel = displaySymbol
       ? html(displaySymbol.toUpperCase())
       : codeAddr(address.slice(0, 10) + "...");
-    const chainLabel = specificChain
-      ? html(getChainName(specificChain))
-      : chain;
-    const amountUnit = originalUsdAmount != null
-      ? `$${originalUsdAmount}`
-      : swapFromTokenAmount && fromToken
-        ? `${amount.value} ${fromToken.toUpperCase()}`
-        : amount.unit === "TOKEN" && fromToken
+    const chainLabel = specificChain ? html(getChainName(specificChain)) : chain;
+    const amountUnit =
+      originalUsdAmount != null
+        ? `$${originalUsdAmount}`
+        : swapFromTokenAmount && fromToken
           ? `${amount.value} ${fromToken.toUpperCase()}`
-          : amount.value > 0
-            ? `${amount.value.toFixed(6)} ETH`
-            : "";
+          : amount.unit === "TOKEN" && fromToken
+            ? `${amount.value} ${fromToken.toUpperCase()}`
+            : amount.value > 0
+              ? `${amount.value.toFixed(6)} ETH`
+              : "";
     const amountDisplay = amount.value > 0 ? amountUnit : "";
     const isSwap = !!(fromToken && toToken);
     let confirmMsg: string;
@@ -2045,7 +2163,10 @@ export async function startTelegramGateway(
         .writeJson(intent.intentId, intent)
         .then((res) => {
           pending.rootHash = res.rootHash;
-          hlog.og("storage", `audit intent=${intent.intentId.slice(0, 8)} root=${res.rootHash.slice(0, 14)}...`);
+          hlog.og(
+            "storage",
+            `audit intent=${intent.intentId.slice(0, 8)} root=${res.rootHash.slice(0, 14)}...`,
+          );
         })
         .catch((err) => {
           if (!storage.circuitOpen) {
@@ -2061,9 +2182,12 @@ export async function startTelegramGateway(
     pendingMap: Map<string, PendingReply>,
   ): void {
     const d = result.data;
-    const address = typeof d["address"] === "string" ? d["address"]
-      : typeof d["walletAddress"] === "string" ? d["walletAddress"]
-      : null;
+    const address =
+      typeof d["address"] === "string"
+        ? d["address"]
+        : typeof d["walletAddress"] === "string"
+          ? d["walletAddress"]
+          : null;
     const chain =
       d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
 
@@ -2088,14 +2212,18 @@ export async function startTelegramGateway(
     });
 
     const thinkingMsgs: Record<ResearchSubIntent, string> = {
-      TRENDING:          "Finding what's hot right now...",
-      MARKET_OVERVIEW:   "Pulling market data...",
-      WHALE_ANALYSIS:    "Checking whale activity...",
-      SAFETY_CHECK:      "Running safety scan...",
-      PRICE_ACTION:      "Checking price action...",
-      CATEGORY:          "Browsing tokens in that category...",
-      TOKEN_LOOKUP:      address ? `Looking up ${codeAddr(address)}...` : "Looking into that. Paste a contract address for a full breakdown.",
-      RESEARCH_WALLET:   address ? `Looking up wallet ${codeAddr(address)}...` : "Looking into that wallet...",
+      TRENDING: "Finding what's hot right now...",
+      MARKET_OVERVIEW: "Pulling market data...",
+      WHALE_ANALYSIS: "Checking whale activity...",
+      SAFETY_CHECK: "Running safety scan...",
+      PRICE_ACTION: "Checking price action...",
+      CATEGORY: "Browsing tokens in that category...",
+      TOKEN_LOOKUP: address
+        ? `Looking up ${codeAddr(address)}...`
+        : "Looking into that. Paste a contract address for a full breakdown.",
+      RESEARCH_WALLET: address
+        ? `Looking up wallet ${codeAddr(address)}...`
+        : "Looking into that wallet...",
     };
     void reply(rctx, thinkingMsgs[subIntent] ?? "Looking into that...");
   }
@@ -2174,9 +2302,10 @@ export async function startTelegramGateway(
       posLines.push(``);
       for (const pos of positions) {
         const label = pos.symbol ?? pos.address.slice(0, 8) + "...";
-        const priceStr = pos.entryPriceUsd >= 1
-          ? `$${pos.entryPriceUsd.toFixed(2)}`
-          : `$${pos.entryPriceUsd.toFixed(6)}`;
+        const priceStr =
+          pos.entryPriceUsd >= 1
+            ? `$${pos.entryPriceUsd.toFixed(2)}`
+            : `$${pos.entryPriceUsd.toFixed(6)}`;
         posLines.push(`${label} on ${getChainName(pos.chainId)}  ${priceStr}`);
       }
     }
@@ -2189,13 +2318,9 @@ export async function startTelegramGateway(
     const totalLine = portfolioUsd >= 0.01 ? [``, `Total ~$${formatUsd(portfolioUsd)}`] : [];
     void reply(
       rctx,
-      [
-        `<b>Portfolio</b>  ${codeAddr(addr)}`,
-        ``,
-        ...balanceLines,
-        ...totalLine,
-        ...posLines,
-      ].join("\n"),
+      [`<b>Portfolio</b>  ${codeAddr(addr)}`, ``, ...balanceLines, ...totalLine, ...posLines].join(
+        "\n",
+      ),
     );
   }
 
@@ -2281,7 +2406,9 @@ export async function startTelegramGateway(
 
   function smartFallback(text: string, hasWallet: boolean, posCount: number): string {
     const lower = text.toLowerCase().trim();
-    const isGreeting = /^(hi|hey|hello|yo|sup|gm|good\s*(morning|evening|afternoon))[\s!.]*$/i.test(lower);
+    const isGreeting = /^(hi|hey|hello|yo|sup|gm|good\s*(morning|evening|afternoon))[\s!.]*$/i.test(
+      lower,
+    );
 
     if (isGreeting && hasWallet) {
       return posCount > 0

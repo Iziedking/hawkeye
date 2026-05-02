@@ -120,7 +120,9 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
       reason: payload.reason,
       rejectedAt: Date.now(),
     });
-    console.log(`[strategy] ${payload.intentId.slice(0, 8)} — REJECTED (quote failed: ${payload.reason.slice(0, 80)})`);
+    console.log(
+      `[strategy] ${payload.intentId.slice(0, 8)} — REJECTED (quote failed: ${payload.reason.slice(0, 80)})`,
+    );
   };
 
   bus.on("TRADE_REQUEST", onRequest);
@@ -159,7 +161,14 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
   }
 
   // Validation gate: catch chain mismatches and bad data before execution
-  const TESTNET_CHAINS = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+  const TESTNET_CHAINS = new Set([
+    "sepolia",
+    "goerli",
+    "mumbai",
+    "fuji",
+    "base-sepolia",
+    "basesepolia",
+  ]);
   if (intent.chainHint && intent.chainHint !== quote.chainId) {
     const intentIsTestnet = TESTNET_CHAINS.has(intent.chainHint);
     const quoteIsTestnet = TESTNET_CHAINS.has(quote.chainId);
@@ -170,7 +179,9 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
         reason: `Chain mismatch: you requested ${intent.chainHint} but the token was found on ${quote.chainId}. Please specify the correct chain.`,
         rejectedAt: Date.now(),
       });
-      console.log(`[strategy] ${intent.intentId} — REJECTED: chain mismatch (intent=${intent.chainHint}, quote=${quote.chainId})`);
+      console.log(
+        `[strategy] ${intent.intentId} — REJECTED: chain mismatch (intent=${intent.chainHint}, quote=${quote.chainId})`,
+      );
       return;
     }
   }
@@ -192,7 +203,9 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
       reason: `Token has almost no liquidity ($${quote.liquidityUsd.toFixed(0)}). Too risky to trade.`,
       rejectedAt: Date.now(),
     });
-    console.log(`[strategy] ${intent.intentId} — REJECTED: liquidity too low ($${quote.liquidityUsd})`);
+    console.log(
+      `[strategy] ${intent.intentId} — REJECTED: liquidity too low ($${quote.liquidityUsd})`,
+    );
     return;
   }
 
@@ -247,9 +260,10 @@ function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote)
 
   // Sells and swaps-out always execute — user already holds the token, blocking traps their funds
   if (isSell) {
-    const warnings = safety.flags.length > 0
-      ? ` (Warning: ${safety.flags.join(", ")} — sell may fail if token has transfer restrictions)`
-      : "";
+    const warnings =
+      safety.flags.length > 0
+        ? ` (Warning: ${safety.flags.join(", ")} — sell may fail if token has transfer restrictions)`
+        : "";
     return {
       intentId: intent.intentId,
       decision: "EXECUTE",
