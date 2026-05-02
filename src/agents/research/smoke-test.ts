@@ -87,6 +87,33 @@ const tests: Array<{ req: ResearchRequest; label: string }> = [
       tools: ["coingecko", "feargreed"],
     },
   },
+  {
+    label: "CATEGORY",
+    req: {
+      requestId: "smoke-category",
+      userId: "samuel", channel: "webchat", chain: "evm",
+      address: null, tokenName: null,
+      question: "Show me top memecoins on base",
+      rawText: "show me top memecoins on base",
+      createdAt: Date.now(),
+      subIntent: "CATEGORY",
+      tools: ["coingecko", "dexscreener"],
+    },
+  },
+  {
+    label: "RESEARCH_WALLET",
+    req: {
+      requestId: "smoke-research-wallet",
+      userId: "samuel", channel: "webchat", chain: "evm",
+      address: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045", // vitalik.eth
+      tokenName: null,
+      question: "Who is this wallet and what have they been doing?",
+      rawText: "who is 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+      createdAt: Date.now(),
+      subIntent: "RESEARCH_WALLET",
+      tools: ["arkham"],
+    },
+  },
 ];
 
 const llm = new OpenRouterClient();

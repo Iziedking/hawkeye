@@ -311,6 +311,9 @@ function buildMarketFlags(
   if (liquidityUsd !== null && liquidityUsd < 10_000) {
     flags.push({ flag: "LOW_LIQUIDITY", source: "dexscreener" });
   }
+  if (liquidityUsd !== null && liquidityUsd < 1_000) {
+    flags.push({ flag: "LOW_LIQUIDITY", source: "dexscreener" }); // double deduction for critical threshold
+  }
   if (pairAgeHours !== null && pairAgeHours < 1) {
     flags.push({ flag: "VERY_NEW", source: "dexscreener" });
   }
@@ -325,12 +328,13 @@ function buildMarketFlags(
 
 const TOOL_DEFAULTS: Record<ResearchSubIntent, string[]> = {
   TOKEN_LOOKUP:     ["dexscreener", "goplus", "coingecko", "etherscan"],
-  WHALE_ANALYSIS:   ["arkham", "etherscan", "nansen", "dexscreener"],
+  WHALE_ANALYSIS:   ["arkham", "etherscan", "nansen", "dexscreener", "dune"],
   TRENDING:         ["dexscreener", "coingecko", "arkham_trending"],
   MARKET_OVERVIEW:  ["coingecko", "feargreed"],
   CATEGORY:         ["coingecko", "dexscreener"],
   SAFETY_CHECK:     ["goplus", "honeypot", "etherscan", "dexscreener"],
   PRICE_ACTION:     ["dexscreener", "coingecko", "geckoterminal"],
+  RESEARCH_WALLET:  ["arkham"],
 };
 
 let goplusToken: { token: string; expiresAt: number } | null = null;
@@ -1639,6 +1643,7 @@ type ResearchData = {
   arkhamHolders: ArkhamHolder[];
   arkhamFlows: ArkhamFlow[];
   nansenFlows: NansenFlows | null;
+  duneFlows: DuneSmartMoneyFlow[];
   opportunityScore: number;
   question: string;
   subIntent: ResearchSubIntent;
@@ -1737,6 +1742,14 @@ function buildResearchPrompt(d: ResearchData): string {
     }
     if (d.nansenFlows.label) lines.push(`  Nansen label: ${d.nansenFlows.label}`);
   }
+  if (d.duneFlows.length > 0) {
+    const top = d.duneFlows.slice(0, 5);
+    lines.push(`\nDune smart money flows (top tokens by net flow):`);
+    for (const f of top) {
+      const dir = f.netFlow >= 0 ? "inflow" : "outflow";
+      lines.push(`  ${f.token}: net ${dir} $${formatCompact(Math.abs(f.netFlow))} (${f.txCount} txs)`);
+    }
+  }
 
   const SUBINTENT_FOCUS: Record<ResearchSubIntent, string> = {
     TOKEN_LOOKUP:     "Give a full breakdown: price, liquidity, safety score, holder concentration, smart money signals. 4-5 sentences. End with a bullish/bearish/neutral call.",
@@ -1746,6 +1759,7 @@ function buildResearchPrompt(d: ResearchData): string {
     CATEGORY:         "List top tokens in this category sorted by 24h volume. 1-2 lines each with price and volume.",
     SAFETY_CHECK:     "Lead with the safety score and each flag. Explain the specific risk each flag represents. 3-4 sentences. End with a clear safe/caution/avoid verdict.",
     PRICE_ACTION:     "Cover recent price movement, volume trend, momentum direction, and support/resistance hints from candle data if available. 3-4 sentences. End with a momentum call.",
+    RESEARCH_WALLET:  "Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences.",
   };
 
   lines.push(`\nUser question: ${d.question}`);
@@ -2067,10 +2081,91 @@ async function handleMarketOverviewRequest(req: ResearchRequest, llm?: LlmClient
   } satisfies ResearchResult);
 }
 
-async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkham?: ArkhamClient, nansen?: NansenClient): Promise<void> {
-  log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"}`);
+async function handleWalletRequest(req: ResearchRequest, arkham?: ArkhamClient, llm?: LlmClient): Promise<boolean> {
+  if (!req.address || !arkham) return false;
+  log.agent("research", `wallet research: ${req.address.slice(0, 10)}...`);
 
+  const [intelS, flowsS] = await Promise.allSettled([
+    arkham.getAddressIntel(req.address),
+    arkham.getTokenFlows("ethereum", req.address, "24h", 10),
+  ]);
+  const intel = intelS.status === "fulfilled" ? intelS.value : { entity: null, entityType: null, labels: [] };
+  const flows = flowsS.status === "fulfilled" ? flowsS.value : [];
+
+  const lines: string[] = [];
+  if (intel.entity) lines.push(`Entity: ${intel.entity}${intel.entityType ? ` (${intel.entityType})` : ""}`);
+  if (intel.labels.length > 0) lines.push(`Labels: ${intel.labels.join(", ")}`);
+  if (flows.length > 0) {
+    lines.push(`\nRecent 24h flows:`);
+    for (const f of flows.slice(0, 5)) {
+      const dir = f.netUSD >= 0 ? "net inflow" : "net outflow";
+      lines.push(`  ${f.entityName ?? f.address.slice(0, 8)}: ${dir} $${formatCompact(Math.abs(f.netUSD))}`);
+    }
+  }
+
+  const contextStr = lines.join("\n") || "No Arkham data found for this address.";
+  const prompt = `Wallet: ${req.address}\n${contextStr}\n\nQuestion: ${req.question ?? "Who is this wallet and what have they been doing?"}\n\nFocus: ${
+    "Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences."
+  }\n\nONLY use numbers and facts from the provided data.`;
+
+  let summary = await callLLM(prompt, llm);
+  if (!summary) summary = contextStr || "No wallet data available.";
+
+  bus.emit("RESEARCH_RESULT", {
+    requestId: req.requestId,
+    address: req.address,
+    chain: req.chain ?? "evm",
+    summary,
+    safetyScore: null,
+    priceUsd: null,
+    liquidityUsd: null,
+    flags: [],
+    completedAt: Date.now(),
+    subIntent: "RESEARCH_WALLET",
+  } satisfies ResearchResult);
+  return true;
+}
+
+async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
+  const chainHints = detectChainsFromText(req.rawText ?? "");
+  const chain = chainHints[0] ?? "ethereum";
+  log.agent("research", `category query: chain=${chain}`);
+
+  const coins = await fetchCoinGeckoTrending(chain, 10).catch(() => [] as CoinGeckoMarketItem[]);
+  if (coins.length === 0) return false;
+
+  const chainLabel = chain === "ethereum" ? "Ethereum" : chain.charAt(0).toUpperCase() + chain.slice(1);
+  const lines: string[] = [`Top tokens on ${chainLabel} by volume:\n`];
+  let rank = 0;
+  for (const c of coins.slice(0, 10)) {
+    rank++;
+    const price = c.current_price != null ? `$${c.current_price.toPrecision(4)}` : "n/a";
+    const vol = c.total_volume != null && c.total_volume > 0 ? formatCompact(c.total_volume) : "";
+    const h24 = c.price_change_percentage_24h != null
+      ? `${c.price_change_percentage_24h > 0 ? "+" : ""}${c.price_change_percentage_24h.toFixed(1)}%`
+      : "";
+    lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24 ? ` (${h24})` : ""}${vol ? ` | vol ${vol}` : ""}`);
+  }
+
+  bus.emit("RESEARCH_RESULT", {
+    requestId: req.requestId,
+    address: "category",
+    chain: req.chain ?? "evm",
+    summary: lines.join("\n"),
+    safetyScore: null,
+    priceUsd: null,
+    liquidityUsd: null,
+    flags: [],
+    completedAt: Date.now(),
+    subIntent: "CATEGORY",
+  } satisfies ResearchResult);
+  return true;
+}
+
+async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkham?: ArkhamClient, nansen?: NansenClient): Promise<void> {
   const subIntent: ResearchSubIntent = req.subIntent ?? "TOKEN_LOOKUP";
+  log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"} [${subIntent}]`);
+
   const toolSet = new Set<string>(
     req.tools && req.tools.length > 0 ? req.tools : TOOL_DEFAULTS[subIntent],
   );
@@ -2078,6 +2173,16 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   if (subIntent === "MARKET_OVERVIEW") {
     await handleMarketOverviewRequest(req, llm);
     return;
+  }
+
+  if (subIntent === "RESEARCH_WALLET") {
+    const handled = await handleWalletRequest(req, arkham, llm);
+    if (handled) return;
+  }
+
+  if (subIntent === "CATEGORY") {
+    const handled = await handleCategoryRequest(req);
+    if (handled) return;
   }
 
   if (subIntent === "TRENDING") {
@@ -2146,7 +2251,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
       }
     : null;
 
-  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS, nansenS] = await Promise.allSettled([
+  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS, nansenS, duneS] = await Promise.allSettled([
     toolSet.has("goplus") || toolSet.has("honeypot")
       ? runSecurityScan(address, chainClass, resolvedChainId)
       : Promise.resolve({ flags: [] as SafetyFlag[], score: 100, ok: true }),
@@ -2169,6 +2274,9 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     toolSet.has("nansen") && nansen
       ? nansen.getSmartMoneyFlows(address, resolvedChainId)
       : Promise.resolve(null),
+    toolSet.has("dune")
+      ? fetchDuneSmartMoney(chainClass === "solana" ? "solana" : undefined)
+      : Promise.resolve([] as DuneSmartMoneyFlow[]),
   ]);
 
   const security =
@@ -2194,6 +2302,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   const arkhamHolders = arkHoldersS.status === "fulfilled" ? arkHoldersS.value : [];
   const arkhamFlows = arkFlowsS.status === "fulfilled" ? arkFlowsS.value : [];
   const nansenFlows = nansenS.status === "fulfilled" ? nansenS.value : null;
+  const duneFlows = duneS.status === "fulfilled" ? duneS.value : [];
 
   const tavilyHit = await checkTavily(ticker, 7);
   if (tavilyHit && !trend.sources.includes("tavily")) {
@@ -2258,6 +2367,7 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     arkhamHolders,
     arkhamFlows,
     nansenFlows,
+    duneFlows,
     opportunityScore,
     question: req.question,
     subIntent,

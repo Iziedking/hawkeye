@@ -382,11 +382,12 @@ export async function startTelegramGateway(
 
     const lines: string[] = [];
     const subIntentHeaders: Partial<Record<ResearchSubIntent, string>> = {
-      WHALE_ANALYSIS:  "<b>Whale Intelligence</b>",
-      SAFETY_CHECK:    "<b>Safety Analysis</b>",
-      PRICE_ACTION:    "<b>Price Action</b>",
-      MARKET_OVERVIEW: "<b>Market Overview</b>",
-      CATEGORY:        "<b>Category Tokens</b>",
+      WHALE_ANALYSIS:   "<b>Whale Intelligence</b>",
+      SAFETY_CHECK:     "<b>Safety Analysis</b>",
+      PRICE_ACTION:     "<b>Price Action</b>",
+      MARKET_OVERVIEW:  "<b>Market Overview</b>",
+      CATEGORY:         "<b>Category Tokens</b>",
+      RESEARCH_WALLET:  "<b>Wallet Intelligence</b>",
     };
     if (res.subIntent && subIntentHeaders[res.subIntent]) {
       lines.push(subIntentHeaders[res.subIntent]!);
@@ -1696,13 +1697,14 @@ export async function startTelegramGateway(
     });
 
     const thinkingMsgs: Record<ResearchSubIntent, string> = {
-      TRENDING:        "Finding what's hot right now...",
-      MARKET_OVERVIEW: "Pulling market data...",
-      WHALE_ANALYSIS:  "Checking whale activity...",
-      SAFETY_CHECK:    "Running safety scan...",
-      PRICE_ACTION:    "Checking price action...",
-      CATEGORY:        "Browsing tokens in that category...",
-      TOKEN_LOOKUP:    address ? `Looking up ${codeAddr(address)}...` : "Looking into that. Paste a contract address for a full breakdown.",
+      TRENDING:          "Finding what's hot right now...",
+      MARKET_OVERVIEW:   "Pulling market data...",
+      WHALE_ANALYSIS:    "Checking whale activity...",
+      SAFETY_CHECK:      "Running safety scan...",
+      PRICE_ACTION:      "Checking price action...",
+      CATEGORY:          "Browsing tokens in that category...",
+      TOKEN_LOOKUP:      address ? `Looking up ${codeAddr(address)}...` : "Looking into that. Paste a contract address for a full breakdown.",
+      RESEARCH_WALLET:   address ? `Looking up wallet ${codeAddr(address)}...` : "Looking into that wallet...",
     };
     void reply(rctx, thinkingMsgs[subIntent] ?? "Looking into that...");
   }

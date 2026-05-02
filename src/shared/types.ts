@@ -193,7 +193,8 @@ export type ResearchSubIntent =
   | "MARKET_OVERVIEW"
   | "CATEGORY"
   | "SAFETY_CHECK"
-  | "PRICE_ACTION";
+  | "PRICE_ACTION"
+  | "RESEARCH_WALLET";
 
 export type ResearchRequest = {
   requestId: string;
