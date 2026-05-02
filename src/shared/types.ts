@@ -68,8 +68,10 @@ export type TradeIntent = {
   rawText: string;
   createdAt: number;
   chainHint?: ChainId;
-  side?: "buy" | "sell";
+  side?: "buy" | "sell" | "swap";
   symbol?: string;
+  fromToken?: string;
+  fromTokenAddress?: string;
 };
 
 export type SafetyFlag =

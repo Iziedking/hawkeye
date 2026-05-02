@@ -1617,7 +1617,34 @@ export async function startTelegramGateway(
     }
 
     let resolvedChainName: string | null = null;
-    const sideHint = d["side"] === "sell" ? "sell" : "buy";
+    const rawSide = typeof d["side"] === "string" ? d["side"] : "buy";
+    let sideHint: "buy" | "sell" | "swap" = rawSide === "sell" ? "sell" : rawSide === "swap" ? "swap" : "buy";
+
+    // Swap: "swap USDC to ETH" means sell USDC, receive ETH.
+    // The fromToken is what user is selling, toToken is what they want.
+    // Resolve fromToken as the trade address (the token being sold).
+    if (sideHint === "swap" && fromToken && !address) {
+      const fromResolved = await resolveToken(fromToken, chainHint ?? undefined);
+      if (fromResolved) {
+        address = fromResolved.address;
+        resolvedChainName = fromResolved.chain;
+        chain = fromResolved.chain === "solana" ? "solana" : "evm";
+        hlog.agent("gateway", `swap: resolved fromToken "${fromToken}" → ${fromResolved.address} on ${fromResolved.chain}`);
+      }
+      // Also check seen tokens and positions for fromToken
+      if (!address) {
+        const seenTokens = getSeenTokens(userId);
+        const fromUpper = fromToken.toUpperCase();
+        const seenMatch = seenTokens.find((t) => t.symbol?.toUpperCase() === fromUpper);
+        if (seenMatch) {
+          address = seenMatch.address;
+          resolvedChainName = seenMatch.chainId;
+          chain = seenMatch.chainId === "solana" ? "solana" : "evm";
+        }
+      }
+      // Swap is functionally a sell of fromToken
+      sideHint = "sell";
+    }
 
     // For sells: check open positions first so "sell $SHIB" finds the position's
     // address and chain instead of resolving fresh via DexScreener (which might
@@ -1809,8 +1836,7 @@ export async function startTelegramGateway(
       }
     }
 
-    const sideRaw = d["side"];
-    const side: "buy" | "sell" = sideRaw === "sell" ? "sell" : "buy";
+    const side: "buy" | "sell" = sideHint === "sell" ? "sell" : (d["side"] === "sell" ? "sell" : "buy");
 
     if (amount.value <= 0) {
       const sym = verifiedTokenSymbol ?? toToken ?? (address ? address.slice(0, 10) + "..." : "this token");
@@ -1862,6 +1888,7 @@ export async function startTelegramGateway(
       createdAt: result.routedAt,
       side,
       ...(tokenSymbol ? { symbol: tokenSymbol } : {}),
+      ...(fromToken ? { fromToken } : {}),
     };
     const intent: TradeIntent = specificChain
       ? { ...intentBase, chainHint: specificChain as ChainId }
@@ -1908,8 +1935,8 @@ export async function startTelegramGateway(
     const processingNote = keeperHubActive
       ? "Checking safety and getting best price. MEV protection active."
       : "Checking safety and getting best price.";
-    const isSwap = !!(fromToken && toToken) && side !== "sell";
-    const actionVerb = side === "sell" ? "Selling" : isSwap ? "Swapping" : "Buying";
+    const isSwap = !!(fromToken && toToken);
+    const actionVerb = isSwap ? "Swapping" : side === "sell" ? "Selling" : "Buying";
     const connector = isSwap ? "for" : "of";
     await reply(
       rctx,
