@@ -1,0 +1,12 @@
+node_modules
+dist
+.env.local
+.env
+.git
+.github
+*.md
+scripts
+contracts
+feedback_experience
+.agents
+.trace

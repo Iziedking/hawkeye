@@ -1,0 +1,9 @@
+services:
+  hawkeye:
+    build: .
+    container_name: hawkeye
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    ports:
+      - "8080:8080"
