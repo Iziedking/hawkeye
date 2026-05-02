@@ -385,14 +385,18 @@ function regexFallback(input: RouterInput): RouterResult {
   }
 
   if (SWAP_KW.test(lower)) {
-    // "swap USDC to ETH" or "convert SHIB to ETH on base"
-    const swapMatch = lower.match(/(?:swap|exchange|convert|trade)\s+(\w+)\s+(?:to|for|into)\s+(\w+)/i);
+    // "swap ETH to USDC", "swap 0.1$ ETH to USDC on base", "convert 5 SHIB for ETH"
+    const swapMatch = lower.match(
+      /(?:swap|exchange|convert|trade)\s+(?:[\d.$]+\s*)?(\w+)\s+(?:to|for|into)\s+(\w+)/i,
+    );
     if (swapMatch) {
       return buildResult(input, "TRADE", 0.8, {
         query: text,
         fromToken: swapMatch[1],
         toToken: swapMatch[2],
         side: "swap",
+        amount: extractAmount(text),
+        chain: extractChainHint(lower) ?? "evm",
       });
     }
     const isSell = SELL_KEYWORDS.test(lower);

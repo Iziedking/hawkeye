@@ -20,11 +20,20 @@ import type { TradeIntent, Quote, ChainId } from "../../shared/types";
 
 const DS_BASE = "https://api.dexscreener.com";
 
+interface DexTokenInfo {
+  address: string;
+  name?: string;
+  symbol?: string;
+}
+
 interface DexPairRaw {
   chainId: string;
   dexId: string;
   pairAddress: string;
+  baseToken?: DexTokenInfo;
+  quoteToken?: DexTokenInfo;
   priceUsd?: string;
+  priceNative?: string;
   liquidity?: { usd?: number };
   volume?: { h24?: number };
   priceChange?: { h24?: number };
@@ -163,7 +172,8 @@ export function startQuoteAgent(): () => void {
       }
 
       // 1. Resolve the best pair via DexScreener (chain-first rule)
-      const pair = await resolveBestPair(intent.address, intent.chain);
+      const chainHintForDs = chainHint ?? (intent.chain === "solana" ? "solana" : undefined);
+      const pair = await resolveBestPair(intent.address, chainHintForDs);
       if (!pair) {
         console.warn(
           `[QuoteAgent] No DexScreener pairs found for ${intent.address} — cannot quote`,
@@ -178,10 +188,21 @@ export function startQuoteAgent(): () => void {
       }
 
       const chainId = pair.chainId as ChainId;
-      const dsPriceUsd = parseFloat(pair.priceUsd ?? "0");
       const liquidityUsd = pair.liquidity?.usd ?? 0;
 
-      const finalPriceUsd = dsPriceUsd;
+      // DexScreener priceUsd is always the BASE token's price.
+      // If our target is the quote token, derive its price from priceNative.
+      const basePriceUsd = parseFloat(pair.priceUsd ?? "0");
+      const priceNative = parseFloat(pair.priceNative ?? "0");
+      const isQuoteSide =
+        pair.quoteToken?.address?.toLowerCase() === intent.address.toLowerCase();
+
+      let finalPriceUsd: number;
+      if (isQuoteSide && priceNative > 0) {
+        finalPriceUsd = basePriceUsd / priceNative;
+      } else {
+        finalPriceUsd = basePriceUsd;
+      }
 
       // 3. Estimate trade value in USD (used for slippage calc)
       const tradeValueUsd =
@@ -196,6 +217,7 @@ export function startQuoteAgent(): () => void {
       const feeEstimateUsd = estimateFeeUsd(intent.chain);
 
       // 5. Emit QUOTE_RESULT
+      const tokenInfo = isQuoteSide ? pair.quoteToken : pair.baseToken;
       const quote: Quote = {
         intentId: intent.intentId,
         address: intent.address,
@@ -207,13 +229,16 @@ export function startQuoteAgent(): () => void {
         feeEstimateUsd,
         route: buildRouteLabel(chainId, intent.chain),
         completedAt: Date.now(),
+        ...(tokenInfo?.name ? { tokenName: tokenInfo.name } : {}),
+        ...(tokenInfo?.symbol ? { tokenSymbol: tokenInfo.symbol } : {}),
       };
 
       bus.emit("QUOTE_RESULT", quote);
 
       console.log(
         `[QuoteAgent] QUOTE_RESULT emitted — intentId=${intent.intentId} ` +
-          `price=$${finalPriceUsd.toFixed(6)} liquidity=$${liquidityUsd.toLocaleString()} ` +
+          `${tokenInfo?.symbol ?? "?"} price=$${finalPriceUsd.toFixed(6)} (${isQuoteSide ? "quote" : "base"} side) ` +
+          `liquidity=$${liquidityUsd.toLocaleString()} ` +
           `slippage=${slippagePct.toFixed(2)}% route="${quote.route}" ` +
           `elapsed=${Date.now() - start}ms`,
       );
