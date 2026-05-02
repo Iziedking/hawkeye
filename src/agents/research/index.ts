@@ -305,14 +305,11 @@ function buildMarketFlags(
   liquidityUsd: number | null,
   volume24h: number | null,
   pairAgeHours: number | null,
-  topHolderPct: number | null,
+  top3Pct: number | null,
 ): FlagWithSource[] {
   const flags: FlagWithSource[] = [];
   if (liquidityUsd !== null && liquidityUsd < 10_000) {
     flags.push({ flag: "LOW_LIQUIDITY", source: "dexscreener" });
-  }
-  if (liquidityUsd !== null && liquidityUsd < 1_000) {
-    flags.push({ flag: "LOW_LIQUIDITY", source: "dexscreener" }); // double deduction for critical threshold
   }
   if (pairAgeHours !== null && pairAgeHours < 1) {
     flags.push({ flag: "VERY_NEW", source: "dexscreener" });
@@ -320,7 +317,7 @@ function buildMarketFlags(
   if (volume24h !== null && volume24h === 0) {
     flags.push({ flag: "NO_VOLUME", source: "dexscreener" });
   }
-  if (topHolderPct !== null && topHolderPct > 50) {
+  if (top3Pct !== null && top3Pct > 50) {
     flags.push({ flag: "CONCENTRATED_SUPPLY", source: "etherscan" });
   }
   return flags;
@@ -2027,6 +2024,7 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
       flags: [],
       completedAt: Date.now(),
       isTrending: true,
+      subIntent: "TRENDING",
     });
   } catch (err) {
     log.error("trending query failed", err as Error);
@@ -2040,6 +2038,7 @@ async function handleTrendingRequest(req: ResearchRequest, force = false): Promi
       liquidityUsd: null,
       flags: [],
       completedAt: Date.now(),
+      subIntent: "TRENDING",
     });
   }
   return true;
@@ -2302,6 +2301,21 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   if (subIntent === "RESEARCH_WALLET") {
     const handled = await handleWalletRequest(req, arkham, llm);
     if (handled) return;
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: req.address ?? "unknown",
+      chain: req.chain ?? "evm",
+      summary: req.address
+        ? `Wallet intelligence for ${req.address} is not available right now. Arkham data is required but not configured.`
+        : "Could not identify a wallet address in your query. Please include the full address.",
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+      subIntent: "RESEARCH_WALLET",
+    } satisfies ResearchResult);
+    return;
   }
 
   if (subIntent === "CATEGORY") {
@@ -2316,6 +2330,18 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   if (!req.address && !req.tokenName) {
     const handled = await handleTrendingRequest(req);
     if (handled) return;
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "unknown",
+      chain: req.chain ?? "evm",
+      summary: "I need a token address or name to look that up. Try asking about a specific token, or say 'what's trending' to see current movers.",
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+    } satisfies ResearchResult);
+    return;
   }
 
   let address = req.address;
@@ -2451,15 +2477,13 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
 
   // Apply transfer-based adjustments before narrative multiplier.
   let baseScore = security.score;
+  // Extra -20 for critically low liquidity (<$1k) on top of LOW_LIQUIDITY flag deduction.
+  if (liquidityUsd !== null && liquidityUsd < 1_000) baseScore = Math.max(0, baseScore - 20);
   if (age.whaleAlert) baseScore = Math.max(0, baseScore - 15);
   if (age.distributingWallets) baseScore = Math.max(0, baseScore - age.distributingWallets * 5);
   if (arkhamHolders.length > 0) {
     const top3ArkhamPct = arkhamHolders.slice(0, 3).reduce((s, h) => s + h.percentage, 0);
     if (top3ArkhamPct > 60) baseScore = Math.max(0, baseScore - 10);
-  }
-  if (arkhamFlows.length > 0) {
-    const totalNet = arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
-    if (totalNet < -50_000) baseScore = Math.max(0, baseScore - 5);
   }
   const smartMoneyNetFlow = (() => {
     let net = 0;
@@ -2467,8 +2491,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     if (arkhamFlows.length > 0) net += arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
     return net;
   })();
-  if (smartMoneyNetFlow < -100_000) baseScore = Math.max(0, baseScore - 5);
-  else if (smartMoneyNetFlow > 100_000) baseScore = Math.min(100, baseScore + 5);
+  if (smartMoneyNetFlow < -50_000) baseScore = Math.max(0, baseScore - 5);
+  else if (smartMoneyNetFlow > 50_000) baseScore = Math.min(100, baseScore + 5);
 
   const multiplier = computeNarrativeMultiplier(trend);
   const opportunityScore = Math.min(100, Math.round(baseScore * multiplier));

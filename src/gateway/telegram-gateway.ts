@@ -1672,7 +1672,9 @@ export async function startTelegramGateway(
     pendingMap: Map<string, PendingReply>,
   ): void {
     const d = result.data;
-    const address = typeof d["address"] === "string" ? d["address"] : null;
+    const address = typeof d["address"] === "string" ? d["address"]
+      : typeof d["walletAddress"] === "string" ? d["walletAddress"]
+      : null;
     const chain =
       d["chain"] === "evm" || d["chain"] === "solana" ? (d["chain"] as ChainClass) : null;
 
