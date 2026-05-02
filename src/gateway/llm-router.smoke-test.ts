@@ -49,8 +49,8 @@ class FakeLlm {
     };
   }
 
-  async ready(): Promise<void> {}
-  async close(): Promise<void> {}
+  async ready(): Promise<void> { }
+  async close(): Promise<void> { }
 }
 
 async function main(): Promise<void> {
