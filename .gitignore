@@ -9,6 +9,7 @@ build-artifacts/
 .env
 .env.local
 .env.*.local
+.env.local.backup
 
 # Temporary probe / debug scripts used during verification gates
 .tmp-*
