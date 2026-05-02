@@ -650,6 +650,29 @@ async function scanToken(
     allFlags.push({ flag: "LOW_LIQUIDITY", source: "dexscreener" });
   }
 
+  // Buy/sell ratio honeypot detection via DexScreener txn data.
+  // Extreme buy/sell imbalance (>50:1) is a strong honeypot signal.
+  try {
+    const dexResult = await searchPairs(address);
+    const NON_EVM = new Set(["solana", "sui", "aptos", "tron"]);
+    const pair = chainClass === "solana"
+      ? dexResult.pairs.find((p) => p.chainId === "solana")
+      : dexResult.pairs
+          .filter((p) => !NON_EVM.has(p.chainId))
+          .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    if (pair?.txns?.h24) {
+      const buys = pair.txns.h24.buys ?? 0;
+      const sells = pair.txns.h24.sells ?? 0;
+      if (buys > 100 && sells > 0 && buys / sells > 50) {
+        console.log(`[safety] HONEYPOT signal: ${buys} buys vs ${sells} sells (${(buys / sells).toFixed(0)}:1 ratio)`);
+        allFlags.push({ flag: "HONEYPOT", source: "dexscreener" });
+      } else if (buys > 50 && sells === 0) {
+        console.log(`[safety] HONEYPOT signal: ${buys} buys, zero sells`);
+        allFlags.push({ flag: "HONEYPOT", source: "dexscreener" });
+      }
+    }
+  } catch { /* DexScreener check is best-effort */ }
+
   let jupiterBonus = false;
 
   if (chainClass === "evm") {

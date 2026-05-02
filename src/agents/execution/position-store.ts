@@ -1,12 +1,11 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { resolve } from "node:path";
 import type { Position } from "../../shared/types";
 
-const DATA_DIR = join(__dirname, "..", "..", "..", "data");
-const FILE_PATH = join(DATA_DIR, "positions.json");
+const DATA_DIR = resolve(process.cwd(), "data");
+const FILE_PATH = resolve(DATA_DIR, "positions.json");
 
 const positions = new Map<string, Position>();
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function flush(): void {
   const arr = Array.from(positions.values());
@@ -16,14 +15,6 @@ function flush(): void {
   } catch (err) {
     console.error(`[position-store] flush failed: ${(err as Error).message}`);
   }
-}
-
-function scheduleFlush(): void {
-  if (flushTimer) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    flush();
-  }, 500);
 }
 
 export function loadPositions(): void {
@@ -45,12 +36,12 @@ export function getPosition(id: string): Position | undefined {
 
 export function setPosition(id: string, pos: Position): void {
   positions.set(id, pos);
-  scheduleFlush();
+  flush();
 }
 
 export function deletePosition(id: string): boolean {
   const deleted = positions.delete(id);
-  if (deleted) scheduleFlush();
+  if (deleted) flush();
   return deleted;
 }
 

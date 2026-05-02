@@ -268,23 +268,6 @@ export async function fetchTokenBalance(
   return { balance: 0n, error: "rpc_failed" };
 }
 
-/**
- * Ankr chain name mapping for multichain API.
- */
-const ANKR_CHAIN_NAMES: Record<string, string> = {
-  ethereum: "eth",
-  base: "base",
-  polygon: "polygon_pos",
-  arbitrum: "arbitrum",
-  optimism: "optimism",
-  bsc: "bsc",
-  avalanche: "avalanche",
-  fantom: "fantom",
-  linea: "linea",
-  scroll: "scroll",
-  zksync: "zksync_era",
-};
-
 export type TokenAsset = {
   blockchain: string;
   tokenName: string;
@@ -297,55 +280,167 @@ export type TokenAsset = {
   thumbnail: string;
 };
 
+type WellKnownToken = { address: string; symbol: string; decimals: number };
+
+const WELL_KNOWN_TOKENS: Record<string, WellKnownToken[]> = {
+  ethereum: [
+    { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", symbol: "USDC", decimals: 6 },
+    { address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", symbol: "USDT", decimals: 6 },
+    { address: "0x6B175474E89094C44Da98b954EedeAC495271d0F", symbol: "DAI", decimals: 18 },
+  ],
+  base: [
+    { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", symbol: "USDC", decimals: 6 },
+    { address: "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", symbol: "DAI", decimals: 18 },
+  ],
+  arbitrum: [
+    { address: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", symbol: "USDC", decimals: 6 },
+    { address: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", symbol: "USDT", decimals: 6 },
+  ],
+  polygon: [
+    { address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", symbol: "USDC", decimals: 6 },
+    { address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", symbol: "USDT", decimals: 6 },
+  ],
+  optimism: [
+    { address: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", symbol: "USDC", decimals: 6 },
+    { address: "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58", symbol: "USDT", decimals: 6 },
+  ],
+  bsc: [
+    { address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", symbol: "USDC", decimals: 18 },
+    { address: "0x55d398326f99059fF775485246999027B3197955", symbol: "USDT", decimals: 18 },
+  ],
+};
+
+async function fetchTokenDecimals(chainId: string, tokenAddress: string): Promise<number> {
+  const rpcs = [getChainRpc(chainId), getChainFallbackRpc(chainId)];
+  for (const rpc of rpcs) {
+    try {
+      const resp = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "eth_call",
+          params: [{ to: tokenAddress, data: "0x313ce567" }, "latest"],
+        }),
+        signal: AbortSignal.timeout(3_000),
+      });
+      const data = (await resp.json()) as { result?: string };
+      if (data.result && data.result !== "0x") return Number(BigInt(data.result));
+    } catch { continue; }
+  }
+  return 18;
+}
+
+async function fetchTokenSymbol(chainId: string, tokenAddress: string): Promise<string> {
+  const rpcs = [getChainRpc(chainId), getChainFallbackRpc(chainId)];
+  for (const rpc of rpcs) {
+    try {
+      const resp = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1, method: "eth_call",
+          params: [{ to: tokenAddress, data: "0x95d89b41" }, "latest"],
+        }),
+        signal: AbortSignal.timeout(3_000),
+      });
+      const data = (await resp.json()) as { result?: string };
+      if (data.result && data.result.length > 66) {
+        const hex = data.result.slice(130);
+        const bytes = Buffer.from(hex, "hex");
+        return bytes.toString("utf8").replace(/\0/g, "").trim();
+      }
+    } catch { continue; }
+  }
+  return tokenAddress.slice(0, 8);
+}
+
+export type ExtraTokenCheck = {
+  address: string;
+  chainId: string;
+  symbol?: string | undefined;
+};
+
 /**
- * Fetch all ERC-20 token holdings across chains via Ankr multichain API.
- * Free, no API key required. Returns tokens with USD values.
+ * Fetch token holdings via direct RPC balanceOf calls.
+ * Checks well-known stablecoins on each chain plus any extra tokens
+ * (e.g. from tracked positions). No API key required.
  */
 export async function fetchTokenHoldings(
   walletAddress: string,
   chains: string[] = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc"],
-  timeoutMs = 10_000,
+  _timeoutMs = 10_000,
+  extraTokens: ExtraTokenCheck[] = [],
 ): Promise<{ assets: TokenAsset[]; totalBalanceUsd: string; error?: string }> {
-  const ankrChains = chains
-    .map((c) => ANKR_CHAIN_NAMES[c])
-    .filter((c): c is string => c !== undefined);
+  const assets: TokenAsset[] = [];
+  const checked = new Set<string>();
 
-  try {
-    const resp = await fetch("https://rpc.ankr.com/multichain", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        method: "ankr_getAccountBalance",
-        params: {
-          walletAddress,
-          blockchain: ankrChains,
-          onlyWhitelisted: true,
-        },
-        id: 1,
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+  const checks: Array<{ chainId: string; token: WellKnownToken }> = [];
 
-    if (!resp.ok) return { assets: [], totalBalanceUsd: "0", error: `ankr_${resp.status}` };
-
-    const data = (await resp.json()) as {
-      result?: {
-        totalBalanceUsd?: string;
-        assets?: TokenAsset[];
-      };
-      error?: { message?: string };
-    };
-
-    if (data.error) return { assets: [], totalBalanceUsd: "0", error: data.error.message ?? "unknown" };
-
-    return {
-      assets: data.result?.assets ?? [],
-      totalBalanceUsd: data.result?.totalBalanceUsd ?? "0",
-    };
-  } catch (err) {
-    return { assets: [], totalBalanceUsd: "0", error: (err as Error).message };
+  for (const chain of chains) {
+    const knownTokens = WELL_KNOWN_TOKENS[chain] ?? [];
+    for (const t of knownTokens) {
+      const key = `${chain}:${t.address.toLowerCase()}`;
+      if (!checked.has(key)) {
+        checked.add(key);
+        checks.push({ chainId: chain, token: t });
+      }
+    }
   }
+
+  for (const extra of extraTokens) {
+    const key = `${extra.chainId}:${extra.address.toLowerCase()}`;
+    if (checked.has(key)) continue;
+    checked.add(key);
+    checks.push({
+      chainId: extra.chainId,
+      token: { address: extra.address, symbol: extra.symbol ?? "???", decimals: -1 },
+    });
+  }
+
+  const results = await Promise.allSettled(
+    checks.map(async ({ chainId, token }) => {
+      const { balance, error } = await fetchTokenBalance(chainId, token.address, walletAddress, 5_000);
+      if (error || balance === 0n) return null;
+
+      let decimals = token.decimals;
+      let symbol = token.symbol;
+      if (decimals < 0) {
+        [decimals, symbol] = await Promise.all([
+          fetchTokenDecimals(chainId, token.address),
+          token.symbol === "???" ? fetchTokenSymbol(chainId, token.address) : Promise.resolve(token.symbol),
+        ]);
+      }
+
+      const humanBalance = formatTokenBalance(balance, decimals);
+      return {
+        blockchain: chainId,
+        tokenName: symbol,
+        tokenSymbol: symbol,
+        tokenDecimals: decimals,
+        contractAddress: token.address,
+        balance: humanBalance,
+        balanceUsd: "0",
+        tokenPrice: "0",
+        thumbnail: "",
+      } satisfies TokenAsset;
+    }),
+  );
+
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) assets.push(r.value);
+  }
+
+  return { assets, totalBalanceUsd: "0" };
+}
+
+function formatTokenBalance(raw: bigint, decimals: number): string {
+  if (raw === 0n) return "0";
+  const divisor = 10n ** BigInt(decimals);
+  const whole = raw / divisor;
+  const frac = raw % divisor;
+  if (frac === 0n) return whole.toString();
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  return `${whole}.${fracStr}`;
 }
 
 /**

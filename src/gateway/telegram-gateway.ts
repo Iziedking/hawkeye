@@ -8,7 +8,6 @@ import { OgComputeClient } from "../integrations/0g/compute";
 import { OgStorageClient } from "../integrations/0g/storage";
 import { ClaudeLlmClient, FallbackLlmClient } from "../integrations/claude/index";
 import type { WalletManager } from "../integrations/privy/index";
-import type { DualWalletManager } from "../integrations/keeperhub/dual-wallet";
 import { routeMessage } from "./llm-router";
 import type { RouterResult } from "./llm-router";
 import type {
@@ -29,8 +28,10 @@ import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/consta
 import { getPositionsByUser } from "../agents/execution/index";
 import { getWatchedWalletAddresses } from "../agents/copy-trade/index";
 import { searchPairs } from "../tools/dexscreener-mcp/client";
+import { loadSeenTokens, trackToken, getSeenTokens } from "../shared/seen-tokens";
 
 loadEnvLocal();
+loadSeenTokens();
 
 type ReplyCtx = { chatId: number; userId: string };
 
@@ -302,12 +303,16 @@ export async function startTelegramGateway(
     const chainName = getChainName(pos.chainId);
     const msgLines = [
       "<b>Trade Executed</b>",
+      ...(pos.symbol ? [`Token: ${pos.symbol}`] : []),
       `Filled: ${pos.filled.value} ${pos.filled.unit}`,
       `Entry: $${pos.entryPriceUsd.toFixed(6)}`,
       `Chain: ${html(chainName)}`,
       `TX: ${codeAddr(pos.txHash)}`,
       `<a href="${explorer}/tx/${pos.txHash}">View on Explorer</a>`,
     ];
+    if (pos.mevProtected) {
+      msgLines.push(`MEV Protection: KeeperHub`);
+    }
     if (pending.rootHash) {
       msgLines.push(`Verified on 0G: ${codeAddr(pending.rootHash)}`);
     }
@@ -665,7 +670,28 @@ export async function startTelegramGateway(
 
     const chains = ["ethereum", "sepolia", "base", "arbitrum", "optimism", "polygon", "bsc"];
 
+    // Build extra token list from tracked positions and seen tokens
+    const userPositions = getPositionsByUser(userId);
+    const seenTokens = getSeenTokens(userId);
+    const extraSet = new Set<string>();
+    const extraTokens: Array<{ address: string; chainId: string; symbol?: string | undefined }> = [];
+    for (const p of userPositions) {
+      const key = `${p.chainId}:${p.address.toLowerCase()}`;
+      if (!extraSet.has(key)) {
+        extraSet.add(key);
+        extraTokens.push({ address: p.address, chainId: p.chainId, symbol: p.symbol });
+      }
+    }
+    for (const s of seenTokens) {
+      const key = `${s.chainId}:${s.address.toLowerCase()}`;
+      if (!extraSet.has(key)) {
+        extraSet.add(key);
+        extraTokens.push({ address: s.address, chainId: s.chainId, symbol: s.symbol });
+      }
+    }
+
     // Fetch native balances and token holdings in parallel
+    const nonTestnetChains = chains.filter((c) => c !== "sepolia");
     const [nativeResults, tokenData] = await Promise.all([
       Promise.all(chains.map(async (chain) => {
         const cfg = EVM_CHAIN_CONFIG[chain];
@@ -690,26 +716,22 @@ export async function startTelegramGateway(
         }
         return { line: `  ${getChainName(chain)}: 0`, usd: 0, hasBalance: false };
       })),
-      fetchTokenHoldings(addr, chains.filter((c) => c !== "sepolia")),
+      fetchTokenHoldings(addr, nonTestnetChains, 10_000, extraTokens),
     ]);
 
     const balanceLines = nativeResults.map((r) => r.line);
     const hasNativeBalance = nativeResults.some((r) => r.hasBalance);
     const nativeUsd = nativeResults.reduce((sum, r) => sum + r.usd, 0);
 
-    // Token holdings from Ankr
     const tokenLines: string[] = [];
-    const nonNativeTokens = tokenData.assets.filter((a) => a.tokenSymbol !== "ETH" && a.tokenSymbol !== "WETH");
-    if (nonNativeTokens.length > 0) {
-      for (const t of nonNativeTokens.slice(0, 15)) {
-        const usdVal = parseFloat(t.balanceUsd);
-        const usdStr = usdVal >= 0.01 ? ` (~$${formatUsd(usdVal)})` : "";
-        const chainLabel = t.blockchain === "polygon_pos" ? "polygon" : t.blockchain;
-        tokenLines.push(`  ${t.tokenSymbol} (${chainLabel}): ${t.balance}${usdStr}`);
-      }
+    const nonNativeTokens = tokenData.assets.filter(
+      (a) => a.tokenSymbol !== "ETH" && a.tokenSymbol !== "WETH" && parseFloat(a.balance) > 0,
+    );
+    for (const t of nonNativeTokens.slice(0, 15)) {
+      tokenLines.push(`  ${t.tokenSymbol} (${getChainName(t.blockchain)}): ${t.balance}`);
     }
 
-    const totalUsd = nativeUsd + parseFloat(tokenData.totalBalanceUsd || "0");
+    const totalUsd = nativeUsd;
 
     const lines = [
       `<b>Balances</b>`,
@@ -761,9 +783,6 @@ export async function startTelegramGateway(
     await ctx.reply("Enter your email to link to your wallet profile:");
   });
 
-  const isDualWm = (m: WalletManager): m is DualWalletManager =>
-    "hasKeeperHub" in m && "hasPrivy" in m && "setProvider" in m;
-
   // /wallet — create on explicit request, show full multi-wallet info
   bot.command("wallet", async (ctx) => {
     const userId = String(ctx.from?.id ?? "unknown");
@@ -774,38 +793,15 @@ export async function startTelegramGateway(
 
     const existing = wm.getWallet(userId);
     if (!existing) {
-      const dual = isDualWm(wm);
-      const hasBoth = dual && wm.hasKeeperHub() && wm.hasPrivy();
-
-      if (hasBoth) {
-        const kb = new InlineKeyboard()
-          .text("KeeperHub (Recommended)", `wallet_provider:keeperhub:${userId}`)
-          .row()
-          .text("Privy (Solana support)", `wallet_provider:privy:${userId}`);
-        await ctx.reply(
-          [
-            "<b>Choose your wallet provider</b>\n",
-            "<b>KeeperHub</b> (Recommended)",
-            "  Turnkey secure enclave wallet",
-            "  MEV-protected execution, gas optimization",
-            "  EVM chains only\n",
-            "<b>Privy</b>",
-            "  Per-user wallet with email recovery",
-            "  EVM and Solana support\n",
-            "Both options use KeeperHub for transaction execution and MEV protection on EVM chains.",
-          ].join("\n"),
-          { parse_mode: "HTML", reply_markup: kb },
-        );
-      } else {
-        pendingEmailPrompts.set(userId, { chatId: ctx.chat.id, action: "create" });
-        await ctx.reply(
-          [
-            "Enter your email to create your HAWKEYE wallet.",
-            "",
-            "This email ties your wallet to your identity across Telegram, Discord, and web.",
-          ].join("\n"),
-        );
-      }
+      pendingEmailPrompts.set(userId, { chatId: ctx.chat.id, action: "create" });
+      await ctx.reply(
+        [
+          "Enter your email to create your HAWKEYE wallet.",
+          "",
+          "This email ties your wallet to your identity across Telegram, Discord, and web.",
+          "Your wallet is secured by Privy. EVM trades are routed through KeeperHub for MEV protection.",
+        ].join("\n"),
+      );
       return;
     }
 
@@ -815,14 +811,12 @@ export async function startTelegramGateway(
       return;
     }
 
-    const dual = isDualWm(wm);
-    const provider = dual ? wm.getProvider(userId) : "privy";
-    const providerLabel = provider === "keeperhub" ? "KeeperHub" : "Privy";
+    const khOk = getHealth().subsystems.some((s) => s.name === "KeeperHub" && s.ok);
 
     const lines: string[] = ["<b>Your Wallets</b>\n"];
     const isSynthetic = full.email.endsWith("@hawkeye.local");
     lines.push(`Email: ${isSynthetic ? "<i>not linked</i> (/link to add)" : `<b>${full.email}</b>`}`);
-    lines.push(`Provider: <b>${providerLabel}</b>`);
+    lines.push(`Execution: <b>${khOk ? "KeeperHub (MEV protected)" : "Direct"}</b>`);
     lines.push("");
     const isAgentActive = full.activeWallet.kind === "agent";
 
@@ -833,7 +827,7 @@ export async function startTelegramGateway(
     const solWallet = wm.getSolanaWallet(userId);
     if (solWallet) {
       lines.push(`Solana: ${codeAddr(solWallet.address)}`);
-    } else if (provider === "privy" && full.agentWallet) {
+    } else if (full.agentWallet) {
       void wm.ensureSolanaWallet(userId).then((sw) => {
         if (sw) {
           void ctx.reply(`Solana wallet added: ${codeAddr(sw.address)}`, { parse_mode: "HTML" });
@@ -1049,11 +1043,19 @@ export async function startTelegramGateway(
     }
     const lines = ["<b>Open Positions</b>\n"];
     for (const pos of positions) {
+      const label = pos.symbol ? `${pos.symbol} ` : "";
+      const chain = getChainName(pos.chainId);
+      const age = Math.round((Date.now() - pos.openedAt) / 60_000);
+      const ageStr = age < 60 ? `${age}m ago` : `${Math.round(age / 60)}h ago`;
       lines.push(
-        `  ${codeAddr(pos.address.slice(0, 10))}... (${pos.chainId}) | Entry: $${pos.entryPriceUsd.toFixed(6)} | TX: ${pos.txHash.slice(0, 10)}...`,
+        `${label}${codeAddr(pos.address.slice(0, 10))}...`,
+        `  Chain: ${chain} | Entry: $${pos.entryPriceUsd.toFixed(6)}`,
+        `  Amount: ${pos.filled.value} ${pos.filled.unit} | ${ageStr}`,
+        `  TX: ${codeAddr(pos.txHash.slice(0, 16))}...`,
+        ``,
       );
     }
-    lines.push(`\nTotal: ${positions.length} position(s)`);
+    lines.push(`Total: ${positions.length} position(s)`);
     await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
   });
 
@@ -1126,6 +1128,8 @@ export async function startTelegramGateway(
       const intentId = randomUUID();
       replyByRequestId.set(intentId, { ctx: rctx, rootHash: null });
       const mode = userSettings.get(userId)?.mode ?? "NORMAL";
+      const chainHintSnipe = specificChain ?? (chain === "evm" ? "ethereum" : chain);
+      trackToken(userId, addr, chainHintSnipe, symbol);
       bus.emit("TRADE_REQUEST", {
         intentId,
         userId,
@@ -1144,38 +1148,6 @@ export async function startTelegramGateway(
         ? "Checking safety and getting best price. MEV protection active."
         : "Checking safety and getting best price.";
       void reply(rctx, `Buying ${defaultAmount} ETH worth of ${codeAddr(addr)}...\n${note}`);
-      return;
-    }
-
-    // wallet_provider:{keeperhub|privy}:{userId} — wallet creation choice
-    const providerMatch = data.match(/^wallet_provider:(keeperhub|privy):(.+)$/);
-    if (providerMatch) {
-      const provider = providerMatch[1]! as "keeperhub" | "privy";
-      const targetUserId = providerMatch[2]!;
-      if (targetUserId !== userId) {
-        await ctx.answerCallbackQuery({ text: "Not your button" });
-        return;
-      }
-      if (isDualWm(wm!)) {
-        wm!.setProvider(userId, provider);
-      }
-      await ctx.answerCallbackQuery({
-        text: provider === "keeperhub" ? "KeeperHub selected" : "Privy selected",
-      });
-      pendingEmailPrompts.set(userId, { chatId, action: "create" });
-      const providerLabel = provider === "keeperhub" ? "KeeperHub" : "Privy";
-      const extras = provider === "keeperhub"
-        ? "MEV-protected execution via KeeperHub Turnkey wallet."
-        : "Per-user wallet with Solana support via Privy.";
-      await bot.api.sendMessage(chatId,
-        [
-          `<b>${providerLabel} selected.</b>`,
-          extras,
-          "",
-          "Enter your email to create your wallet:",
-        ].join("\n"),
-        { parse_mode: "HTML" },
-      );
       return;
     }
 
@@ -1242,6 +1214,7 @@ export async function startTelegramGateway(
           const solWallet = await wm.ensureSolanaWallet(userId);
           const lines = [
             "<b>Wallet Created</b>\n",
+            `Provider: <b>Privy</b>`,
             `EVM: ${codeAddr(wallet.address)}`,
           ];
           if (solWallet) {
@@ -1249,7 +1222,7 @@ export async function startTelegramGateway(
           }
           lines.push(
             `\nEmail: <b>${emailInput}</b>`,
-            `\nYour wallets are tied to this email via KeeperHub.`,
+            `\nYour wallet is tied to this email via Privy.`,
             `Recoverable on any platform (Telegram, Discord, web).`,
             `\nFund your EVM address with ETH to start trading.`,
           );
@@ -1905,6 +1878,7 @@ export async function startTelegramGateway(
     else if (chain === "evm") pending.chainHint = "ethereum";
     if (amount.value > 0) pending.tradeAmount = amount.value;
     pendingMap.set(intent.intentId, pending);
+    trackToken(userId, address, specificChain ?? (chain === "evm" ? "ethereum" : chain), tokenSymbol);
     bus.emit("TRADE_REQUEST", intent);
 
     // Save to conversation context so "buy $2" works after "ape this 0xCA..."
@@ -2069,8 +2043,9 @@ export async function startTelegramGateway(
     if (positions.length > 0) {
       posLines.push(``, `<b>Open Positions (${positions.length})</b>`);
       for (const pos of positions) {
+        const label = pos.symbol ? `${pos.symbol} ` : "";
         posLines.push(
-          `  ${pos.address.slice(0, 10)}... (${pos.chainId}) | Entry: $${pos.entryPriceUsd.toFixed(6)}`,
+          `  ${label}${pos.address.slice(0, 10)}... (${getChainName(pos.chainId)}) | Entry: $${pos.entryPriceUsd.toFixed(6)}`,
         );
       }
     }

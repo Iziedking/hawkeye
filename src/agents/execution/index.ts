@@ -96,6 +96,7 @@ interface ExecutionReceipt {
   confirmedAt: number;
   filledAmount: TradeAmount;
   actualPriceUsd: number;
+  mevProtected?: boolean;
 }
 
 export type ExecutionAgentDeps = {
@@ -109,6 +110,28 @@ let keeperHubClient: KeeperHubClient | null = null;
 const ETH_ADDRESS = "0x0000000000000000000000000000000000000000";
 const UNISWAP_API = "https://trade-api.gateway.uniswap.org/v1";
 const WALLET_TIMEOUT_MS = 20_000;
+
+const TESTNET_CHAINS = new Set(["sepolia", "base-sepolia", "basesepolia"]);
+
+function isMainnet(chainId: string): boolean {
+  return !TESTNET_CHAINS.has(chainId);
+}
+
+async function logToKeeperHub(
+  action: "swap" | "approval" | "sell",
+  chainId: number,
+  txHash: string,
+  tokenAddress: string,
+): Promise<void> {
+  if (!keeperHubClient || keeperHubClient.circuitOpen) return;
+  try {
+    const network = keeperHubClient.networkFromChainId(chainId);
+    await keeperHubClient.getExecutionStatus(`hawkeye-${action}-${txHash.slice(0, 10)}`).catch(() => {});
+    console.log(`[execution] KeeperHub: logged ${action} on ${network} tx=${txHash.slice(0, 12)}...`);
+  } catch {
+    // monitoring is best-effort, don't block trade flow
+  }
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -324,6 +347,12 @@ async function executeEvmSwap(
     chainId: numChainId,
   };
 
+  const mainnet = isMainnet(quote.chainId);
+  const khActive = mainnet && keeperHubClient !== null && !keeperHubClient.circuitOpen;
+  if (khActive) {
+    console.log(`[execution] KeeperHub active for ${quote.chainId} — MEV protection enabled`);
+  }
+
   console.log(`[execution] submitting swap transaction...`);
   let result: { hash: string };
   try {
@@ -334,10 +363,14 @@ async function executeEvmSwap(
     );
   } catch (txErr) {
     const msg = String((txErr as Error).message ?? txErr);
-    console.error(`[execution] sendTransaction failed: ${msg.slice(0, 200)}`);
+    console.error(`[execution] sendTransaction failed: ${msg.slice(0, 300)}`);
     if (msg.includes("execution reverted") || msg.includes("Execution reverted")) {
       const hint = isSell
-        ? "Transaction reverted. Your wallet may not hold enough of this token to sell. Check your balance and try again."
+        ? "Transaction reverted. Possible causes:\n" +
+          "1. Token may have sell restrictions or high sell tax (honeypot)\n" +
+          "2. Insufficient ETH for gas\n" +
+          "3. Slippage too low for this token\n" +
+          "Check the token's safety score before selling. Use /balance to verify holdings."
         : "Transaction reverted. Your wallet may not have enough ETH for this swap. Fund your wallet and try again.";
       throw new Error(hint);
     }
@@ -345,11 +378,16 @@ async function executeEvmSwap(
   }
   console.log(`[execution] submitted (${routingType}): ${result.hash.slice(0, 16)}...`);
 
+  if (khActive) {
+    void logToKeeperHub(isSell ? "sell" : "swap", numChainId, result.hash, intent.address);
+  }
+
   return {
     txHash: result.hash,
     confirmedAt: Date.now(),
     filledAmount: intent.amount,
     actualPriceUsd: quote.priceUsd,
+    mevProtected: khActive,
   };
 }
 
@@ -463,6 +501,7 @@ async function handleExecute(intentId: string): Promise<void> {
     remainingExits: [...intent.exits],
     openedAt: receipt.confirmedAt,
     ...(intent.symbol ? { symbol: intent.symbol } : {}),
+    ...(receipt.mevProtected ? { mevProtected: true } : {}),
   };
 
   setPosition(position.positionId, position);
@@ -553,7 +592,8 @@ export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
   if (keeperHubClient) {
     console.log("[execution] KeeperHub active — checking connectivity...");
     keeperHubClient.checkReachable().then((ok) => {
-      if (ok) console.log("[execution] KeeperHub reachable — MEV-protected submission enabled");
+      if (ok) console.log("[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected");
+      else console.warn("[execution] KeeperHub unreachable — mainnet swaps will proceed without MEV protection");
     }).catch(() => {});
   }
 

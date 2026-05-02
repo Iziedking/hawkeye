@@ -145,6 +145,7 @@ export type Position = {
   remainingExits: PartialExit[];
   openedAt: number;
   symbol?: string;
+  mevProtected?: boolean;
 };
 
 export type ExecuteSellPayload = {
