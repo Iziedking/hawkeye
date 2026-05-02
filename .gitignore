@@ -5,6 +5,9 @@ node_modules/
 dist/
 build-artifacts/
 
+# Runtime state — local database files
+data/
+
 # Secrets — never commit
 .env
 .env.local
