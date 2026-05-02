@@ -1562,6 +1562,34 @@ export async function startTelegramGateway(
     }
   }
 
+  async function resolveSwapSource(
+    symbol: string,
+    chainHint: string | null,
+    userId: string,
+  ): Promise<{ address: string; chain: string } | null> {
+    const upper = symbol.toUpperCase();
+    // 1. Check positions (user actually holds this token)
+    const positions = getPositionsByUser(userId);
+    const posMatch = positions.find((p) => p.symbol?.toUpperCase() === upper);
+    if (posMatch) return { address: posMatch.address, chain: posMatch.chainId };
+
+    // 2. Check seen tokens — prefer most recently seen if multiple chains
+    const seenTokens = getSeenTokens(userId);
+    const seenMatches = seenTokens
+      .filter((t) => t.symbol?.toUpperCase() === upper)
+      .sort((a, b) => (b.seenAt ?? 0) - (a.seenAt ?? 0));
+    if (seenMatches.length > 0) {
+      const best = seenMatches[0]!;
+      return { address: best.address, chain: best.chainId };
+    }
+
+    // 3. Known tokens / DexScreener
+    const hint = chainHint && chainHint !== "evm" && chainHint !== "solana" ? chainHint : undefined;
+    const resolved = await resolveToken(symbol, hint);
+    if (resolved) return { address: resolved.address, chain: resolved.chain };
+    return null;
+  }
+
   async function handleTrade(
     result: RouterResult,
     rctx: ReplyCtx,
@@ -1618,59 +1646,45 @@ export async function startTelegramGateway(
     const NATIVE_SYMBOLS = new Set(["ETH", "WETH", "BNB", "WBNB", "MATIC", "WMATIC", "AVAX", "WAVAX"]);
 
     // Swap logic: "swap X to Y"
-    // If fromToken is native (ETH/BNB/etc) → this is a BUY of toToken with native currency
-    // If fromToken is a non-native token → this is a SELL of fromToken (receive toToken)
+    // Three cases:
+    //   1. native → token: BUY target with native currency
+    //   2. token → native: SELL source token for native
+    //   3. token → token: BUY target, paying with source (token-to-token via Uniswap routing)
+    let fromTokenAddress: string | null = null;
+    let swapFromTokenAmount = false;
     if (sideHint === "swap" && fromToken && toToken) {
       const fromUpper = fromToken.toUpperCase();
       const toUpper = toToken.toUpperCase();
 
       if (NATIVE_SYMBOLS.has(fromUpper)) {
-        // "swap ETH to USDC" = buy USDC with ETH → resolve toToken as the target
+        // "swap ETH to USDC" = buy USDC with ETH
         sideHint = "buy";
-        // toToken is already set, address will be resolved below via normal path
         hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" treated as BUY ${toToken} (paying with native ${fromToken})`);
       } else if (NATIVE_SYMBOLS.has(toUpper)) {
-        // "swap USDC to ETH" = sell USDC for native → resolve fromToken as the sell target
-        const fromResolved = await resolveToken(fromToken, chainHint ?? undefined);
-        if (fromResolved) {
-          address = fromResolved.address;
-          resolvedChainName = fromResolved.chain;
-          chain = fromResolved.chain === "solana" ? "solana" : "evm";
-        }
-        // Also check seen tokens
-        if (!address) {
-          const seenTokens = getSeenTokens(userId);
-          const seenMatch = seenTokens.find((t) => t.symbol?.toUpperCase() === fromUpper);
-          if (seenMatch) {
-            address = seenMatch.address;
-            resolvedChainName = seenMatch.chainId;
-            chain = seenMatch.chainId === "solana" ? "solana" : "evm";
-          }
+        // "swap USDC to ETH" = sell USDC for native — amount is in fromToken terms
+        const fromAddr = await resolveSwapSource(fromToken, chainHint, userId);
+        if (fromAddr) {
+          address = fromAddr.address;
+          resolvedChainName = fromAddr.chain;
+          chain = fromAddr.chain === "solana" ? "solana" : "evm";
         }
         sideHint = "sell";
-        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" treated as SELL ${fromToken}`);
+        // Mark that amount is in source token units, not native ETH
+        swapFromTokenAmount = true;
+        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" treated as SELL ${fromToken} for native`);
       } else {
-        // Token-to-token: "swap USDC to PEPE" — sell fromToken, the execution layer picks toToken
-        const fromResolved = await resolveToken(fromToken, chainHint ?? undefined);
-        if (fromResolved) {
-          address = fromResolved.address;
-          resolvedChainName = fromResolved.chain;
-          chain = fromResolved.chain === "solana" ? "solana" : "evm";
+        // "swap USDC to PEPE" = token-to-token: resolve both, route through Uniswap
+        const fromAddr = await resolveSwapSource(fromToken, chainHint, userId);
+        if (fromAddr) {
+          fromTokenAddress = fromAddr.address;
+          resolvedChainName = fromAddr.chain;
+          chain = fromAddr.chain === "solana" ? "solana" : "evm";
         }
-        if (!address) {
-          const seenTokens = getSeenTokens(userId);
-          const seenMatch = seenTokens.find((t) => t.symbol?.toUpperCase() === fromUpper);
-          if (seenMatch) {
-            address = seenMatch.address;
-            resolvedChainName = seenMatch.chainId;
-            chain = seenMatch.chainId === "solana" ? "solana" : "evm";
-          }
-        }
-        sideHint = "sell";
-        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" treated as token-to-token sell of ${fromToken}`);
+        // toToken (target) will be resolved below via the normal address resolution path
+        sideHint = "buy";
+        hlog.agent("gateway", `swap: "${fromToken} → ${toToken}" token-to-token, fromAddr=${fromTokenAddress?.slice(0, 10) ?? "?"}`);
       }
     } else if (sideHint === "swap") {
-      // "swap" keyword but no clear from/to — fall back to buy
       sideHint = "buy";
     }
 
@@ -1716,7 +1730,8 @@ export async function startTelegramGateway(
     if (!address && (fromToken || toToken)) {
       const targetSymbol = toToken ?? fromToken;
       if (targetSymbol) {
-        const resolved = await resolveToken(targetSymbol, chainHint ?? undefined);
+        const resolveHint = chainHint && chainHint !== "evm" && chainHint !== "solana" ? chainHint : undefined;
+        const resolved = await resolveToken(targetSymbol, resolveHint);
         if (resolved) {
           address = resolved.address;
           resolvedChainName = resolveChainAlias(resolved.chain) ?? resolved.chain;
@@ -1780,17 +1795,25 @@ export async function startTelegramGateway(
     if (address && !knownTokenMatch) {
       try {
         const { pairs } = await searchPairs(address, { limit: 5 });
-        const matched = pairs
+        let candidates = pairs
           .filter((p) => p.baseToken?.address?.toLowerCase() === address!.toLowerCase())
           .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
-        const best = matched[0];
+        // If we already know the chain, prefer pairs on that chain
+        if (resolvedChainName && candidates.length > 0) {
+          const onChain = candidates.filter((p) => (resolveChainAlias(p.chainId) ?? p.chainId) === resolvedChainName);
+          if (onChain.length > 0) candidates = onChain;
+        }
+        const best = candidates[0];
         if (best) {
           verifiedTokenName = best.baseToken?.name ?? null;
           verifiedTokenSymbol = best.baseToken?.symbol ?? null;
-          resolvedChainName = resolveChainAlias(best.chainId) ?? best.chainId;
-          chain = best.chainId === "solana" ? "solana" : "evm";
+          // Only update chain if we didn't already have one
+          if (!resolvedChainName) {
+            resolvedChainName = resolveChainAlias(best.chainId) ?? best.chainId;
+            chain = best.chainId === "solana" ? "solana" : "evm";
+          }
           if (toToken && verifiedTokenSymbol) toToken = verifiedTokenSymbol;
-          hlog.agent("gateway", `DexScreener verified: ${verifiedTokenSymbol} (${verifiedTokenName}) on ${best.chainId}`);
+          hlog.agent("gateway", `DexScreener verified: ${verifiedTokenSymbol} (${verifiedTokenName}) on ${resolvedChainName}`);
         }
       } catch { /* DexScreener lookup failed, proceed with LLM data */ }
     }
@@ -1812,6 +1835,22 @@ export async function startTelegramGateway(
       const val = parseFloat(usdMatch[1] ?? usdMatch[2] ?? "0");
       if (val > 0) amount = { value: val, unit: "USD" };
     }
+    // Stablecoin amount: "buy $5 USDC of PEPE" = $5, but "swap 0.1 USDC to ETH" = 0.1 tokens
+    // Only convert to USD when the stablecoin is NOT the token being traded
+    if ((amount.unit === "NATIVE" || amount.unit === "TOKEN") && amount.value > 0) {
+      const stableMatch = raw.match(/([\d.]+)\s*(usdc|usdt|dai|busd)\b/i);
+      if (stableMatch) {
+        const matchedStable = stableMatch[2]!.toUpperCase();
+        const tradingThisStable = fromToken?.toUpperCase() === matchedStable
+          || toToken?.toUpperCase() === matchedStable;
+        if (!tradingThisStable) {
+          const val = parseFloat(stableMatch[1]!);
+          if (val > 0 && Math.abs(val - amount.value) < 0.001) {
+            amount = { value: val, unit: "USD" };
+          }
+        }
+      }
+    }
 
     // Fallback: parse amount from raw text when LLM doesn't extract it
     if (amount.value <= 0) {
@@ -1829,6 +1868,11 @@ export async function startTelegramGateway(
           if (val > 0) amount = { value: val, unit: "NATIVE" };
         }
       }
+    }
+
+    // "swap 0.1 USDC to ETH" — amount is in source token, not ETH
+    if (swapFromTokenAmount && amount.value > 0 && amount.unit !== "USD") {
+      amount = { value: amount.value, unit: "TOKEN" };
     }
 
     let originalUsdAmount: number | null = null;
@@ -1917,6 +1961,7 @@ export async function startTelegramGateway(
       side,
       ...(tokenSymbol ? { symbol: tokenSymbol } : {}),
       ...(fromToken ? { fromToken } : {}),
+      ...(fromTokenAddress ? { fromTokenAddress } : {}),
     };
     const intent: TradeIntent = specificChain
       ? { ...intentBase, chainHint: specificChain as ChainId }
@@ -1946,26 +1991,41 @@ export async function startTelegramGateway(
     });
 
     const displaySymbol = verifiedTokenSymbol ?? toToken;
-    const displayName = verifiedTokenName;
     const tokenLabel = displaySymbol
-      ? displayName
-        ? `${html(displaySymbol.toUpperCase())} (${html(displayName)}) ${codeAddr(address)}`
-        : `${html(displaySymbol.toUpperCase())} (${codeAddr(address)})`
-      : codeAddr(address);
-    const chainLabel =
-      specificChain && specificChain !== chain ? `${chain} (${html(specificChain)})` : chain;
-    const amountDisplay = amount.value > 0
-      ? originalUsdAmount != null
-        ? `$${originalUsdAmount} (~${amount.value.toFixed(6)} ETH)`
-        : `${amount.value.toFixed(6)} ETH`
-      : "";
+      ? html(displaySymbol.toUpperCase())
+      : codeAddr(address.slice(0, 10) + "...");
+    const chainLabel = specificChain
+      ? html(getChainName(specificChain))
+      : chain;
+    const amountUnit = originalUsdAmount != null
+      ? `$${originalUsdAmount}`
+      : swapFromTokenAmount && fromToken
+        ? `${amount.value} ${fromToken.toUpperCase()}`
+        : amount.unit === "TOKEN" && fromToken
+          ? `${amount.value} ${fromToken.toUpperCase()}`
+          : amount.value > 0
+            ? `${amount.value.toFixed(6)} ETH`
+            : "";
+    const amountDisplay = amount.value > 0 ? amountUnit : "";
     const isSwap = !!(fromToken && toToken);
-    const actionVerb = isSwap ? "Swapping" : side === "sell" ? "Selling" : "Buying";
-    const connector = isSwap ? "for" : "of";
-    await reply(
-      rctx,
-      `${actionVerb}${amountDisplay ? " " + amountDisplay + " " + connector : ""} ${tokenLabel} on ${chainLabel}...`,
-    );
+    let confirmMsg: string;
+    if (isSwap && side === "sell") {
+      // "swap USDC to ETH" → "Swapping 0.1 USDC for ETH on Ethereum"
+      const toLabel = html(toToken!.toUpperCase());
+      confirmMsg = amountDisplay
+        ? `Swapping ${amountDisplay} for ${toLabel} on ${chainLabel}...`
+        : `Swapping ${html(fromToken!.toUpperCase())} for ${toLabel} on ${chainLabel}...`;
+    } else if (isSwap && fromTokenAddress) {
+      // "swap USDC to PEPE" → "Swapping 0.1 USDC for PEPE on Ethereum"
+      confirmMsg = amountDisplay
+        ? `Swapping ${amountDisplay} for ${tokenLabel} on ${chainLabel}...`
+        : `Swapping ${html(fromToken!.toUpperCase())} for ${tokenLabel} on ${chainLabel}...`;
+    } else {
+      const actionVerb = side === "sell" ? "Selling" : "Buying";
+      const connector = "of";
+      confirmMsg = `${actionVerb}${amountDisplay ? " " + amountDisplay + " " + connector : ""} ${tokenLabel} on ${chainLabel}...`;
+    }
+    await reply(rctx, confirmMsg);
 
     if (storage && !storage.circuitOpen) {
       void storage

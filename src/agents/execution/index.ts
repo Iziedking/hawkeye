@@ -84,12 +84,40 @@ function humanizeQuoteError(status: number, raw: string): string {
   }
 }
 
-function nativeToWei(amount: number): string {
-  const parts = amount.toFixed(18).split(".");
+function toSmallestUnit(amount: number, decimals: number = 18): string {
+  const fixed = amount.toFixed(decimals);
+  const parts = fixed.split(".");
   const whole = parts[0] ?? "0";
-  const frac = (parts[1] ?? "").padEnd(18, "0").slice(0, 18);
-  return (BigInt(whole) * BigInt("1000000000000000000") + BigInt(frac)).toString();
+  const frac = (parts[1] ?? "").padEnd(decimals, "0").slice(0, decimals);
+  const multiplier = BigInt("1" + "0".repeat(decimals));
+  return (BigInt(whole) * multiplier + BigInt(frac)).toString();
 }
+
+function nativeToWei(amount: number): string {
+  return toSmallestUnit(amount, 18);
+}
+
+const STABLECOIN_ADDRESSES = new Set([
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", // ETH USDC
+  "0xdac17f958d2ee523a2206206994597c13d831ec7", // ETH USDT
+  "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // Base USDC
+  "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", // Base USDT
+  "0xaf88d065e77c8cc2239327c5edb3a432268e5831", // Arb USDC
+  "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9", // Arb USDT
+  "0x0b2c639c533813f4aa9d7837caf62653d097ff85", // OP USDC
+  "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359", // Polygon USDC
+  "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", // BSC USDC
+  "0x55d398326f99059ff775485246999027b3197955", // BSC USDT
+  "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238", // Sepolia USDC
+]);
+
+function getTokenDecimals(address: string): number {
+  if (address === ETH_ADDRESS) return 18;
+  if (STABLECOIN_ADDRESSES.has(address.toLowerCase())) return 6;
+  return 18;
+}
+
+const MAX_SLIPPAGE_PCT = 5;
 
 interface ExecutionReceipt {
   txHash: string;
@@ -121,7 +149,7 @@ async function logToKeeperHub(
   action: "swap" | "approval" | "sell",
   chainId: number,
   txHash: string,
-  tokenAddress: string,
+  _tokenAddress: string,
 ): Promise<void> {
   if (!keeperHubClient || keeperHubClient.circuitOpen) return;
   try {
@@ -244,11 +272,12 @@ async function executeEvmSwap(
   }
 
   const isSell = intent.side === "sell";
-  const tokenIn = isSell ? intent.address : ETH_ADDRESS;
-  const tokenOut = isSell ? ETH_ADDRESS : intent.address;
+  const hasFromToken = !!intent.fromTokenAddress;
+  const tokenIn = hasFromToken ? intent.fromTokenAddress! : (isSell ? intent.address : ETH_ADDRESS);
+  const tokenOut = hasFromToken ? intent.address : (isSell ? ETH_ADDRESS : intent.address);
 
-  // Pre-check: verify wallet holds the token before attempting a sell
-  if (isSell) {
+  // Pre-check: verify wallet holds the input token before attempting the swap
+  if (isSell || hasFromToken) {
     const { balance: tokenBal, error: balErr } = await fetchTokenBalance(
       quote.chainId, tokenIn, swapperAddress, 5_000,
     ).catch(() => ({ balance: 0n, error: "fetch_failed" }));
@@ -264,27 +293,24 @@ async function executeEvmSwap(
     }
   }
 
-  // For buys: amount is in ETH (NATIVE), convert to wei for EXACT_INPUT
-  // For sells: amount is in ETH the user wants back, use EXACT_OUTPUT
-  const amountWei = intent.amount.unit === "NATIVE"
-    ? nativeToWei(intent.amount.value)
-    : String(Math.round(intent.amount.value * 1e6));
+  const inputDecimals = getTokenDecimals(tokenIn);
+  // NATIVE unit with ETH as tokenIn → 18 decimals (wei)
+  // NATIVE unit with non-ETH tokenIn (e.g. "swap 0.1 USDC to ETH") → use token's decimals
+  const amountDecimals = intent.amount.unit === "NATIVE" && tokenIn === ETH_ADDRESS ? 18 : inputDecimals;
+  const amountRaw = toSmallestUnit(intent.amount.value, amountDecimals);
 
-  if (amountWei === "0" || intent.amount.value <= 0) {
+  if (amountRaw === "0" || intent.amount.value <= 0) {
     throw new Error("No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.");
   }
 
-  // Step 1: Check approval (skipped for native ETH, required for token sells)
-  // For sells, approve a large amount so Permit2 can spend the token
-  if (isSell) {
-    const MAX_UINT = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
-    await checkAndSubmitApproval(tokenIn, MAX_UINT, swapperAddress, numChainId, apiKey, intent.userId);
-  } else {
-    await checkAndSubmitApproval(tokenIn, amountWei, swapperAddress, numChainId, apiKey, intent.userId);
+  // Step 1: Check approval (skipped for native ETH, required for ERC-20 input tokens)
+  const MAX_UINT = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+  if (tokenIn !== ETH_ADDRESS) {
+    await checkAndSubmitApproval(tokenIn, isSell || hasFromToken ? MAX_UINT : amountRaw, swapperAddress, numChainId, apiKey, intent.userId);
   }
 
   // Step 2: Get quote (chainId as string per Uniswap API spec)
-  // Sells use EXACT_OUTPUT (specifying how much ETH/native to receive)
+  const slippage = Math.min(quote.expectedSlippagePct, MAX_SLIPPAGE_PCT);
   const quoteResp = await fetch(`${UNISWAP_API}/quote`, {
     method: "POST",
     headers: UNISWAP_HEADERS(apiKey),
@@ -294,9 +320,9 @@ async function executeEvmSwap(
       tokenOut,
       tokenInChainId: String(numChainId),
       tokenOutChainId: String(numChainId),
-      amount: amountWei,
-      type: isSell ? "EXACT_OUTPUT" : "EXACT_INPUT",
-      slippageTolerance: parseFloat(quote.expectedSlippagePct.toFixed(2)),
+      amount: amountRaw,
+      type: isSell && !hasFromToken && intent.amount.unit === "NATIVE" ? "EXACT_OUTPUT" : "EXACT_INPUT",
+      slippageTolerance: parseFloat(slippage.toFixed(2)),
       routingPreference: "BEST_PRICE",
     }),
     signal: AbortSignal.timeout(10_000),
@@ -382,23 +408,27 @@ async function executeEvmSwap(
     void logToKeeperHub(isSell ? "sell" : "swap", numChainId, result.hash, intent.address);
   }
 
-  // Try to derive execution price from Uniswap quote response
-  let executionPriceUsd = quote.priceUsd;
+  const executionPriceUsd = quote.priceUsd;
+  let gasFeeUsd: number | null = null;
   try {
-    const qInput = quoteData["input"] as { amount?: string } | undefined;
-    const qOutput = quoteData["output"] as { amount?: string } | undefined;
-    if (qInput?.amount && qOutput?.amount) {
-      const inAmt = parseFloat(qInput.amount);
-      const outAmt = parseFloat(qOutput.amount);
-      if (inAmt > 0 && outAmt > 0) {
-        // For buys: input=ETH, output=token. Price = (inputUsd / outputTokens)
-        // For sells: input=token, output=ETH. Price = (outputUsd / inputTokens)
-        // We can't get exact USD here without ETH price, so log and keep DexScreener price
-        console.log(`[execution] Uniswap amounts: in=${inAmt} out=${outAmt}`);
+    if (routingType === "CLASSIC") {
+      // CLASSIC: output.amount is the exact output, gasFeeUSD is gas estimate
+      const qOutput = quoteData["output"] as { amount?: string } | undefined;
+      const gasField = quoteData["gasFeeUSD"] as string | undefined;
+      if (gasField) gasFeeUsd = parseFloat(gasField);
+      if (qOutput?.amount) {
+        console.log(`[execution] CLASSIC output=${qOutput.amount}${gasFeeUsd ? ` gas=$${gasFeeUsd.toFixed(2)}` : ""}`);
+      }
+    } else {
+      // UniswapX: orderInfo.outputs[0].startAmount
+      const orderInfo = quoteData["orderInfo"] as { outputs?: Array<{ startAmount?: string }> } | undefined;
+      const startAmt = orderInfo?.outputs?.[0]?.startAmount;
+      if (startAmt) {
+        console.log(`[execution] ${routingType} orderInfo.outputs[0].startAmount=${startAmt}`);
       }
     }
   } catch {
-    // Non-critical — DexScreener price is the fallback
+    // Non-critical
   }
 
   return {
@@ -487,7 +517,10 @@ async function handleExecute(intentId: string): Promise<void> {
     console.log(`[execution] sell without tracked position — direct swap for ${intent.address.slice(0, 10)}...`);
   }
 
-  console.log(`[execution] ${intent.chain} swap ${intent.address.slice(0, 10)}... for user ${intent.userId}`);
+  const swapDesc = intent.fromTokenAddress
+    ? `${intent.fromTokenAddress.slice(0, 10)}→${intent.address.slice(0, 10)}`
+    : `${intent.side} ${intent.address.slice(0, 10)}`;
+  console.log(`[execution] ${intent.chain} ${swapDesc}... for user ${intent.userId}`);
 
   let receipt: ExecutionReceipt;
   try {
