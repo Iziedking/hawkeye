@@ -84,7 +84,10 @@ export type SafetyFlag =
   | "BLACKLIST"
   | "PROXY_CONTRACT"
   | "KNOWN_RUGGER"
-  | "PHISHING_ORIGIN";
+  | "PHISHING_ORIGIN"
+  | "VERY_NEW"
+  | "NO_VOLUME"
+  | "CONCENTRATED_SUPPLY";
 
 export type SafetyReport = {
   intentId: string;
@@ -188,6 +191,16 @@ export type IntentCategory =
   | "GENERAL_QUERY"
   | "UNKNOWN";
 
+export type ResearchSubIntent =
+  | "TOKEN_LOOKUP"
+  | "WHALE_ANALYSIS"
+  | "TRENDING"
+  | "MARKET_OVERVIEW"
+  | "CATEGORY"
+  | "SAFETY_CHECK"
+  | "PRICE_ACTION"
+  | "RESEARCH_WALLET";
+
 export type ResearchRequest = {
   requestId: string;
   userId: string;
@@ -198,6 +211,8 @@ export type ResearchRequest = {
   question: string;
   rawText: string;
   createdAt: number;
+  subIntent?: ResearchSubIntent;
+  tools?: string[];
 };
 
 export type ResearchResult = {
@@ -217,6 +232,15 @@ export type ResearchResult = {
   fdv?: number | null;
   opportunityScore?: number | null;
   isTrending?: boolean;
+  marketCap?: number | null;
+  priceChange7d?: number | null;
+  priceChange1h?: number | null;
+  pairAge?: number | null;
+  holderCount?: number | null;
+  topHolderPct?: number | null;
+  fearGreed?: number | null;
+  subIntent?: ResearchSubIntent;
+  smartMoneyNetFlow?: number | null;
 };
 
 export type GeneralQueryRequest = {

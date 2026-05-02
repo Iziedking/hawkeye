@@ -31,6 +31,7 @@ import { startMonitorAgent } from "./agents/monitor/index";
 import { startCopyTradeAgent } from "./agents/copy-trade/index";
 import { KeeperHubClient, KeeperHubError } from "./integrations/keeperhub/index";
 import { ArkhamClient } from "./integrations/arkham/index";
+import { NansenClient } from "./integrations/nansen/index";
 
 loadEnvLocal();
 
@@ -219,7 +220,12 @@ async function main(): Promise<void> {
   } catch {
     log.warn("ARKHAM_API_KEY not set — research will run without Arkham data");
   }
-  const stopResearch = startResearchAgent({ llm: llm ?? undefined, arkham });
+  const nansen = new NansenClient();
+  const stopResearch = startResearchAgent({
+    ...(llm ? { llm } : {}),
+    ...(arkham ? { arkham } : {}),
+    nansen,
+  });
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
 
