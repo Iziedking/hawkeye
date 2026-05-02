@@ -11,6 +11,15 @@ import type {
 import type { WalletManager } from "../../integrations/privy/index";
 import type { KeeperHubClient } from "../../integrations/keeperhub/index";
 import { randomUUID } from "node:crypto";
+import { fetchTokenBalance } from "../../shared/evm-chains";
+import {
+  loadPositions,
+  getPosition,
+  setPosition,
+  deletePosition,
+  getAllPositions,
+  getPositionsByUser as getPositionsByUserInternal,
+} from "./position-store";
 
 const CACHE_TTL_MS = 5 * 60 * 1_000;
 
@@ -21,7 +30,6 @@ interface IntentContext {
 }
 
 const contextCache = new Map<string, IntentContext>();
-const positionStore = new Map<string, Position>();
 
 function pruneCache(): void {
   const now = Date.now();
@@ -53,19 +61,25 @@ const CHAIN_NUMERIC: Record<string, number> = {
 
 function humanizeQuoteError(status: number, raw: string): string {
   try {
-    const parsed = JSON.parse(raw) as { errorCode?: string; detail?: string };
-    const detail = parsed.detail ?? parsed.errorCode ?? "";
+    const parsed = JSON.parse(raw) as { errorCode?: string; detail?: string; error?: string; code?: string };
+    const detail = parsed.detail ?? parsed.error ?? parsed.errorCode ?? "";
     if (detail.includes("No quotes available") || status === 404) {
       return "No swap route found. The token might not be tradeable on this chain, or your wallet may not have enough native tokens for gas. Fund your wallet and try again.";
     }
     if (detail.includes("INSUFFICIENT") || detail.includes("insufficient")) {
       return "Insufficient balance. Fund your wallet with native tokens (ETH/MATIC/etc.) and try again.";
     }
+    if (detail.includes("Execution reverted") || detail.includes("execution reverted") || parsed.code === "transaction_broadcast_failure") {
+      return "Transaction reverted on-chain. Most likely your wallet doesn't hold enough of this token to sell, or doesn't have enough ETH for gas. Check your balance and try again.";
+    }
     if (status === 429) return "Uniswap rate limited. Try again in a few seconds.";
     if (status >= 500) return "Uniswap API is temporarily down. Try again shortly.";
     return `Swap failed: ${detail || `error ${status}`}. Try again or adjust your amount.`;
   } catch {
     if (status === 404) return "No swap route found for this token. It may not be listed on Uniswap for this chain.";
+    if (raw.includes("execution reverted") || raw.includes("Execution reverted")) {
+      return "Transaction reverted on-chain. Your wallet may not hold this token or may lack gas. Check your balance and try again.";
+    }
     return `Swap failed (error ${status}). Try again shortly.`;
   }
 }
@@ -178,7 +192,7 @@ async function checkAndSubmitApproval(
     return;
   }
 
-  if (!walletMgr) throw new Error("Wallet manager not available for approval tx");
+  if (!walletMgr) throw new Error("Wallet manager not available for token approval");
 
   console.log("[execution] submitting approval tx...");
   const result = await walletMgr.sendTransaction(userId, {
@@ -206,7 +220,29 @@ async function executeEvmSwap(
     throw new Error(`No wallet for user ${intent.userId}`);
   }
 
-  const tokenIn = ETH_ADDRESS;
+  const isSell = intent.side === "sell";
+  const tokenIn = isSell ? intent.address : ETH_ADDRESS;
+  const tokenOut = isSell ? ETH_ADDRESS : intent.address;
+
+  // Pre-check: verify wallet holds the token before attempting a sell
+  if (isSell) {
+    const { balance: tokenBal, error: balErr } = await fetchTokenBalance(
+      quote.chainId, tokenIn, swapperAddress, 5_000,
+    ).catch(() => ({ balance: 0n, error: "fetch_failed" }));
+
+    if (!balErr && tokenBal === 0n) {
+      throw new Error(
+        `Your wallet doesn't hold any of this token on ${quote.chainId}. ` +
+        `Buy it first, then sell. Use /wallet to check your balances.`,
+      );
+    }
+    if (tokenBal > 0n) {
+      console.log(`[execution] token balance check: ${tokenBal.toString()} raw units on ${quote.chainId}`);
+    }
+  }
+
+  // For buys: amount is in ETH (NATIVE), convert to wei for EXACT_INPUT
+  // For sells: amount is in ETH the user wants back, use EXACT_OUTPUT
   const amountWei = intent.amount.unit === "NATIVE"
     ? nativeToWei(intent.amount.value)
     : String(Math.round(intent.amount.value * 1e6));
@@ -215,21 +251,28 @@ async function executeEvmSwap(
     throw new Error("No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.");
   }
 
-  // Step 1: Check approval (skipped for native ETH)
-  await checkAndSubmitApproval(tokenIn, amountWei, swapperAddress, numChainId, apiKey, intent.userId);
+  // Step 1: Check approval (skipped for native ETH, required for token sells)
+  // For sells, approve a large amount so Permit2 can spend the token
+  if (isSell) {
+    const MAX_UINT = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    await checkAndSubmitApproval(tokenIn, MAX_UINT, swapperAddress, numChainId, apiKey, intent.userId);
+  } else {
+    await checkAndSubmitApproval(tokenIn, amountWei, swapperAddress, numChainId, apiKey, intent.userId);
+  }
 
   // Step 2: Get quote (chainId as string per Uniswap API spec)
+  // Sells use EXACT_OUTPUT (specifying how much ETH/native to receive)
   const quoteResp = await fetch(`${UNISWAP_API}/quote`, {
     method: "POST",
     headers: UNISWAP_HEADERS(apiKey),
     body: JSON.stringify({
       swapper: swapperAddress,
       tokenIn,
-      tokenOut: intent.address,
+      tokenOut,
       tokenInChainId: String(numChainId),
       tokenOutChainId: String(numChainId),
       amount: amountWei,
-      type: "EXACT_INPUT",
+      type: isSell ? "EXACT_OUTPUT" : "EXACT_INPUT",
       slippageTolerance: parseFloat(quote.expectedSlippagePct.toFixed(2)),
       routingPreference: "BEST_PRICE",
     }),
@@ -281,41 +324,26 @@ async function executeEvmSwap(
     chainId: numChainId,
   };
 
-  // Try KeeperHub for MEV-protected submission, fall back to direct Privy
-  if (keeperHubClient && !keeperHubClient.circuitOpen) {
-    try {
-      console.log(`[execution] signing tx via Privy...`);
-      const signedTx = await withTimeout(
-        walletMgr.signTransaction(intent.userId, txParams),
-        WALLET_TIMEOUT_MS,
-        "Privy signTransaction",
-      );
-      console.log(`[execution] submitting to KeeperHub...`);
-      const status = await keeperHubClient.submitAndWait(signedTx, numChainId);
-      if (status.status === "confirmed" && status.txHash) {
-        console.log(`[execution] KeeperHub confirmed: ${status.txHash.slice(0, 16)}...`);
-        return {
-          txHash: status.txHash,
-          confirmedAt: Date.now(),
-          filledAmount: intent.amount,
-          actualPriceUsd: quote.priceUsd,
-        };
-      }
-      if (status.status === "failed") {
-        console.warn("[execution] KeeperHub bundle failed — falling back to direct");
-      }
-    } catch (err) {
-      console.warn(`[execution] KeeperHub error — direct submit: ${(err as Error).message?.slice(0, 80)}`);
+  console.log(`[execution] submitting swap transaction...`);
+  let result: { hash: string };
+  try {
+    result = await withTimeout(
+      walletMgr.sendTransaction(intent.userId, txParams),
+      WALLET_TIMEOUT_MS,
+      "sendTransaction",
+    );
+  } catch (txErr) {
+    const msg = String((txErr as Error).message ?? txErr);
+    console.error(`[execution] sendTransaction failed: ${msg.slice(0, 200)}`);
+    if (msg.includes("execution reverted") || msg.includes("Execution reverted")) {
+      const hint = isSell
+        ? "Transaction reverted. Your wallet may not hold enough of this token to sell. Check your balance and try again."
+        : "Transaction reverted. Your wallet may not have enough ETH for this swap. Fund your wallet and try again.";
+      throw new Error(hint);
     }
+    throw txErr;
   }
-
-  console.log(`[execution] direct submit via Privy sendTransaction...`);
-  const result = await withTimeout(
-    walletMgr.sendTransaction(intent.userId, txParams),
-    WALLET_TIMEOUT_MS,
-    "Privy sendTransaction",
-  );
-  console.log(`[execution] direct submit (${routingType}): ${result.hash.slice(0, 16)}...`);
+  console.log(`[execution] submitted (${routingType}): ${result.hash.slice(0, 16)}...`);
 
   return {
     txHash: result.hash,
@@ -330,9 +358,13 @@ async function executeSolanaSwap(
   quote: Quote,
 ): Promise<ExecutionReceipt> {
   const slippageBps = Math.floor(quote.expectedSlippagePct * 100);
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  const isSell = intent.side === "sell";
+  const inputMint = isSell ? intent.address : SOL_MINT;
+  const outputMint = isSell ? SOL_MINT : intent.address;
 
   const jupQuoteReq = await fetch(
-    `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${intent.address}&amount=${intent.amount.value}&slippageBps=${slippageBps}`,
+    `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${intent.amount.value}&slippageBps=${slippageBps}`,
     { signal: AbortSignal.timeout(8_000) },
   );
   if (!jupQuoteReq.ok) {
@@ -382,24 +414,20 @@ async function handleExecute(intentId: string): Promise<void> {
     return;
   }
 
-  // Handle user-initiated sell: find position, execute reverse swap
+  // Handle user-initiated sell: use tracked position if available, otherwise
+  // execute a direct sell swap (user may have bought externally or bot restarted)
   if (intent.side === "sell") {
-    const userPositions = Array.from(positionStore.values()).filter(
-      (p) => p.userId === intent.userId && p.address.toLowerCase() === intent.address.toLowerCase(),
+    const userPositions = getPositionsByUserInternal(intent.userId).filter(
+      (p) => p.address.toLowerCase() === intent.address.toLowerCase(),
     );
-    if (userPositions.length === 0) {
-      bus.emit("QUOTE_FAILED", {
-        intentId,
-        address: intent.address,
-        reason: "You don't have an open position in this token. Nothing to sell.",
-      });
+    if (userPositions.length > 0) {
+      const pos = userPositions[0]!;
+      await handleSell({ positionId: pos.positionId, fraction: 1.0, triggeredBy: { kind: "multiplier", value: 0 }, emittedAt: Date.now() });
       contextCache.delete(intentId);
       return;
     }
-    const pos = userPositions[0]!;
-    await handleSell({ positionId: pos.positionId, fraction: 1.0, triggeredBy: { kind: "multiplier", value: 0 }, emittedAt: Date.now() });
-    contextCache.delete(intentId);
-    return;
+    // No tracked position: execute sell swap directly (token → native)
+    console.log(`[execution] sell without tracked position — direct swap for ${intent.address.slice(0, 10)}...`);
   }
 
   console.log(`[execution] ${intent.chain} swap ${intent.address.slice(0, 10)}... for user ${intent.userId}`);
@@ -434,9 +462,10 @@ async function handleExecute(intentId: string): Promise<void> {
     txHash: receipt.txHash,
     remainingExits: [...intent.exits],
     openedAt: receipt.confirmedAt,
+    ...(intent.symbol ? { symbol: intent.symbol } : {}),
   };
 
-  positionStore.set(position.positionId, position);
+  setPosition(position.positionId, position);
   bus.emit("TRADE_EXECUTED", position);
   contextCache.delete(intentId);
 
@@ -444,7 +473,7 @@ async function handleExecute(intentId: string): Promise<void> {
 }
 
 async function handleSell(payload: ExecuteSellPayload): Promise<void> {
-  const position = positionStore.get(payload.positionId);
+  const position = getPosition(payload.positionId);
   if (!position) {
     console.warn(`[execution] sell: unknown position ${payload.positionId}`);
     return;
@@ -467,6 +496,7 @@ async function handleSell(payload: ExecuteSellPayload): Promise<void> {
     urgency: "NORMAL",
     rawText: `auto-sell ${payload.fraction * 100}%`,
     createdAt: Date.now(),
+    side: "sell",
   };
 
   const sellQuote: Quote = {
@@ -483,16 +513,37 @@ async function handleSell(payload: ExecuteSellPayload): Promise<void> {
   };
 
   try {
+    let receipt: ExecutionReceipt;
     if (sellIntent.chain === "evm") {
-      const receipt = await executeEvmSwap(sellIntent, sellQuote);
-      console.log(`[execution] sell done tx=${receipt.txHash.slice(0, 16)}...`);
+      receipt = await executeEvmSwap(sellIntent, sellQuote);
+    } else {
+      receipt = await executeSolanaSwap(sellIntent, sellQuote);
+    }
+    console.log(`[execution] sell done tx=${receipt.txHash.slice(0, 16)}...`);
+
+    const soldPosition: Position = {
+      ...position,
+      txHash: receipt.txHash,
+      filled: { value: position.filled.value * payload.fraction, unit: position.filled.unit },
+    };
+    bus.emit("TRADE_EXECUTED", soldPosition);
+
+    if (payload.fraction >= 1) {
+      deletePosition(payload.positionId);
     }
   } catch (err) {
-    console.error(`[execution] sell failed: ${(err as Error).message?.slice(0, 100)}`);
+    const msg = (err as Error).message ?? String(err);
+    console.error(`[execution] sell failed: ${msg.slice(0, 100)}`);
+    bus.emit("QUOTE_FAILED", {
+      intentId: position.intentId,
+      address: position.address,
+      reason: `Sell failed: ${msg.slice(0, 150)}`,
+    });
   }
 }
 
 export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
+  loadPositions();
   walletMgr = deps.walletManager ?? null;
   keeperHubClient = deps.keeperHub ?? null;
 
@@ -500,7 +551,10 @@ export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
     console.warn("[execution] no wallet manager — trades will fail");
   }
   if (keeperHubClient) {
-    console.log("[execution] KeeperHub active — MEV-protected submission enabled");
+    console.log("[execution] KeeperHub active — checking connectivity...");
+    keeperHubClient.checkReachable().then((ok) => {
+      if (ok) console.log("[execution] KeeperHub reachable — MEV-protected submission enabled");
+    }).catch(() => {});
   }
 
   const onTradeRequest = (intent: TradeIntent) => {
@@ -547,9 +601,7 @@ export function startExecutionAgent(deps: ExecutionAgentDeps = {}): () => void {
 }
 
 export function getPositions(): Position[] {
-  return Array.from(positionStore.values());
+  return getAllPositions();
 }
 
-export function getPositionsByUser(userId: string): Position[] {
-  return Array.from(positionStore.values()).filter((p) => p.userId === userId);
-}
+export { getPositionsByUser } from "./position-store";

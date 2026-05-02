@@ -154,7 +154,8 @@ export function startQuoteAgent(): () => void {
           route: `Uniswap (${chainHint} testnet)`,
           completedAt: Date.now(),
         };
-        bus.emit("QUOTE_RESULT", testnetQuote);
+        // Defer to next tick so all TRADE_REQUEST listeners (including execution) cache the intent first
+        process.nextTick(() => bus.emit("QUOTE_RESULT", testnetQuote));
         console.log(
           `[QuoteAgent] testnet quote emitted for ${chainHint}, skipping DexScreener`,
         );

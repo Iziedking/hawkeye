@@ -13,6 +13,9 @@ build-artifacts/
 # Temporary probe / debug scripts used during verification gates
 .tmp-*
 
+# Runtime data (positions, user state)
+data/
+
 # Private keys and binaries
 *.pem
 src/integrations/gensyn/axl-src/node.exe

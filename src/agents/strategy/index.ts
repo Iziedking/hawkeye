@@ -6,6 +6,7 @@ import type {
   TradeIntent,
   LlmClient,
   UserConfirmedPayload,
+  QuoteFailedPayload,
 } from "../../shared/types";
 
 type PendingTrade = {
@@ -36,6 +37,12 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
       if (pending.has(intent.intentId)) {
         pending.delete(intent.intentId);
         console.log(`[strategy] timeout waiting for results — intent=${intent.intentId}`);
+        emitDecision({
+          intentId: intent.intentId,
+          decision: "REJECT",
+          reason: "Timed out waiting for safety and quote results. Try again.",
+          rejectedAt: Date.now(),
+        });
       }
     }, MERGE_TIMEOUT_MS);
   };
@@ -103,9 +110,23 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
     }
   };
 
+  const onQuoteFailed = (payload: QuoteFailedPayload): void => {
+    const entry = pending.get(payload.intentId);
+    if (!entry) return;
+    pending.delete(payload.intentId);
+    emitDecision({
+      intentId: entry.intent.intentId,
+      decision: "REJECT",
+      reason: payload.reason,
+      rejectedAt: Date.now(),
+    });
+    console.log(`[strategy] ${payload.intentId.slice(0, 8)} — REJECTED (quote failed: ${payload.reason.slice(0, 80)})`);
+  };
+
   bus.on("TRADE_REQUEST", onRequest);
   bus.on("SAFETY_RESULT", onSafety);
   bus.on("QUOTE_RESULT", onQuote);
+  bus.on("QUOTE_FAILED", onQuoteFailed);
   bus.on("USER_CONFIRMED", onUserConfirmed);
   console.log("[strategy] agent started");
 
@@ -113,6 +134,7 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
     bus.off("TRADE_REQUEST", onRequest);
     bus.off("SAFETY_RESULT", onSafety);
     bus.off("QUOTE_RESULT", onQuote);
+    bus.off("QUOTE_FAILED", onQuoteFailed);
     bus.off("USER_CONFIRMED", onUserConfirmed);
     for (const timer of confirmTimers.values()) clearTimeout(timer);
     confirmTimers.clear();

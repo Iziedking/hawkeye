@@ -231,6 +231,124 @@ export async function fetchNativeBalance(
 }
 
 /**
+ * Fetch ERC-20 token balance via balanceOf(address).
+ * Returns raw token units (not adjusted for decimals).
+ */
+export async function fetchTokenBalance(
+  chainId: string,
+  tokenAddress: string,
+  walletAddress: string,
+  timeoutMs = 5_000,
+): Promise<{ balance: bigint; error?: string }> {
+  const rpcs = [getChainRpc(chainId), getChainFallbackRpc(chainId)];
+  const paddedWallet = walletAddress.toLowerCase().replace("0x", "").padStart(64, "0");
+  const callData = `0x70a08231${paddedWallet}`;
+
+  for (const rpc of rpcs) {
+    try {
+      const resp = await fetch(rpc, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "eth_call",
+          params: [{ to: tokenAddress, data: callData }, "latest"],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = (await resp.json()) as { result?: string; error?: { message?: string } };
+      if (data.error) continue;
+      if (!data.result || data.result === "0x") return { balance: 0n };
+      return { balance: BigInt(data.result) };
+    } catch {
+      continue;
+    }
+  }
+  return { balance: 0n, error: "rpc_failed" };
+}
+
+/**
+ * Ankr chain name mapping for multichain API.
+ */
+const ANKR_CHAIN_NAMES: Record<string, string> = {
+  ethereum: "eth",
+  base: "base",
+  polygon: "polygon_pos",
+  arbitrum: "arbitrum",
+  optimism: "optimism",
+  bsc: "bsc",
+  avalanche: "avalanche",
+  fantom: "fantom",
+  linea: "linea",
+  scroll: "scroll",
+  zksync: "zksync_era",
+};
+
+export type TokenAsset = {
+  blockchain: string;
+  tokenName: string;
+  tokenSymbol: string;
+  tokenDecimals: number;
+  contractAddress: string;
+  balance: string;
+  balanceUsd: string;
+  tokenPrice: string;
+  thumbnail: string;
+};
+
+/**
+ * Fetch all ERC-20 token holdings across chains via Ankr multichain API.
+ * Free, no API key required. Returns tokens with USD values.
+ */
+export async function fetchTokenHoldings(
+  walletAddress: string,
+  chains: string[] = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc"],
+  timeoutMs = 10_000,
+): Promise<{ assets: TokenAsset[]; totalBalanceUsd: string; error?: string }> {
+  const ankrChains = chains
+    .map((c) => ANKR_CHAIN_NAMES[c])
+    .filter((c): c is string => c !== undefined);
+
+  try {
+    const resp = await fetch("https://rpc.ankr.com/multichain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        method: "ankr_getAccountBalance",
+        params: {
+          walletAddress,
+          blockchain: ankrChains,
+          onlyWhitelisted: true,
+        },
+        id: 1,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!resp.ok) return { assets: [], totalBalanceUsd: "0", error: `ankr_${resp.status}` };
+
+    const data = (await resp.json()) as {
+      result?: {
+        totalBalanceUsd?: string;
+        assets?: TokenAsset[];
+      };
+      error?: { message?: string };
+    };
+
+    if (data.error) return { assets: [], totalBalanceUsd: "0", error: data.error.message ?? "unknown" };
+
+    return {
+      assets: data.result?.assets ?? [],
+      totalBalanceUsd: data.result?.totalBalanceUsd ?? "0",
+    };
+  } catch (err) {
+    return { assets: [], totalBalanceUsd: "0", error: (err as Error).message };
+  }
+}
+
+/**
  * Get the block explorer URL for a chain.
  */
 export function getChainExplorer(chainId: string): string {

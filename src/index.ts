@@ -14,6 +14,9 @@ import {
 } from "./shared/health";
 import { startTelegramGateway } from "./gateway/telegram-gateway";
 import { createWalletManager } from "./integrations/privy/index";
+import { createKeeperHubWalletManager } from "./integrations/keeperhub/wallet";
+import { createDualWalletManager } from "./integrations/keeperhub/dual-wallet";
+import type { WalletManager } from "./integrations/privy/index";
 import { OgComputeClient } from "./integrations/0g/compute";
 import { OgStorageClient } from "./integrations/0g/storage";
 import { RegistryClient } from "./integrations/0g/registry-client";
@@ -181,15 +184,54 @@ async function main(): Promise<void> {
   const storage = initStorage();
   const registry = initRegistry();
 
-  let wm: ReturnType<typeof createWalletManager> | null = null;
+  const keeperHub = initKeeperHub();
+
+  // Try fetching KeeperHub wallet address from API if not in env
+  if (keeperHub && !envOr("KH_WALLET_ADDRESS", "")) {
+    const addr = await keeperHub.fetchWalletAddress();
+    if (addr) {
+      process.env["KH_WALLET_ADDRESS"] = addr;
+      log.keeper(`wallet address fetched from API: ${addr.slice(0, 10)}...`);
+    }
+  }
+
+  let khWm: WalletManager | null = null;
+  let privyWm: WalletManager | null = null;
+
+  if (keeperHub && envOr("KH_WALLET_ADDRESS", "")) {
+    try {
+      khWm = createKeeperHubWalletManager({ keeperHub });
+      log.keeper("KeeperHub wallet ready (Turnkey, EVM, MEV-protected)");
+    } catch (err) {
+      log.warn(`KeeperHub wallet: ${(err as Error).message}`);
+    }
+  }
+
   try {
-    wm = createWalletManager();
-    log.privy("wallet manager ready");
+    privyWm = createWalletManager();
+    log.privy("Privy wallet ready (per-user, EVM and Solana)");
   } catch (err) {
     log.warn(`Privy: ${(err as Error).message}`);
   }
 
-  const keeperHub = initKeeperHub();
+  let wm: WalletManager | null = null;
+  let walletProvider = "unavailable";
+
+  if (khWm || privyWm) {
+    try {
+      const dual = createDualWalletManager(khWm, privyWm);
+      wm = dual;
+      walletProvider = [
+        khWm ? "KeeperHub" : null,
+        privyWm ? "Privy" : null,
+      ].filter(Boolean).join(" + ");
+      log.boot(`dual wallet manager: ${walletProvider}`);
+    } catch (err) {
+      log.warn(`Dual wallet: ${(err as Error).message}`);
+      wm = khWm ?? privyWm;
+      walletProvider = khWm ? "KeeperHub" : privyWm ? "Privy" : "unavailable";
+    }
+  }
 
   const stopTracer = startSwarmTracer();
   const stopAudit = startAuditTrail({ storage, registry });
@@ -232,7 +274,7 @@ async function main(): Promise<void> {
   registerHealthCheck(() => ({
     name: "Wallets",
     ok: wm !== null,
-    detail: wm ? "Privy" : "unavailable",
+    detail: walletProvider,
   }));
   registerHealthCheck(() => ({
     name: "0G Storage",

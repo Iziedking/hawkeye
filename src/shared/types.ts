@@ -69,6 +69,7 @@ export type TradeIntent = {
   createdAt: number;
   chainHint?: ChainId;
   side?: "buy" | "sell";
+  symbol?: string;
 };
 
 export type SafetyFlag =
@@ -143,6 +144,7 @@ export type Position = {
   txHash: string;
   remainingExits: PartialExit[];
   openedAt: number;
+  symbol?: string;
 };
 
 export type ExecuteSellPayload = {
