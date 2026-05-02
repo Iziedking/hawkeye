@@ -19,6 +19,7 @@ import type {
   TradingMode,
   PositionUpdate,
   QuoteFailedPayload,
+  ResearchSubIntent,
 } from "../shared/types";
 import { loadEnvLocal, envOr } from "../shared/env";
 import { resolveToken, resolveChainAlias } from "../shared/tokens";
@@ -380,6 +381,17 @@ export async function startTelegramGateway(
     }
 
     const lines: string[] = [];
+    const subIntentHeaders: Partial<Record<ResearchSubIntent, string>> = {
+      WHALE_ANALYSIS:  "<b>Whale Intelligence</b>",
+      SAFETY_CHECK:    "<b>Safety Analysis</b>",
+      PRICE_ACTION:    "<b>Price Action</b>",
+      MARKET_OVERVIEW: "<b>Market Overview</b>",
+      CATEGORY:        "<b>Category Tokens</b>",
+    };
+    if (res.subIntent && subIntentHeaders[res.subIntent]) {
+      lines.push(subIntentHeaders[res.subIntent]!);
+      lines.push("");
+    }
     const hasName = (res.symbol && !res.symbol.startsWith("0x")) || (res.tokenName && !res.tokenName.startsWith("0x"));
     const label = hasName ? (res.symbol ?? res.tokenName ?? res.address.slice(0, 10)) : res.address.slice(0, 10);
     if (hasName) {
@@ -1666,6 +1678,9 @@ export async function startTelegramGateway(
     const requestId = randomUUID();
     pendingMap.set(requestId, { ctx: rctx, rootHash: null });
 
+    const subIntent = (d["subIntent"] as ResearchSubIntent) ?? "TOKEN_LOOKUP";
+    const tools = Array.isArray(d["tools"]) ? (d["tools"] as string[]) : [];
+
     bus.emit("RESEARCH_REQUEST", {
       requestId,
       userId: result.userId,
@@ -1676,16 +1691,20 @@ export async function startTelegramGateway(
       question: typeof d["question"] === "string" ? d["question"] : result.rawText,
       rawText: result.rawText,
       createdAt: Date.now(),
+      subIntent,
+      tools,
     });
 
-    const isTrending = /\b(trending|trend|hot|alpha|movers?|pumping|top tokens?)\b/i.test(result.rawText);
-    if (address) {
-      void reply(rctx, `Looking up ${codeAddr(address)}...`);
-    } else if (isTrending) {
-      void reply(rctx, "Finding what's hot right now...");
-    } else {
-      void reply(rctx, "Looking into that. Paste a contract address for a full breakdown.");
-    }
+    const thinkingMsgs: Record<ResearchSubIntent, string> = {
+      TRENDING:        "Finding what's hot right now...",
+      MARKET_OVERVIEW: "Pulling market data...",
+      WHALE_ANALYSIS:  "Checking whale activity...",
+      SAFETY_CHECK:    "Running safety scan...",
+      PRICE_ACTION:    "Checking price action...",
+      CATEGORY:        "Browsing tokens in that category...",
+      TOKEN_LOOKUP:    address ? `Looking up ${codeAddr(address)}...` : "Looking into that. Paste a contract address for a full breakdown.",
+    };
+    void reply(rctx, thinkingMsgs[subIntent] ?? "Looking into that...");
   }
 
   function handleResearchWallet(result: RouterResult, rctx: ReplyCtx): void {

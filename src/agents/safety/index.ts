@@ -100,8 +100,11 @@ const FLAG_DEDUCTIONS: Record<SafetyFlag, number> = {
   HIGH_TAX: 25,
   BLACKLIST: 20,
   LOW_LIQUIDITY: 20,
+  NO_VOLUME: 20,
   UNVERIFIED_CONTRACT: 15,
+  CONCENTRATED_SUPPLY: 15,
   PROXY_CONTRACT: 10,
+  VERY_NEW: 10,
 };
 
 function computeScore(
