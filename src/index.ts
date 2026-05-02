@@ -30,6 +30,7 @@ import { startResearchAgent } from "./agents/research/index";
 import { startMonitorAgent } from "./agents/monitor/index";
 import { startCopyTradeAgent } from "./agents/copy-trade/index";
 import { KeeperHubClient, KeeperHubError } from "./integrations/keeperhub/index";
+import { ArkhamClient } from "./integrations/arkham/index";
 
 loadEnvLocal();
 
@@ -149,6 +150,10 @@ process.on("uncaughtException", (err) => {
   log.error("uncaught exception", err);
 });
 
+process.on("unhandledRejection", (reason) => {
+  log.error("unhandled rejection", reason instanceof Error ? reason : new Error(String(reason)));
+});
+
 function initKeeperHub(): KeeperHubClient | null {
   try {
     const kh = new KeeperHubClient();
@@ -176,15 +181,27 @@ async function main(): Promise<void> {
   const storage = initStorage();
   const registry = initRegistry();
 
+  const keeperHub = initKeeperHub();
+
+  // Auto-fetch KeeperHub execution wallet address for MEV-protected swaps
+  if (keeperHub && !envOr("KH_WALLET_ADDRESS", "")) {
+    const addr = await keeperHub.fetchWalletAddress();
+    if (addr) {
+      process.env["KH_WALLET_ADDRESS"] = addr;
+      log.keeper(`execution wallet: ${addr.slice(0, 10)}...`);
+    }
+  }
+  if (keeperHub && envOr("KH_WALLET_ADDRESS", "")) {
+    log.keeper("mainnet swaps will route through KeeperHub (MEV protection)");
+  }
+
   let wm: ReturnType<typeof createWalletManager> | null = null;
   try {
     wm = createWalletManager();
-    log.privy("wallet manager ready");
+    log.privy("wallet manager ready (per-user wallets)");
   } catch (err) {
     log.warn(`Privy: ${(err as Error).message}`);
   }
-
-  const keeperHub = initKeeperHub();
 
   const stopTracer = startSwarmTracer();
   const stopAudit = startAuditTrail({ storage, registry });
@@ -195,7 +212,14 @@ async function main(): Promise<void> {
   const stopSafety = startSafetyAgent();
   const stopQuote = startQuoteAgent();
   const stopExecution = startExecutionAgent({ walletManager: wm, keeperHub });
-  const stopResearch = startResearchAgent(llm ? { llm } : {});
+  let arkham: ArkhamClient | undefined;
+  try {
+    arkham = new ArkhamClient();
+    log.boot("Arkham Intelligence client initialized");
+  } catch {
+    log.warn("ARKHAM_API_KEY not set — research will run without Arkham data");
+  }
+  const stopResearch = startResearchAgent({ llm: llm ?? undefined, arkham });
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
 

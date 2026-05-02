@@ -183,6 +183,20 @@ export async function searchDexScreener(
   }
 }
 
+// Reverse lookup: given a contract address, find which chain and symbol it belongs to.
+// Critical for testnet tokens that DexScreener can't index.
+export function lookupKnownAddress(address: string): ResolvedToken | null {
+  const lower = address.toLowerCase();
+  for (const [chainName, tokens] of Object.entries(KNOWN_TOKENS)) {
+    for (const [symbol, addr] of Object.entries(tokens)) {
+      if (addr.toLowerCase() === lower) {
+        return { address: addr, symbol, chain: chainName, source: "known" };
+      }
+    }
+  }
+  return null;
+}
+
 export async function resolveToken(symbol: string, chain?: string): Promise<ResolvedToken | null> {
   const known = lookupKnownToken(symbol, chain);
   if (known) return known;

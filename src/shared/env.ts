@@ -88,6 +88,7 @@ export function validateEnv(): EnvCheck {
         enables: "GoPlus token safety scanning",
       },
       { name: "KH_API_KEY", ok: has("KH_API_KEY"), enables: "KeeperHub MEV-protected execution" },
+      { name: "KH_WALLET_ADDRESS", ok: has("KH_WALLET_ADDRESS"), enables: "KeeperHub Turnkey wallet provider" },
       {
         name: "HAWKEYE_MASTER_KEY",
         ok: has("HAWKEYE_MASTER_KEY"),

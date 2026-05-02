@@ -166,7 +166,7 @@ export const log = {
     w(bannerLine(C.lightBrown, "Gensyn AXL", cfg.gensyn, gensynDetail) + "\n");
     w(bannerLine(C.deepPink, "Uniswap API", cfg.uniswap, cfg.uniswap ? "Trading API v1" : "disabled") + "\n");
     w(bannerLine(C.green, "KeeperHub", cfg.keeperHub, cfg.keeperHub ? "MEV protection" : "disabled") + "\n");
-    w(bannerLine(C.cyan, "Privy Wallets", cfg.privy, cfg.privy ? "agent wallets" : "disabled") + "\n");
+    w(bannerLine(C.cyan, "Privy Wallets", cfg.privy, cfg.privy ? "per-user wallets" : "disabled") + "\n");
     w(bannerLine(C.cyan, "LLM Fallback", cfg.llmFallback !== null, cfg.llmFallback ?? "disabled") + "\n");
 
     w(`${BAR}\n`);

@@ -79,6 +79,8 @@ export type WalletManager = {
   createWalletWithEmail: (userId: string, email: string) => Promise<PrivyWallet>;
   linkEmail: (userId: string, email: string) => Promise<boolean>;
   getWallet: (userId: string) => PrivyWallet | undefined;
+  getSolanaWallet: (userId: string) => PrivyWallet | undefined;
+  ensureSolanaWallet: (userId: string) => Promise<PrivyWallet | null>;
   walletAddress: (userId: string) => string | undefined;
   signTransaction: (userId: string, tx: SignTxInput) => Promise<string>;
   sendTransaction: (userId: string, tx: SignTxInput) => Promise<SendTxResult>;
@@ -119,15 +121,20 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
 
   // In-memory cache of agent wallets for fast lookups
   const walletCache = new Map<string, PrivyWallet>();
+  const solanaWalletCache = new Map<string, PrivyWallet>();
 
   // Hydrate cache from store
   for (const [email, user] of Object.entries(store.allUsers())) {
     if (user.agentWallet) {
       walletCache.set(email, user.agentWallet);
     }
+    if (user.solanaWallet) {
+      solanaWalletCache.set(email, user.solanaWallet);
+    }
   }
   const restored = walletCache.size;
-  if (restored > 0) log.privy(`restored ${restored} wallet(s) from disk`);
+  const restoredSol = solanaWalletCache.size;
+  if (restored > 0) log.privy(`restored ${restored} EVM + ${restoredSol} Solana wallet(s) from disk`);
 
   function resolveEmail(userId: string): string | undefined {
     if (userId.includes("@")) return userId;
@@ -152,9 +159,9 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       email = `${userId}@hawkeye.local`;
     }
 
-    const wallet = await client.wallets().create({
-      chain_type: "ethereum",
-    });
+    const evmOpts: Record<string, unknown> = { chain_type: "ethereum" };
+    if (profile?.privyUserId) evmOpts["owner"] = { user_id: profile.privyUserId };
+    const wallet = await client.wallets().create(evmOpts as { chain_type: "ethereum" });
 
     const pw: PrivyWallet = {
       walletId: wallet.id,
@@ -173,6 +180,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
         privyUserId: null,
         platformIds: [{ platform: "telegram", id: userId }],
         agentWallet: pw,
+        solanaWallet: null,
         externalWallets: [],
         activeWallet: { kind: "agent" },
         createdAt: Date.now(),
@@ -183,8 +191,57 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
 
     store.indexWallet(pw.address, email);
     walletCache.set(email, pw);
-    console.log("[privy] created wallet for", userId, "→", wallet.address);
+    console.log("[privy] created EVM wallet for", userId, "→", wallet.address);
+
+    // Create Solana wallet in background (don't block EVM wallet return)
+    void createSolanaWalletForEmail(email).catch((err) => {
+      console.warn("[privy] background Solana wallet creation failed:", (err as Error).message?.slice(0, 80));
+    });
+
     return pw;
+  }
+
+  async function createSolanaWalletForEmail(email: string): Promise<PrivyWallet | null> {
+    const profile = store.getUser(email);
+    if (!profile) return null;
+    if (profile.solanaWallet) return profile.solanaWallet;
+
+    try {
+      const solOpts: Record<string, unknown> = { chain_type: "solana" };
+      if (profile.privyUserId) solOpts["owner"] = { user_id: profile.privyUserId };
+      const wallet = await client.wallets().create(solOpts as { chain_type: "solana" });
+
+      const sw: PrivyWallet = {
+        walletId: wallet.id,
+        address: wallet.address,
+        chainType: wallet.chain_type,
+        createdAt: Date.now(),
+      };
+
+      profile.solanaWallet = sw;
+      store.setUser(email, profile);
+      store.indexWallet(sw.address, email);
+      solanaWalletCache.set(email, sw);
+      console.log("[privy] created Solana wallet for", email, "→", wallet.address);
+      return sw;
+    } catch (err) {
+      console.warn("[privy] Solana wallet creation failed:", (err as Error).message?.slice(0, 80));
+      return null;
+    }
+  }
+
+  async function ensureSolanaWallet(userId: string): Promise<PrivyWallet | null> {
+    const email = resolveEmail(userId);
+    if (!email) return null;
+    const cached = solanaWalletCache.get(email);
+    if (cached) return cached;
+    return createSolanaWalletForEmail(email);
+  }
+
+  function getSolanaWallet(userId: string): PrivyWallet | undefined {
+    const email = resolveEmail(userId);
+    if (!email) return undefined;
+    return solanaWalletCache.get(email);
   }
 
   async function createWalletWithEmail(userId: string, email: string): Promise<PrivyWallet> {
@@ -207,9 +264,9 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       console.warn("[privy] user creation failed, wallet-only mode:", (err as Error).message?.slice(0, 80));
     }
 
-    const wallet = await client.wallets().create({
-      chain_type: "ethereum",
-    });
+    const walletOpts: Record<string, unknown> = { chain_type: "ethereum" };
+    if (privyUserId) walletOpts["owner"] = { user_id: privyUserId };
+    const wallet = await client.wallets().create(walletOpts as { chain_type: "ethereum" });
 
     const pw: PrivyWallet = {
       walletId: wallet.id,
@@ -224,6 +281,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       privyUserId,
       platformIds: [{ platform: "telegram", id: userId }],
       agentWallet: pw,
+      solanaWallet: null,
       externalWallets: [],
       activeWallet: { kind: "agent" },
       createdAt: Date.now(),
@@ -238,6 +296,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
         store.deleteUser(existing);
       }
       walletCache.delete(existing);
+      solanaWalletCache.delete(existing);
     }
 
     store.setUser(email, newProfile);
@@ -245,7 +304,13 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     store.indexWallet(pw.address, email);
     walletCache.set(email, pw);
 
-    console.log("[privy] created wallet for", email, "→", wallet.address);
+    console.log("[privy] created EVM wallet for", email, "→", wallet.address);
+
+    // Create Solana wallet in background
+    void createSolanaWalletForEmail(email).catch((err) => {
+      console.warn("[privy] background Solana wallet creation failed:", (err as Error).message?.slice(0, 80));
+    });
+
     return pw;
   }
 
@@ -283,6 +348,10 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       if (profile.agentWallet) {
         walletCache.delete(oldEmail);
         walletCache.set(email, profile.agentWallet);
+      }
+      if (profile.solanaWallet) {
+        solanaWalletCache.delete(oldEmail);
+        solanaWalletCache.set(email, profile.solanaWallet);
       }
     }
 
@@ -463,9 +532,9 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       to: tx.to,
       chain_id: tx.chainId,
     };
-    if (tx.value !== undefined) txObj["value"] = tx.value;
+    if (tx.value !== undefined) txObj["value"] = toHex(tx.value);
     if (tx.data) txObj["data"] = tx.data;
-    if (tx.gasLimit) txObj["gas_limit"] = tx.gasLimit;
+    if (tx.gasLimit) txObj["gas_limit"] = toHex(tx.gasLimit);
 
     const result = await client
       .wallets()
@@ -477,6 +546,11 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     return result.signed_transaction;
   }
 
+  function toHex(val: number | string): string {
+    const n = typeof val === "string" ? BigInt(val) : BigInt(Math.floor(val));
+    return "0x" + n.toString(16);
+  }
+
   async function sendTransaction(userId: string, tx: SignTxInput): Promise<SendTxResult> {
     const w = resolveAgentWallet(userId);
     const caip2 = resolveCaip2(tx.chainId);
@@ -485,9 +559,9 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       to: tx.to,
       chain_id: tx.chainId,
     };
-    if (tx.value !== undefined) txObj["value"] = tx.value;
+    if (tx.value !== undefined) txObj["value"] = toHex(tx.value);
     if (tx.data) txObj["data"] = tx.data;
-    if (tx.gasLimit) txObj["gas_limit"] = tx.gasLimit;
+    if (tx.gasLimit) txObj["gas_limit"] = toHex(tx.gasLimit);
 
     const result = await client
       .wallets()
@@ -505,6 +579,8 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     createWalletWithEmail,
     linkEmail,
     getWallet,
+    getSolanaWallet,
+    ensureSolanaWallet,
     walletAddress,
     signTransaction,
     sendTransaction,

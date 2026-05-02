@@ -68,6 +68,8 @@ export type TradeIntent = {
   rawText: string;
   createdAt: number;
   chainHint?: ChainId;
+  side?: "buy" | "sell";
+  symbol?: string;
 };
 
 export type SafetyFlag =
@@ -107,6 +109,8 @@ export type Quote = {
   feeEstimateUsd: number;
   route: string;
   completedAt: number;
+  tokenName?: string;
+  tokenSymbol?: string;
 };
 
 export type StrategyDecision =
@@ -140,6 +144,8 @@ export type Position = {
   txHash: string;
   remainingExits: PartialExit[];
   openedAt: number;
+  symbol?: string;
+  mevProtected?: boolean;
 };
 
 export type ExecuteSellPayload = {
