@@ -2126,25 +2126,149 @@ async function handleWalletRequest(req: ResearchRequest, arkham?: ArkhamClient, 
   return true;
 }
 
+// Chains where CoinGecko has a dedicated category (returns chain-specific results).
+// All others fall back to DexScreener profiles/boosts for genuinely chain-local tokens.
+const COINGECKO_SPECIFIC_CATEGORY_CHAINS = new Set(["base", "bsc", "solana"]);
+
 async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
   const chainHints = detectChainsFromText(req.rawText ?? "");
   const chain = chainHints[0] ?? "ethereum";
   log.agent("research", `category query: chain=${chain}`);
 
-  const coins = await fetchCoinGeckoTrending(chain, 10).catch(() => [] as CoinGeckoMarketItem[]);
-  if (coins.length === 0) return false;
+  const chainLabel = chain.charAt(0).toUpperCase() + chain.slice(1);
 
-  const chainLabel = chain === "ethereum" ? "Ethereum" : chain.charAt(0).toUpperCase() + chain.slice(1);
-  const lines: string[] = [`Top tokens on ${chainLabel} by volume:\n`];
+  // CoinGecko path: only for chains with a dedicated category
+  if (COINGECKO_SPECIFIC_CATEGORY_CHAINS.has(chain)) {
+    const coins = await fetchCoinGeckoTrending(chain, 10).catch(() => [] as CoinGeckoMarketItem[]);
+    if (coins.length > 0) {
+      const lines: string[] = [`Top memecoins on ${chainLabel} by volume:\n`];
+      let rank = 0;
+      for (const c of coins.slice(0, 10)) {
+        rank++;
+        const price = c.current_price != null ? `$${c.current_price.toPrecision(4)}` : "n/a";
+        const vol = c.total_volume != null && c.total_volume > 0 ? formatCompact(c.total_volume) : "";
+        const h24 = c.price_change_percentage_24h != null
+          ? `${c.price_change_percentage_24h > 0 ? "+" : ""}${c.price_change_percentage_24h.toFixed(1)}%`
+          : "";
+        lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24 ? ` (${h24})` : ""}${vol ? ` | vol ${vol}` : ""}`);
+      }
+      bus.emit("RESEARCH_RESULT", {
+        requestId: req.requestId,
+        address: "category",
+        chain: req.chain ?? "evm",
+        summary: lines.join("\n"),
+        safetyScore: null,
+        priceUsd: null,
+        liquidityUsd: null,
+        flags: [],
+        completedAt: Date.now(),
+        subIntent: "CATEGORY",
+      } satisfies ResearchResult);
+      return true;
+    }
+  }
+
+  // DexScreener path: profiles + boosts filtered to the requested chain
+  const [profilesS, boostsS] = await Promise.allSettled([
+    getLatestTokenProfiles(),
+    getLatestBoosts(),
+  ]);
+  const profiles = profilesS.status === "fulfilled" ? profilesS.value : [];
+  const boosts = boostsS.status === "fulfilled" ? boostsS.value : [];
+
+  const seen = new Set<string>();
+  const candidates: Array<{ address: string }> = [];
+  for (const t of [...profiles, ...boosts]) {
+    const addr = (t as { tokenAddress?: string }).tokenAddress ?? "";
+    const cid = (t as { chainId?: string }).chainId ?? "";
+    if (!addr || cid !== chain) continue;
+    const key = addr.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ address: addr });
+  }
+
+  // If profiles/boosts feed has no tokens for this chain right now, fall back to
+  // searching common meme keywords directly on DexScreener filtered to the chain.
+  if (candidates.length === 0) {
+    for (const term of ["meme", "pepe", "dog", "inu", "cat", "shib"]) {
+      const { pairs } = await searchPairs(term, { limit: 10 }).catch(() => ({ pairs: [] as DexPair[] }));
+      for (const p of pairs) {
+        if (p.chainId !== chain || (p.volume?.h24 ?? 0) === 0) continue;
+        const addr = p.baseToken?.address ?? "";
+        if (!addr) continue;
+        const key = addr.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ address: addr });
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "category",
+      chain: req.chain ?? "evm",
+      summary: `No active memecoins found on ${chainLabel} right now. DexScreener's trending feed has nothing for this chain at the moment — try again shortly.`,
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+      subIntent: "CATEGORY",
+    } satisfies ResearchResult);
+    return true;
+  }
+
+  // Enrich candidates with pair data
+  const enriched = (await Promise.all(
+    candidates.slice(0, 15).map(async (c) => {
+      try {
+        const { pairs } = await searchPairs(c.address, { limit: 3 });
+        const best = pairs
+          .filter((p) => p.chainId === chain && (p.volume?.h24 ?? 0) > 0)
+          .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0))[0];
+        if (!best?.baseToken?.address) return null;
+        return {
+          symbol: best.baseToken.symbol ?? "?",
+          name: best.baseToken.name ?? "?",
+          price: parseFloat(best.priceUsd ?? "0") || null,
+          volume24h: best.volume?.h24 ?? 0,
+          priceChange24h: best.priceChange?.h24 ?? null,
+        };
+      } catch { return null; }
+    }),
+  )).filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => b.volume24h - a.volume24h)
+    .slice(0, 10);
+
+  if (enriched.length === 0) {
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "category",
+      chain: req.chain ?? "evm",
+      summary: `No active memecoins with volume found on ${chainLabel} right now. Try again shortly.`,
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+      subIntent: "CATEGORY",
+    } satisfies ResearchResult);
+    return true;
+  }
+
+  const lines: string[] = [`Top active tokens on ${chainLabel} (DexScreener):\n`];
   let rank = 0;
-  for (const c of coins.slice(0, 10)) {
+  for (const c of enriched) {
     rank++;
-    const price = c.current_price != null ? `$${c.current_price.toPrecision(4)}` : "n/a";
-    const vol = c.total_volume != null && c.total_volume > 0 ? formatCompact(c.total_volume) : "";
-    const h24 = c.price_change_percentage_24h != null
-      ? `${c.price_change_percentage_24h > 0 ? "+" : ""}${c.price_change_percentage_24h.toFixed(1)}%`
+    const price = c.price != null ? `$${c.price.toPrecision(4)}` : "n/a";
+    const h24 = c.priceChange24h != null
+      ? ` (${c.priceChange24h > 0 ? "+" : ""}${c.priceChange24h.toFixed(1)}%)`
       : "";
-    lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24 ? ` (${h24})` : ""}${vol ? ` | vol ${vol}` : ""}`);
+    const vol = c.volume24h > 0 ? ` | vol ${formatCompact(c.volume24h)}` : "";
+    lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24}${vol}`);
   }
 
   bus.emit("RESEARCH_RESULT", {
@@ -2181,8 +2305,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   }
 
   if (subIntent === "CATEGORY") {
-    const handled = await handleCategoryRequest(req);
-    if (handled) return;
+    await handleCategoryRequest(req);
+    return;
   }
 
   if (subIntent === "TRENDING") {
