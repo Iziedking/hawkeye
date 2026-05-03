@@ -55,8 +55,12 @@ export class FallbackLlmClient {
   private primaryHealthy = true;
   private log: (msg: string) => void;
 
-  get ogHealthy(): boolean { return this.primaryHealthy && this.primary !== null; }
-  get usingFallback(): boolean { return !this.primaryHealthy && this.fallback !== null; }
+  get ogHealthy(): boolean {
+    return this.primaryHealthy && this.primary !== null;
+  }
+  get usingFallback(): boolean {
+    return !this.primaryHealthy && this.fallback !== null;
+  }
   get fallbackName(): string | null {
     if (!this.usingFallback || !this.fallback) return null;
     return (this.fallback as { model?: string }).model ?? "fallback";

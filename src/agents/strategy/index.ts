@@ -6,6 +6,7 @@ import type {
   TradeIntent,
   LlmClient,
   UserConfirmedPayload,
+  QuoteFailedPayload,
 } from "../../shared/types";
 
 type PendingTrade = {
@@ -36,6 +37,12 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
       if (pending.has(intent.intentId)) {
         pending.delete(intent.intentId);
         console.log(`[strategy] timeout waiting for results — intent=${intent.intentId}`);
+        emitDecision({
+          intentId: intent.intentId,
+          decision: "REJECT",
+          reason: "Timed out waiting for safety and quote results. Try again.",
+          rejectedAt: Date.now(),
+        });
       }
     }, MERGE_TIMEOUT_MS);
   };
@@ -103,9 +110,25 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
     }
   };
 
+  const onQuoteFailed = (payload: QuoteFailedPayload): void => {
+    const entry = pending.get(payload.intentId);
+    if (!entry) return;
+    pending.delete(payload.intentId);
+    emitDecision({
+      intentId: entry.intent.intentId,
+      decision: "REJECT",
+      reason: payload.reason,
+      rejectedAt: Date.now(),
+    });
+    console.log(
+      `[strategy] ${payload.intentId.slice(0, 8)} — REJECTED (quote failed: ${payload.reason.slice(0, 80)})`,
+    );
+  };
+
   bus.on("TRADE_REQUEST", onRequest);
   bus.on("SAFETY_RESULT", onSafety);
   bus.on("QUOTE_RESULT", onQuote);
+  bus.on("QUOTE_FAILED", onQuoteFailed);
   bus.on("USER_CONFIRMED", onUserConfirmed);
   console.log("[strategy] agent started");
 
@@ -113,6 +136,7 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
     bus.off("TRADE_REQUEST", onRequest);
     bus.off("SAFETY_RESULT", onSafety);
     bus.off("QUOTE_RESULT", onQuote);
+    bus.off("QUOTE_FAILED", onQuoteFailed);
     bus.off("USER_CONFIRMED", onUserConfirmed);
     for (const timer of confirmTimers.values()) clearTimeout(timer);
     confirmTimers.clear();
@@ -137,7 +161,14 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
   }
 
   // Validation gate: catch chain mismatches and bad data before execution
-  const TESTNET_CHAINS = new Set(["sepolia", "goerli", "mumbai", "fuji", "base-sepolia", "basesepolia"]);
+  const TESTNET_CHAINS = new Set([
+    "sepolia",
+    "goerli",
+    "mumbai",
+    "fuji",
+    "base-sepolia",
+    "basesepolia",
+  ]);
   if (intent.chainHint && intent.chainHint !== quote.chainId) {
     const intentIsTestnet = TESTNET_CHAINS.has(intent.chainHint);
     const quoteIsTestnet = TESTNET_CHAINS.has(quote.chainId);
@@ -148,7 +179,9 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
         reason: `Chain mismatch: you requested ${intent.chainHint} but the token was found on ${quote.chainId}. Please specify the correct chain.`,
         rejectedAt: Date.now(),
       });
-      console.log(`[strategy] ${intent.intentId} — REJECTED: chain mismatch (intent=${intent.chainHint}, quote=${quote.chainId})`);
+      console.log(
+        `[strategy] ${intent.intentId} — REJECTED: chain mismatch (intent=${intent.chainHint}, quote=${quote.chainId})`,
+      );
       return;
     }
   }
@@ -170,7 +203,9 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
       reason: `Token has almost no liquidity ($${quote.liquidityUsd.toFixed(0)}). Too risky to trade.`,
       rejectedAt: Date.now(),
     });
-    console.log(`[strategy] ${intent.intentId} — REJECTED: liquidity too low ($${quote.liquidityUsd})`);
+    console.log(
+      `[strategy] ${intent.intentId} — REJECTED: liquidity too low ($${quote.liquidityUsd})`,
+    );
     return;
   }
 
@@ -221,15 +256,30 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
 
 function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote): StrategyDecision {
   const { urgency } = intent;
+  const isSell = intent.side === "sell";
 
-  // INSTANT mode: always execute, attach warnings inline
+  // Sells and swaps-out always execute — user already holds the token, blocking traps their funds
+  if (isSell) {
+    const warnings =
+      safety.flags.length > 0
+        ? ` (Warning: ${safety.flags.join(", ")} — sell may fail if token has transfer restrictions)`
+        : "";
+    return {
+      intentId: intent.intentId,
+      decision: "EXECUTE",
+      reason: `${buildReason(safety, quote)}${warnings}`,
+      approvedAt: Date.now(),
+    };
+  }
+
+  // INSTANT mode: honeypot gets confirmation instead of hard reject
   if (urgency === "INSTANT") {
     if (safety.score === 0) {
       return {
         intentId: intent.intentId,
-        decision: "REJECT",
-        reason: `Token is a confirmed honeypot (score ${safety.score}/100)`,
-        rejectedAt: Date.now(),
+        decision: "AWAIT_USER_CONFIRM",
+        reason: `HONEYPOT DETECTED (score ${safety.score}/100). This token is very likely a scam. Flags: ${safety.flags.join(", ")}. ${buildReason(safety, quote)}. Proceed anyway?`,
+        expiresAt: Date.now() + 60_000,
       };
     }
     return {
@@ -240,17 +290,16 @@ function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote)
     };
   }
 
-  // CAREFUL mode: high bar, auto-reject below 70
+  // CAREFUL mode: high bar, confirm below 70
   if (urgency === "CAREFUL") {
     if (safety.score < 70) {
       return {
         intentId: intent.intentId,
-        decision: "REJECT",
-        reason: `Safety score ${safety.score}/100 is below the CAREFUL threshold (70). Flags: ${safety.flags.join(", ") || "none"}`,
-        rejectedAt: Date.now(),
+        decision: "AWAIT_USER_CONFIRM",
+        reason: `Safety score ${safety.score}/100 is below the CAREFUL threshold (70). Flags: ${safety.flags.join(", ") || "none"}. ${buildReason(safety, quote)}. Proceed anyway?`,
+        expiresAt: Date.now() + 60_000,
       };
     }
-    // Even above 70, ask for confirmation if there are any flags
     if (safety.flags.length > 0) {
       return {
         intentId: intent.intentId,
@@ -267,21 +316,13 @@ function applyModeLogic(intent: TradeIntent, safety: SafetyReport, quote: Quote)
     };
   }
 
-  // NORMAL mode: reject below 50, confirm between 50-69, auto-approve 70+
-  if (safety.score < 50) {
-    return {
-      intentId: intent.intentId,
-      decision: "REJECT",
-      reason: `Safety score ${safety.score}/100 too low. Flags: ${safety.flags.join(", ")}`,
-      rejectedAt: Date.now(),
-    };
-  }
-
+  // NORMAL mode: confirm below 70 (never hard reject — let user decide), auto-approve 70+
   if (safety.score < 70) {
+    const severity = safety.score === 0 ? "HONEYPOT DETECTED" : `Safety ${safety.score}/100`;
     return {
       intentId: intent.intentId,
       decision: "AWAIT_USER_CONFIRM",
-      reason: `Safety ${safety.score}/100, flags: ${safety.flags.join(", ") || "none"}. ${buildReason(safety, quote)}`,
+      reason: `${severity}, flags: ${safety.flags.join(", ") || "none"}. ${buildReason(safety, quote)}. Proceed anyway?`,
       expiresAt: Date.now() + 60_000,
     };
   }

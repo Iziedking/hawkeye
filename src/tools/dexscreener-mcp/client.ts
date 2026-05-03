@@ -40,6 +40,12 @@ export interface DexPair {
   priceNative?: string;
   priceUsd?: string;
   liquidity?: { usd?: number; base?: number; quote?: number };
+  txns?: {
+    h24?: { buys?: number; sells?: number };
+    h6?: { buys?: number; sells?: number };
+    h1?: { buys?: number; sells?: number };
+    m5?: { buys?: number; sells?: number };
+  };
   volume?: { h24?: number; h6?: number; h1?: number; m5?: number };
   priceChange?: { h24?: number; h6?: number; h1?: number; m5?: number };
   fdv?: number;

@@ -1,45 +1,50 @@
 import { envOr } from "../../shared/env";
 
-const DEFAULT_BASE_URL = "https://api.keeperhub.com";
+const DEFAULT_BASE_URL = "https://app.keeperhub.com/api";
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 
-export type TxParams = {
-  to: string;
-  data: string;
-  value: string;
-  chainId: number;
-  from: string;
-  gasLimit?: string;
+const CHAIN_TO_NETWORK: Record<number, string> = {
+  1: "ethereum",
+  8453: "base",
+  137: "polygon",
+  42161: "arbitrum",
+  10: "optimism",
+  56: "bsc",
+  43114: "avalanche",
+  11155111: "sepolia",
 };
 
-export type SimulationResult = {
-  success: boolean;
-  gasEstimate?: number;
-  revertReason?: string;
-  simulatedAt: number;
-};
-
-export type BundleResult = {
-  bundleId: string;
+export type ExecutionStatus = {
+  executionId: string;
+  status: "pending" | "running" | "completed" | "failed";
   txHash?: string;
-  status: "pending" | "submitted" | "confirmed" | "failed";
-  submittedAt: number;
+  gasUsedWei?: string;
+  createdAt?: string;
+  completedAt?: string;
 };
 
-export type BundleStatus = {
-  bundleId: string;
-  status: "pending" | "submitted" | "confirmed" | "failed";
-  txHash?: string;
-  blockNumber?: number;
-  gasUsed?: number;
+export type ContractCallParams = {
+  contractAddress: string;
+  network: string;
+  functionName: string;
+  functionArgs?: string;
+  abi?: string;
+  value?: string;
+  gasLimitMultiplier?: number;
+};
+
+export type TransferParams = {
+  network: string;
+  recipientAddress: string;
+  amount: string;
+  tokenAddress?: string;
 };
 
 export type KeeperHubErrorReason =
   | "NO_API_KEY"
-  | "SIMULATION_FAILED"
   | "SUBMISSION_FAILED"
   | "TIMEOUT"
   | "CIRCUIT_OPEN"
@@ -91,21 +96,23 @@ export class KeeperHubClient {
     }
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (this.circuitOpen) {
       throw new KeeperHubError("CIRCUIT_OPEN", "KeeperHub circuit breaker open");
     }
 
     try {
-      const resp = await fetch(`${this.baseUrl}${path}`, {
-        method: "POST",
+      const opts: RequestInit = {
+        method,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify(body),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
+      };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+
+      const resp = await fetch(`${this.baseUrl}${path}`, opts);
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
@@ -117,7 +124,8 @@ export class KeeperHubClient {
       }
 
       this.consecutiveFailures = 0;
-      return (await resp.json()) as T;
+      const data = (await resp.json()) as { data?: T };
+      return (data.data ?? data) as T;
     } catch (err) {
       if (err instanceof KeeperHubError) throw err;
       this.recordFailure();
@@ -129,83 +137,95 @@ export class KeeperHubClient {
     }
   }
 
-  async simulateTx(tx: TxParams): Promise<SimulationResult> {
+  async checkReachable(): Promise<boolean> {
     try {
-      const result = await this.post<{
-        success?: boolean;
-        gas_estimate?: number;
-        revert_reason?: string;
-      }>("/v1/simulate", {
-        from: tx.from,
-        to: tx.to,
-        data: tx.data,
-        value: tx.value,
-        chain_id: tx.chainId,
-        gas_limit: tx.gasLimit,
+      const resp = await fetch(`${this.baseUrl}/workflows`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: AbortSignal.timeout(5_000),
       });
-
-      const sim: SimulationResult = {
-        success: result.success !== false,
-        simulatedAt: Date.now(),
-      };
-      if (result.gas_estimate !== undefined) sim.gasEstimate = result.gas_estimate;
-      if (result.revert_reason !== undefined) sim.revertReason = result.revert_reason;
-      return sim;
-    } catch (err) {
-      if (err instanceof KeeperHubError) throw err;
-      throw new KeeperHubError("SIMULATION_FAILED", (err as Error).message);
+      return resp.ok || resp.status === 401 || resp.status === 403;
+    } catch {
+      this.consecutiveFailures = CIRCUIT_BREAKER_THRESHOLD;
+      this.circuitOpenSince = Date.now();
+      console.warn("[keeperhub] unreachable at startup — circuit OPEN");
+      return false;
     }
   }
 
-  async submitBundle(signedTx: string, chainId: number): Promise<BundleResult> {
-    const result = await this.post<{
-      bundle_id?: string;
-      tx_hash?: string;
-      status?: string;
-    }>("/v1/bundle", {
-      signed_transaction: signedTx,
-      chain_id: chainId,
-      preferences: {
-        privacy: true,
-        fast: true,
-      },
-    });
-
-    const bundle: BundleResult = {
-      bundleId: result.bundle_id ?? `kh-${Date.now()}`,
-      status: (result.status as BundleResult["status"]) ?? "pending",
-      submittedAt: Date.now(),
-    };
-    if (result.tx_hash !== undefined) bundle.txHash = result.tx_hash;
-    return bundle;
+  async fetchWalletAddress(): Promise<string | null> {
+    try {
+      const resp = await fetch(`${this.baseUrl.replace("/api", "")}/api/user/wallet`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!resp.ok) return null;
+      const data = (await resp.json()) as { address?: string };
+      return data.address ?? null;
+    } catch {
+      return null;
+    }
   }
 
-  async getStatus(bundleId: string): Promise<BundleStatus> {
-    const result = await this.post<{
-      bundle_id?: string;
-      status?: string;
-      tx_hash?: string;
-      block_number?: number;
-      gas_used?: number;
-    }>("/v1/bundle/status", { bundle_id: bundleId });
+  networkFromChainId(chainId: number): string {
+    return CHAIN_TO_NETWORK[chainId] ?? "ethereum";
+  }
 
-    const st: BundleStatus = {
-      bundleId: result.bundle_id ?? bundleId,
-      status: (result.status as BundleStatus["status"]) ?? "pending",
+  async contractCall(params: ContractCallParams): Promise<ExecutionStatus> {
+    const result = await this.request<{
+      executionId?: string;
+      status?: string;
+      transactionHash?: string;
+    }>("POST", "/execute/contract-call", params);
+
+    return {
+      executionId: result.executionId ?? `kh-${Date.now()}`,
+      status: (result.status as ExecutionStatus["status"]) ?? "pending",
+      ...(result.transactionHash ? { txHash: result.transactionHash } : {}),
     };
-    if (result.tx_hash !== undefined) st.txHash = result.tx_hash;
-    if (result.block_number !== undefined) st.blockNumber = result.block_number;
-    if (result.gas_used !== undefined) st.gasUsed = result.gas_used;
+  }
+
+  async transfer(params: TransferParams): Promise<ExecutionStatus> {
+    const result = await this.request<{
+      executionId?: string;
+      status?: string;
+      transactionHash?: string;
+    }>("POST", "/execute/transfer", params);
+
+    return {
+      executionId: result.executionId ?? `kh-${Date.now()}`,
+      status: (result.status as ExecutionStatus["status"]) ?? "pending",
+      ...(result.transactionHash ? { txHash: result.transactionHash } : {}),
+    };
+  }
+
+  async getExecutionStatus(executionId: string): Promise<ExecutionStatus> {
+    const result = await this.request<{
+      executionId?: string;
+      status?: string;
+      transactionHash?: string;
+      gasUsedWei?: string;
+      createdAt?: string;
+      completedAt?: string;
+    }>("GET", `/execute/${executionId}/status`);
+
+    const st: ExecutionStatus = {
+      executionId: result.executionId ?? executionId,
+      status: (result.status as ExecutionStatus["status"]) ?? "pending",
+    };
+    if (result.transactionHash !== undefined) st.txHash = result.transactionHash;
+    if (result.gasUsedWei !== undefined) st.gasUsedWei = result.gasUsedWei;
+    if (result.createdAt !== undefined) st.createdAt = result.createdAt;
+    if (result.completedAt !== undefined) st.completedAt = result.completedAt;
     return st;
   }
 
-  async submitAndWait(
-    signedTx: string,
-    chainId: number,
-    maxWaitMs = 30_000,
-  ): Promise<BundleStatus> {
-    const bundle = await this.submitBundle(signedTx, chainId);
-    console.log(`[keeperhub] bundle submitted: ${bundle.bundleId}`);
+  async executeAndWait(params: ContractCallParams, maxWaitMs = 30_000): Promise<ExecutionStatus> {
+    const exec = await this.contractCall(params);
+    console.log(`[keeperhub] execution started: ${exec.executionId}`);
+
+    if (exec.status === "completed" || exec.status === "failed") return exec;
 
     const start = Date.now();
     const pollInterval = 2_000;
@@ -213,8 +233,8 @@ export class KeeperHubClient {
     while (Date.now() - start < maxWaitMs) {
       await new Promise((r) => setTimeout(r, pollInterval));
       try {
-        const status = await this.getStatus(bundle.bundleId);
-        if (status.status === "confirmed" || status.status === "failed") {
+        const status = await this.getExecutionStatus(exec.executionId);
+        if (status.status === "completed" || status.status === "failed") {
           return status;
         }
       } catch {
@@ -222,11 +242,16 @@ export class KeeperHubClient {
       }
     }
 
-    const fallback: BundleStatus = {
-      bundleId: bundle.bundleId,
-      status: bundle.txHash ? "submitted" : "pending",
-    };
-    if (bundle.txHash !== undefined) fallback.txHash = bundle.txHash;
-    return fallback;
+    return exec;
+  }
+
+  // Legacy compat: the execution agent calls submitAndWait(signedTx, chainId).
+  // KeeperHub's actual API doesn't accept pre-signed txs, so this is a no-op
+  // that forces the fallback to Privy direct submission.
+  async submitAndWait(
+    _signedTx: string,
+    _chainId: number,
+  ): Promise<{ bundleId: string; status: "failed"; txHash?: string }> {
+    return { bundleId: `kh-unsupported`, status: "failed" };
   }
 }

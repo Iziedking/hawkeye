@@ -22,9 +22,7 @@ export type StoredExternalWallet = {
   delegated: boolean;
 };
 
-export type StoredActiveWallet =
-  | { kind: "agent" }
-  | { kind: "external"; address: string };
+export type StoredActiveWallet = { kind: "agent" } | { kind: "external"; address: string };
 
 // V1 format (pre-upgrade) -- kept for migration detection
 type StoredUserV1 = {
@@ -39,6 +37,7 @@ export type StoredUser = {
   privyUserId: string | null;
   platformIds: Array<{ platform: string; id: string }>;
   agentWallet: StoredWallet | null;
+  solanaWallet: StoredWallet | null;
   externalWallets: StoredExternalWallet[];
   activeWallet: StoredActiveWallet;
   createdAt: number;
@@ -136,7 +135,10 @@ export class JsonStore {
         if (!this.masterKey) {
           throw new Error("Encrypted store found but HAWKEYE_MASTER_KEY not set");
         }
-        const decrypted = JSON.parse(decryptStore(parsed, this.masterKey)) as Record<string, unknown>;
+        const decrypted = JSON.parse(decryptStore(parsed, this.masterKey)) as Record<
+          string,
+          unknown
+        >;
         return {
           users: (decrypted["users"] ?? {}) as Record<string, StoredUser>,
           platformIndex: (decrypted["platformIndex"] ?? {}) as Record<string, string>,
@@ -185,6 +187,7 @@ export class JsonStore {
         privyUserId: null,
         platformIds: [{ platform: "telegram", id: key }],
         agentWallet: v1.agentWallet,
+        solanaWallet: null,
         externalWallets,
         activeWallet,
         createdAt: Date.now(),
@@ -201,6 +204,14 @@ export class JsonStore {
         this.data.walletIndex[v1.externalAddress.toLowerCase()] = email;
       }
       dirty = true;
+    }
+
+    // Backfill solanaWallet for existing V2 users loaded from older data
+    for (const user of Object.values(this.data.users)) {
+      if (isV2User(user) && !("solanaWallet" in user)) {
+        (user as StoredUser).solanaWallet = null;
+        dirty = true;
+      }
     }
 
     if (dirty) {

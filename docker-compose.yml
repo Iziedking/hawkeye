@@ -1,0 +1,62 @@
+# Production compose for HAWKEYE.
+#
+# Usage:
+#   cp .env.example .env.local      # fill in your secrets
+#   docker compose up -d --build
+#   docker compose logs -f hawkeye
+#
+# State (wallet store, positions, seen-tokens, trade history) persists in
+# ./data via the volume mount. Back this directory up — it contains the
+# AES-256-GCM encrypted user wallets.
+
+services:
+  hawkeye:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hawkeye:latest
+    container_name: hawkeye
+    restart: unless-stopped
+
+    # Pull every var from .env.local. Required: TELEGRAM_BOT_TOKEN,
+    # HAWKEYE_EVM_PRIVATE_KEY. See .env.example for the full list.
+    env_file:
+      - .env.local
+
+    environment:
+      NODE_ENV: production
+      HEALTH_PORT: 8080
+
+    # Persistent runtime state. The container creates this dir lazily on
+    # first write (stores.ts, position-store.ts, seen-tokens.ts, trade-history.ts).
+    volumes:
+      - ./data:/app/data
+
+    # Health endpoint exposed for ops dashboards / load balancer probes.
+    # The Telegram bot itself uses long-polling and needs no inbound port.
+    ports:
+      - "8080:8080"
+
+    # Bound resource use so a runaway research loop can't OOM the host.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+        reservations:
+          memory: 256M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # Honour the HEALTHCHECK from the Dockerfile but make it visible here too,
+    # so `docker compose ps` shows status without inspecting the image.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s

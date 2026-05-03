@@ -68,7 +68,10 @@ export type TradeIntent = {
   rawText: string;
   createdAt: number;
   chainHint?: ChainId;
-  side?: "buy" | "sell";
+  side?: "buy" | "sell" | "swap";
+  symbol?: string;
+  fromToken?: string;
+  fromTokenAddress?: string;
 };
 
 export type SafetyFlag =
@@ -81,7 +84,10 @@ export type SafetyFlag =
   | "BLACKLIST"
   | "PROXY_CONTRACT"
   | "KNOWN_RUGGER"
-  | "PHISHING_ORIGIN";
+  | "PHISHING_ORIGIN"
+  | "VERY_NEW"
+  | "NO_VOLUME"
+  | "CONCENTRATED_SUPPLY";
 
 export type SafetyReport = {
   intentId: string;
@@ -143,6 +149,8 @@ export type Position = {
   txHash: string;
   remainingExits: PartialExit[];
   openedAt: number;
+  symbol?: string;
+  mevProtected?: boolean;
 };
 
 export type ExecuteSellPayload = {
@@ -183,6 +191,16 @@ export type IntentCategory =
   | "GENERAL_QUERY"
   | "UNKNOWN";
 
+export type ResearchSubIntent =
+  | "TOKEN_LOOKUP"
+  | "WHALE_ANALYSIS"
+  | "TRENDING"
+  | "MARKET_OVERVIEW"
+  | "CATEGORY"
+  | "SAFETY_CHECK"
+  | "PRICE_ACTION"
+  | "RESEARCH_WALLET";
+
 export type ResearchRequest = {
   requestId: string;
   userId: string;
@@ -193,6 +211,8 @@ export type ResearchRequest = {
   question: string;
   rawText: string;
   createdAt: number;
+  subIntent?: ResearchSubIntent;
+  tools?: string[];
 };
 
 export type ResearchResult = {
@@ -212,6 +232,15 @@ export type ResearchResult = {
   fdv?: number | null;
   opportunityScore?: number | null;
   isTrending?: boolean;
+  marketCap?: number | null;
+  priceChange7d?: number | null;
+  priceChange1h?: number | null;
+  pairAge?: number | null;
+  holderCount?: number | null;
+  topHolderPct?: number | null;
+  fearGreed?: number | null;
+  subIntent?: ResearchSubIntent;
+  smartMoneyNetFlow?: number | null;
 };
 
 export type GeneralQueryRequest = {
@@ -306,9 +335,7 @@ export type ExternalWalletEntry = {
   delegated: boolean;
 };
 
-export type ActiveWalletRef =
-  | { kind: "agent" }
-  | { kind: "external"; address: string };
+export type ActiveWalletRef = { kind: "agent" } | { kind: "external"; address: string };
 
 export const EVENT_NAMES = {
   TRADE_REQUEST: "TRADE_REQUEST",

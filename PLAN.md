@@ -11,40 +11,40 @@ fallback (configurable model, cheaper than direct API calls). RPC provider is Pu
 
 ### Module status
 
-| Module | Path | Status |
-|---|---|---|
-| Event Bus | `src/shared/event-bus.ts` | Done |
-| AXL Bus Transport | `src/shared/axl-bus.ts` | Done (bridges to Gensyn P2P) |
-| Shared types | `src/shared/types.ts` | Done |
-| Constants | `src/shared/constants.ts` | Done |
-| Health system | `src/shared/health.ts` | Done (HTTP and Telegram /status) |
-| Token resolver | `src/shared/tokens.ts` | Done |
-| Wallet persistence | `src/shared/store.ts` | Done (V2 schema, multi-wallet) |
-| Swarm tracer | `src/shared/swarm-tracer.ts` | Done |
-| EVM chains | `src/shared/evm-chains.ts` | Done (16 chains, Publicnode RPCs) |
-| LLM Router | `src/gateway/llm-router.ts` | Done (trending routing added) |
-| Telegram Gateway | `src/gateway/telegram-gateway.ts` | Done (primary gateway) |
-| OpenClaw Adapter | `src/gateway/openclaw-adapter.ts` | Reference only |
-| OpenRouter LLM | `src/integrations/openrouter/` | Done (configurable model) |
-| Privy wallets | `src/integrations/privy/` | Done (multi-wallet, email sign-in) |
-| 0G Compute | `src/integrations/0g/compute.ts` | Done (nonce serialization) |
-| 0G Storage | `src/integrations/0g/storage.ts` | Done |
-| 0G Registry | `src/integrations/0g/registry-client.ts` | Done (runtime logTrade) |
-| 0G Audit Trail | `src/integrations/0g/audit-trail.ts` | Done (6 bus events) |
-| 0G Balance Check | `src/integrations/0g/shared-signer.ts` | Done (boot warning) |
-| KeeperHub | `src/integrations/keeperhub/` | Done (circuit breaker) |
-| Arkham Intelligence | `src/integrations/arkham/` | Done (holders, flows, and entity lookup) |
-| Safety Agent | `src/agents/safety/` | Done |
-| Quote Agent | `src/agents/quote/` | Done |
-| Strategy Agent | `src/agents/strategy/` | Done |
-| Execution Agent | `src/agents/execution/` | Done (Uniswap 3-step, KeeperHub) |
-| Research Agent | `src/agents/research/` | Done (DexScreener, DeFiLlama, Dune, and Arkham) |
-| Monitor Agent | `src/agents/monitor/` | Done |
-| Copy Trade Agent | `src/agents/copy-trade/` | Done |
-| HawkeyeRegistry | `contracts/HawkeyeRegistry.sol` | Deployed to testnet |
-| Deploy script | `scripts/deploy-registry.ts` | Done |
-| MCP servers | openclaw-docs, dexscreener, goplus, gensyn-axl, coingecko, keeperhub | Done |
-| Main startup | `src/index.ts` | Done |
+| Module              | Path                                                                 | Status                                          |
+| ------------------- | -------------------------------------------------------------------- | ----------------------------------------------- |
+| Event Bus           | `src/shared/event-bus.ts`                                            | Done                                            |
+| AXL Bus Transport   | `src/shared/axl-bus.ts`                                              | Done (bridges to Gensyn P2P)                    |
+| Shared types        | `src/shared/types.ts`                                                | Done                                            |
+| Constants           | `src/shared/constants.ts`                                            | Done                                            |
+| Health system       | `src/shared/health.ts`                                               | Done (HTTP and Telegram /status)                |
+| Token resolver      | `src/shared/tokens.ts`                                               | Done                                            |
+| Wallet persistence  | `src/shared/store.ts`                                                | Done (V2 schema, multi-wallet)                  |
+| Swarm tracer        | `src/shared/swarm-tracer.ts`                                         | Done                                            |
+| EVM chains          | `src/shared/evm-chains.ts`                                           | Done (16 chains, Publicnode RPCs)               |
+| LLM Router          | `src/gateway/llm-router.ts`                                          | Done (trending routing added)                   |
+| Telegram Gateway    | `src/gateway/telegram-gateway.ts`                                    | Done (primary gateway)                          |
+| OpenClaw Adapter    | `src/gateway/openclaw-adapter.ts`                                    | Reference only                                  |
+| OpenRouter LLM      | `src/integrations/openrouter/`                                       | Done (configurable model)                       |
+| Privy wallets       | `src/integrations/privy/`                                            | Done (multi-wallet, email sign-in)              |
+| 0G Compute          | `src/integrations/0g/compute.ts`                                     | Done (nonce serialization)                      |
+| 0G Storage          | `src/integrations/0g/storage.ts`                                     | Done                                            |
+| 0G Registry         | `src/integrations/0g/registry-client.ts`                             | Done (runtime logTrade)                         |
+| 0G Audit Trail      | `src/integrations/0g/audit-trail.ts`                                 | Done (6 bus events)                             |
+| 0G Balance Check    | `src/integrations/0g/shared-signer.ts`                               | Done (boot warning)                             |
+| KeeperHub           | `src/integrations/keeperhub/`                                        | Done (circuit breaker)                          |
+| Arkham Intelligence | `src/integrations/arkham/`                                           | Done (holders, flows, and entity lookup)        |
+| Safety Agent        | `src/agents/safety/`                                                 | Done                                            |
+| Quote Agent         | `src/agents/quote/`                                                  | Done                                            |
+| Strategy Agent      | `src/agents/strategy/`                                               | Done                                            |
+| Execution Agent     | `src/agents/execution/`                                              | Done (Uniswap 3-step, KeeperHub)                |
+| Research Agent      | `src/agents/research/`                                               | Done (DexScreener, DeFiLlama, Dune, and Arkham) |
+| Monitor Agent       | `src/agents/monitor/`                                                | Done                                            |
+| Copy Trade Agent    | `src/agents/copy-trade/`                                             | Done                                            |
+| HawkeyeRegistry     | `contracts/HawkeyeRegistry.sol`                                      | Deployed to testnet                             |
+| Deploy script       | `scripts/deploy-registry.ts`                                         | Done                                            |
+| MCP servers         | openclaw-docs, dexscreener, goplus, gensyn-axl, coingecko, keeperhub | Done                                            |
+| Main startup        | `src/index.ts`                                                       | Done                                            |
 
 ### Architecture
 
@@ -89,10 +89,10 @@ Bus Transport: EventEmitter (local) <--> Gensyn AXL (P2P)
 
 ### On-chain deployments
 
-| Network | Contract | Chain ID |
-|---|---|---|
-| 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602 |
-| 0G Mainnet | Not deployed yet | 16661 |
+| Network            | Contract                                     | Chain ID |
+| ------------------ | -------------------------------------------- | -------- |
+| 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602    |
+| 0G Mainnet         | Not deployed yet                             | 16661    |
 
 ---
 
@@ -168,7 +168,7 @@ using `Promise.allSettled`. Return the pair with highest liquidity.
 Add a best-effort CoinGecko price lookup alongside DexScreener. If both return prices, use
 the average. If only one returns, use that. Don't let CoinGecko failure block the quote.
 
-### Joshua -- Safety Agent (`src/agents/safety/` ONLY)
+### Samuel -- Safety Agent (`src/agents/safety/` ONLY)
 
 **Task 1: Expand TESTNET_CHAIN_IDS**
 
@@ -178,6 +178,7 @@ Line 39 only has `"sepolia"`. Add: `"base-sepolia"`, `"goerli"`, `"mumbai"`, `"f
 **Task 2: Multi-chain Etherscan support**
 
 `checkEtherscan()` only works on Ethereum mainnet. Add support for:
+
 - Base: `api.basescan.org`
 - Arbitrum: `api.arbiscan.io`
 - BSC: `api.bscscan.com`
@@ -204,6 +205,7 @@ Add a helper `findPositionByAddress(userId: string, tokenAddress: string)` that 
 **Task 2: Improve swap error messages**
 
 `humanizeQuoteError()` handles some cases. Add more:
+
 - `INSUFFICIENT_BALANCE` -> "Not enough ETH in your wallet for this trade"
 - `TOKEN_NOT_TRADEABLE` -> "This token can't be traded on Uniswap right now"
 - `NO_ROUTE` -> "No swap route found. The token may have no liquidity on Uniswap"
@@ -254,16 +256,16 @@ Copy `.env.example` to `.env.local` and fill in. See `.env.example` for the full
 
 ## Sponsors
 
-| Sponsor | What we use | Integration |
-|---|---|---|
-| 0G Compute | LLM router, conversational replies, and agent analysis | Every message routed through 0G |
-| 0G Storage | Immutable audit trail at 6 lifecycle points | Every trade fully logged |
-| 0G Chain | On-chain agent registry and trade execution proofs | Runtime logTrade calls |
-| Gensyn AXL | P2P bus transport between agent nodes | Agent-to-agent communication |
-| KeeperHub | MEV-protected EVM tx submission | Every trade with protection evidence |
-| Uniswap | DEX swaps via Trading API (3-step, 17 chains) | check_approval, quote, and swap |
-| Privy | Per-user agent wallets, signing, and email identity | Wallet creation and tx signing |
-| Arkham | Wallet analytics, smart money tracking, and entity research | Token holders and flow analysis |
+| Sponsor    | What we use                                                 | Integration                          |
+| ---------- | ----------------------------------------------------------- | ------------------------------------ |
+| 0G Compute | LLM router, conversational replies, and agent analysis      | Every message routed through 0G      |
+| 0G Storage | Immutable audit trail at 6 lifecycle points                 | Every trade fully logged             |
+| 0G Chain   | On-chain agent registry and trade execution proofs          | Runtime logTrade calls               |
+| Gensyn AXL | P2P bus transport between agent nodes                       | Agent-to-agent communication         |
+| KeeperHub  | MEV-protected EVM tx submission                             | Every trade with protection evidence |
+| Uniswap    | DEX swaps via Trading API (3-step, 17 chains)               | check_approval, quote, and swap      |
+| Privy      | Per-user agent wallets, signing, and email identity         | Wallet creation and tx signing       |
+| Arkham     | Wallet analytics, smart money tracking, and entity research | Token holders and flow analysis      |
 
 ## Deadline
 

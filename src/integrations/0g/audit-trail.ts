@@ -57,7 +57,10 @@ export function startAuditTrail(deps: AuditDeps): () => void {
     return () => {};
   }
 
-  log.og("storage", `audit trail active storage=${storage ? "on" : "off"} registry=${registry ? "on" : "off"}`);
+  log.og(
+    "storage",
+    `audit trail active storage=${storage ? "on" : "off"} registry=${registry ? "on" : "off"}`,
+  );
 
   const onTradeRequest = (intent: TradeIntent): void => {
     if (storage) {

@@ -24,6 +24,7 @@ import type {
   AlphaFoundPayload,
   ResearchRequest,
   ResearchResult,
+  ResearchSubIntent,
   ChainId,
   SafetyFlag,
   LlmClient,
@@ -31,6 +32,8 @@ import type {
 import { OgComputeClient } from "../../integrations/0g/compute";
 import { ArkhamClient } from "../../integrations/arkham/index";
 import type { ArkhamHolder, ArkhamFlow } from "../../integrations/arkham/index";
+import { NansenClient } from "../../integrations/nansen/index";
+import type { NansenFlows as NansenFlowsImported } from "../../integrations/nansen/index";
 import {
   getLatestTokenProfiles,
   getLatestBoosts,
@@ -50,15 +53,27 @@ function formatCompact(n: number): string {
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 const CHAIN_KEYWORDS: Record<string, string> = {
-  ethereum: "ethereum", eth: "ethereum",
-  base: "base", arbitrum: "arbitrum", arb: "arbitrum",
-  optimism: "optimism", op: "optimism",
-  polygon: "polygon", matic: "polygon",
-  bsc: "bsc", bnb: "bsc", binance: "bsc",
-  avalanche: "avalanche", avax: "avalanche",
-  blast: "blast", scroll: "scroll", linea: "linea",
-  mantle: "mantle", zksync: "zksync",
-  solana: "solana", sol: "solana",
+  ethereum: "ethereum",
+  eth: "ethereum",
+  base: "base",
+  arbitrum: "arbitrum",
+  arb: "arbitrum",
+  optimism: "optimism",
+  op: "optimism",
+  polygon: "polygon",
+  matic: "polygon",
+  bsc: "bsc",
+  bnb: "bsc",
+  binance: "bsc",
+  avalanche: "avalanche",
+  avax: "avalanche",
+  blast: "blast",
+  scroll: "scroll",
+  linea: "linea",
+  mantle: "mantle",
+  zksync: "zksync",
+  solana: "solana",
+  sol: "solana",
 };
 
 function detectChainFromText(text: string): string | null {
@@ -90,11 +105,48 @@ const COINGECKO_CHAIN_CATEGORIES: Record<string, string[]> = {
 };
 
 const TRENDING_EXCLUDE_SYMBOLS = new Set([
-  "USDC", "USDT", "DAI", "BUSD", "TUSD", "USDP", "GUSD", "FRAX", "LUSD",
-  "USDE", "USD1", "USDB", "USDBC", "SUSDE", "EURC", "RUSD", "PYUSD",
-  "WETH", "WBNB", "WBTC", "WMATIC", "WAVAX", "WSOL", "WFTM", "WCRO",
-  "ETH", "BTC", "BNB", "SOL", "MATIC", "AVAX", "FTM", "DOT", "ADA",
-  "XRP", "LINK", "UNI", "AAVE", "CBBTC", "STETH", "RETH", "CBETH",
+  "USDC",
+  "USDT",
+  "DAI",
+  "BUSD",
+  "TUSD",
+  "USDP",
+  "GUSD",
+  "FRAX",
+  "LUSD",
+  "USDE",
+  "USD1",
+  "USDB",
+  "USDBC",
+  "SUSDE",
+  "EURC",
+  "RUSD",
+  "PYUSD",
+  "WETH",
+  "WBNB",
+  "WBTC",
+  "WMATIC",
+  "WAVAX",
+  "WSOL",
+  "WFTM",
+  "WCRO",
+  "ETH",
+  "BTC",
+  "BNB",
+  "SOL",
+  "MATIC",
+  "AVAX",
+  "FTM",
+  "DOT",
+  "ADA",
+  "XRP",
+  "LINK",
+  "UNI",
+  "AAVE",
+  "CBBTC",
+  "STETH",
+  "RETH",
+  "CBETH",
 ]);
 
 type CoinGeckoMarketItem = {
@@ -108,7 +160,10 @@ type CoinGeckoMarketItem = {
   fully_diluted_valuation: number | null;
 };
 
-async function fetchCoinGeckoTrending(chain: string, limit: number): Promise<CoinGeckoMarketItem[]> {
+async function fetchCoinGeckoTrending(
+  chain: string,
+  limit: number,
+): Promise<CoinGeckoMarketItem[]> {
   const categories = COINGECKO_CHAIN_CATEGORIES[chain];
   if (!categories) return [];
   const results: CoinGeckoMarketItem[] = [];
@@ -119,7 +174,9 @@ async function fetchCoinGeckoTrending(chain: string, limit: number): Promise<Coi
       if (!resp.ok) continue;
       const data = (await resp.json()) as CoinGeckoMarketItem[];
       if (Array.isArray(data)) results.push(...data);
-    } catch { /* rate limited or timeout */ }
+    } catch {
+      /* rate limited or timeout */
+    }
   }
   const seen = new Set<string>();
   return results
@@ -175,6 +232,7 @@ const ALPHA_THRESHOLD = 65;
 // Entries expire after 4 hours so tokens get re-evaluated if they resurface later.
 const SEEN_TOKEN_TTL_MS = 4 * 60 * 60 * 1_000;
 const seenTokens = new Map<string, number>();
+let _pollingArkham: ArkhamClient | undefined;
 
 // ─── Etherscan rate limiter ────────────────────────────────────────────────────
 // Serialises all Etherscan fetches to ≤2 calls/sec so polling and research
@@ -248,13 +306,16 @@ const FLAG_DEDUCTIONS: Partial<Record<SafetyFlag, number>> = {
   HIGH_TAX: 25,
   BLACKLIST: 20,
   LOW_LIQUIDITY: 20,
+  NO_VOLUME: 20,
   UNVERIFIED_CONTRACT: 15,
+  CONCENTRATED_SUPPLY: 15,
   PROXY_CONTRACT: 10,
+  VERY_NEW: 10,
 };
 
 // Weighted scoring — single-source flags are discounted by source reliability.
 // HONEYPOT always gets full deduction regardless of source.
-type FlagSource = "goplus" | "honeypot" | "rugcheck" | "goplusSolana" | "dexscreener";
+type FlagSource = "goplus" | "honeypot" | "rugcheck" | "goplusSolana" | "dexscreener" | "etherscan";
 type FlagWithSource = { flag: SafetyFlag; source: FlagSource };
 
 const SOURCE_WEIGHTS: Record<FlagSource, number> = {
@@ -263,6 +324,7 @@ const SOURCE_WEIGHTS: Record<FlagSource, number> = {
   rugcheck: 0.85,
   goplusSolana: 0.85,
   dexscreener: 1.0,
+  etherscan: 0.9,
 };
 
 const GOPLUS_RETRY_DELAYS_MS = [1_000, 2_000] as const;
@@ -293,8 +355,72 @@ function computeScore(
   };
 }
 
-// GoPlus EVM fetch with 429 retry. Extracted so runSecurityScan() can await it
-// directly instead of wrapping in Promise.allSettled (which can't retry inline).
+function buildMarketFlags(
+  liquidityUsd: number | null,
+  volume24h: number | null,
+  pairAgeHours: number | null,
+  top3Pct: number | null,
+): FlagWithSource[] {
+  const flags: FlagWithSource[] = [];
+  if (liquidityUsd !== null && liquidityUsd < 10_000) {
+    flags.push({ flag: "LOW_LIQUIDITY", source: "dexscreener" });
+  }
+  if (pairAgeHours !== null && pairAgeHours < 1) {
+    flags.push({ flag: "VERY_NEW", source: "dexscreener" });
+  }
+  if (volume24h !== null && volume24h === 0) {
+    flags.push({ flag: "NO_VOLUME", source: "dexscreener" });
+  }
+  if (top3Pct !== null && top3Pct > 50) {
+    flags.push({ flag: "CONCENTRATED_SUPPLY", source: "etherscan" });
+  }
+  return flags;
+}
+
+const TOOL_DEFAULTS: Record<ResearchSubIntent, string[]> = {
+  TOKEN_LOOKUP: ["dexscreener", "goplus", "coingecko", "etherscan"],
+  WHALE_ANALYSIS: ["arkham", "etherscan", "nansen", "dexscreener", "dune"],
+  TRENDING: ["dexscreener", "coingecko", "arkham_trending"],
+  MARKET_OVERVIEW: ["coingecko", "feargreed"],
+  CATEGORY: ["coingecko", "dexscreener"],
+  SAFETY_CHECK: ["goplus", "honeypot", "etherscan", "dexscreener"],
+  PRICE_ACTION: ["dexscreener", "coingecko", "geckoterminal"],
+  RESEARCH_WALLET: ["arkham"],
+};
+
+let goplusToken: { token: string; expiresAt: number } | null = null;
+
+async function getGoPlusAccessToken(): Promise<string | null> {
+  if (goplusToken && Date.now() < goplusToken.expiresAt) return goplusToken.token;
+  const key = process.env["GOPLUS_API_KEY"] ?? "";
+  const secret = process.env["GOPLUS_API_SECRET"] ?? "";
+  if (!key || !secret) return null;
+  try {
+    const resp = await fetch("https://api.gopluslabs.io/api/v1/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_key: key, app_secret: secret }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as { result?: { access_token?: string; expires_in?: number } };
+    const token = body.result?.access_token;
+    if (!token) return null;
+    const ttl = (body.result?.expires_in ?? 3600) * 1000;
+    goplusToken = { token, expiresAt: Date.now() + ttl - 60_000 };
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+async function getGoPlusHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  const token = await getGoPlusAccessToken();
+  if (token) headers["Authorization"] = token;
+  return headers;
+}
+
 async function fetchGoPlusEVM(address: string, numericChainId: number): Promise<Response | null> {
   const url =
     `https://api.gopluslabs.io/api/v1/token_security/${numericChainId}` +
@@ -309,8 +435,9 @@ async function fetchGoPlusEVM(address: string, numericChainId: number): Promise<
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
+      const hdrs = await getGoPlusHeaders();
       const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
+        headers: hdrs,
         signal: AbortSignal.timeout(8_000),
       });
       if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
@@ -348,8 +475,9 @@ async function fetchGoPlusSolana(mintAddress: string): Promise<FlagWithSource[]>
       await new Promise((r) => setTimeout(r, delay));
     }
     try {
+      const hdrs = await getGoPlusHeaders();
       const resp = await fetch(url, {
-        headers: { Accept: "application/json" },
+        headers: hdrs,
         signal: AbortSignal.timeout(8_000),
       });
       if (resp.status === 429 && attempt < GOPLUS_RETRY_DELAYS_MS.length) {
@@ -1127,10 +1255,18 @@ function computeNarrativeMultiplier(signal: TrendSignal): number {
 // ─── Polling cycle ─────────────────────────────────────────────────────────────
 async function runPollingCycle(): Promise<void> {
   try {
-    const [profiles, boosts] = await Promise.all([getLatestTokenProfiles(), getLatestBoosts()]);
+    const [profiles, boosts, arkhamTrending] = await Promise.allSettled([
+      getLatestTokenProfiles(),
+      getLatestBoosts(),
+      _pollingArkham ? _pollingArkham.getTrending() : Promise.resolve([]),
+    ]);
 
     const candidates = new Map<string, { address: string; chainId: DexScreenerChain }>();
-    for (const item of [...profiles, ...boosts]) {
+    const dexItems = [
+      ...(profiles.status === "fulfilled" ? profiles.value : []),
+      ...(boosts.status === "fulfilled" ? boosts.value : []),
+    ];
+    for (const item of dexItems) {
       if (!isValidChain(item.chainId)) continue;
       const key = `${item.chainId}:${item.tokenAddress.toLowerCase()}`;
       const seenAt = seenTokens.get(key);
@@ -1139,6 +1275,18 @@ async function runPollingCycle(): Promise<void> {
           address: item.tokenAddress,
           chainId: item.chainId as DexScreenerChain,
         });
+      }
+    }
+    // Arkham trending tokens — map to candidate shape, ethereum chain default
+    if (arkhamTrending.status === "fulfilled") {
+      for (const t of arkhamTrending.value) {
+        const address = t.pricingID;
+        if (!address || !address.startsWith("0x")) continue;
+        const key = `ethereum:${address.toLowerCase()}`;
+        const seenAt = seenTokens.get(key);
+        if (!seenAt || Date.now() - seenAt > SEEN_TOKEN_TTL_MS) {
+          candidates.set(key, { address, chainId: "ethereum" as DexScreenerChain });
+        }
       }
     }
 
@@ -1367,7 +1515,13 @@ type DefiLlamaData = {
 };
 
 async function _fetchDefiLlama(tokenName: string, ticker: string): Promise<DefiLlamaData | null> {
-  const empty: DefiLlamaData = { tvl: null, tvlChange1d: null, mcapTvlRatio: null, category: null, chains: [] };
+  const empty: DefiLlamaData = {
+    tvl: null,
+    tvlChange1d: null,
+    mcapTvlRatio: null,
+    category: null,
+    chains: [],
+  };
   try {
     const resp = await fetch("https://api.llama.fi/protocols", {
       signal: AbortSignal.timeout(8_000),
@@ -1430,9 +1584,7 @@ async function fetchDefiLlamaTrending(chain?: string, limit = 10): Promise<DefiL
     );
     if (chain) {
       const cl = chain.toLowerCase();
-      filtered = filtered.filter((p) =>
-        p.chains?.some((c) => c.toLowerCase() === cl),
-      );
+      filtered = filtered.filter((p) => p.chains?.some((c) => c.toLowerCase() === cl));
     }
     filtered.sort((a, b) => (b.change_1d ?? 0) - (a.change_1d ?? 0));
     return filtered.slice(0, limit).map((p) => ({
@@ -1461,16 +1613,15 @@ async function fetchDuneSmartMoney(chain?: string): Promise<DuneSmartMoneyFlow[]
   // Query 3521429 = "Smart Money Token Inflows Last 24h"
   const queryId = chain === "solana" ? "3521430" : "3521429";
   try {
-    const resp = await fetch(
-      `https://api.dune.com/api/v1/query/${queryId}/results?limit=10`,
-      {
-        headers: { "X-Dune-Api-Key": key },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
+    const resp = await fetch(`https://api.dune.com/api/v1/query/${queryId}/results?limit=10`, {
+      headers: { "X-Dune-Api-Key": key },
+      signal: AbortSignal.timeout(10_000),
+    });
     if (!resp.ok) return [];
     const body = (await resp.json()) as {
-      result?: { rows?: Array<{ token_symbol?: string; net_flow_usd?: number; tx_count?: number }> };
+      result?: {
+        rows?: Array<{ token_symbol?: string; net_flow_usd?: number; tx_count?: number }>;
+      };
     };
     return (body.result?.rows ?? []).map((r) => ({
       token: r.token_symbol ?? "?",
@@ -1527,6 +1678,7 @@ async function callLLM(prompt: string, llm?: LlmClient): Promise<string> {
 }
 
 // ─── Prompt + fallback template ───────────────────────────────────────────────
+type NansenFlows = NansenFlowsImported;
 type ResearchData = {
   ticker: string;
   tokenName: string;
@@ -1544,8 +1696,11 @@ type ResearchData = {
   priceChange: { h1: number | null; h6: number | null; h24: number | null } | null;
   arkhamHolders: ArkhamHolder[];
   arkhamFlows: ArkhamFlow[];
+  nansenFlows: NansenFlows | null;
+  duneFlows: DuneSmartMoneyFlow[];
   opportunityScore: number;
   question: string;
+  subIntent: ResearchSubIntent;
 };
 
 function buildResearchPrompt(d: ResearchData): string {
@@ -1612,7 +1767,9 @@ function buildResearchPrompt(d: ResearchData): string {
     lines.push(`\nTop holders (Arkham Intelligence):`);
     for (const h of d.arkhamHolders.slice(0, 5)) {
       const label = h.entity ?? h.address.slice(0, 10) + "...";
-      lines.push(`  ${label}: ${h.percentage.toFixed(1)}% ($${formatCompact(h.usd).replace("$", "")})`);
+      lines.push(
+        `  ${label}: ${h.percentage.toFixed(1)}% ($${formatCompact(h.usd).replace("$", "")})`,
+      );
     }
     const top5Pct = d.arkhamHolders.slice(0, 5).reduce((s, h) => s + h.percentage, 0);
     if (top5Pct > 40) lines.push(`  ⚠ Top-5 holders control ${top5Pct.toFixed(0)}% of supply`);
@@ -1623,15 +1780,66 @@ function buildResearchPrompt(d: ResearchData): string {
     for (const f of d.arkhamFlows.slice(0, 5)) {
       const label = f.entityName ?? f.address.slice(0, 10) + "...";
       const dir = f.netUSD >= 0 ? "net inflow" : "net outflow";
-      lines.push(`  ${label} (${f.entityType ?? "unknown"}): ${dir} $${formatCompact(Math.abs(f.netUSD)).replace("$", "")}`);
+      lines.push(
+        `  ${label} (${f.entityType ?? "unknown"}): ${dir} $${formatCompact(Math.abs(f.netUSD)).replace("$", "")}`,
+      );
     }
     const totalNet = d.arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
-    lines.push(`  Net flow: ${totalNet >= 0 ? "+" : ""}$${formatCompact(Math.abs(totalNet)).replace("$", "")}`);
+    lines.push(
+      `  Net flow: ${totalNet >= 0 ? "+" : ""}$${formatCompact(Math.abs(totalNet)).replace("$", "")}`,
+    );
   }
 
+  if (d.nansenFlows) {
+    lines.push(`\nNansen smart money flows:`);
+    if (d.nansenFlows.smartMoney) {
+      const net = d.nansenFlows.smartMoney.inflow - d.nansenFlows.smartMoney.outflow;
+      lines.push(
+        `  Smart Money: inflow $${formatCompact(d.nansenFlows.smartMoney.inflow)} / outflow $${formatCompact(d.nansenFlows.smartMoney.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`,
+      );
+    }
+    if (d.nansenFlows.whales) {
+      const net = d.nansenFlows.whales.inflow - d.nansenFlows.whales.outflow;
+      lines.push(
+        `  Whales: inflow $${formatCompact(d.nansenFlows.whales.inflow)} / outflow $${formatCompact(d.nansenFlows.whales.outflow)} (net ${net >= 0 ? "+" : ""}$${formatCompact(Math.abs(net))})`,
+      );
+    }
+    if (d.nansenFlows.label) lines.push(`  Nansen label: ${d.nansenFlows.label}`);
+  }
+  if (d.duneFlows.length > 0) {
+    const top = d.duneFlows.slice(0, 5);
+    lines.push(`\nDune smart money flows (top tokens by net flow):`);
+    for (const f of top) {
+      const dir = f.netFlow >= 0 ? "inflow" : "outflow";
+      lines.push(
+        `  ${f.token}: net ${dir} $${formatCompact(Math.abs(f.netFlow))} (${f.txCount} txs)`,
+      );
+    }
+  }
+
+  const SUBINTENT_FOCUS: Record<ResearchSubIntent, string> = {
+    TOKEN_LOOKUP:
+      "Give a full breakdown: price, liquidity, safety score, holder concentration, smart money signals. 4-5 sentences. End with a bullish/bearish/neutral call.",
+    WHALE_ANALYSIS:
+      "Focus on who holds this token, smart money direction, and concentration risk. 3-4 sentences. Name specific entities if Arkham data is present.",
+    TRENDING:
+      "List the top tokens with their key stats. 1-2 lines per token. Include price, volume, and a one-word signal.",
+    MARKET_OVERVIEW:
+      "Cover BTC/ETH prices, 24h changes, fear & greed index, and top movers. 3-4 sentences.",
+    CATEGORY:
+      "List top tokens in this category sorted by 24h volume. 1-2 lines each with price and volume.",
+    SAFETY_CHECK:
+      "Lead with the safety score and each flag. Explain the specific risk each flag represents. 3-4 sentences. End with a clear safe/caution/avoid verdict.",
+    PRICE_ACTION:
+      "Cover recent price movement, volume trend, momentum direction, and support/resistance hints from candle data if available. 3-4 sentences. End with a momentum call.",
+    RESEARCH_WALLET:
+      "Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences.",
+  };
+
   lines.push(`\nUser question: ${d.question}`);
+  lines.push(`\nFocus: ${SUBINTENT_FOCUS[d.subIntent]}`);
   lines.push(
-    "\nBased ONLY on the data above, give a concise take: what's the main risk and is there opportunity? If Arkham holder/flow data is present, factor in concentration risk and smart money direction. Write like a crypto trader talking to a friend, not a report. Do NOT invent numbers or facts not in the data.",
+    "\nONLY use numbers and facts from the data above. If a data source returned null or is missing, say 'data unavailable' for that field. NEVER invent statistics. Write like a crypto trader talking to a friend, not a formal report.",
   );
   return lines.join("\n");
 }
@@ -1667,19 +1875,29 @@ function buildTemplateSummary(d: ResearchData): string {
   } else if (d.opportunityScore < 40) {
     parts.push("High risk. Proceed with caution.");
   }
-  return parts.join(" ") || "No notable signals found. Paste the contract address for a deeper look.";
+  return (
+    parts.join(" ") || "No notable signals found. Paste the contract address for a deeper look."
+  );
 }
 
 // ─── RESEARCH_REQUEST handler ──────────────────────────────────────────────────
-async function fetchCoinGeckoSearchTrending(): Promise<Array<{ id: string; name: string; symbol: string; market_cap_rank: number | null }>> {
+async function fetchCoinGeckoSearchTrending(): Promise<
+  Array<{ id: string; name: string; symbol: string; market_cap_rank: number | null }>
+> {
   try {
     const resp = await fetch("https://api.coingecko.com/api/v3/search/trending", {
       signal: AbortSignal.timeout(8_000),
     });
     if (!resp.ok) return [];
-    const data = (await resp.json()) as { coins?: Array<{ item: { id: string; name: string; symbol: string; market_cap_rank: number | null } }> };
+    const data = (await resp.json()) as {
+      coins?: Array<{
+        item: { id: string; name: string; symbol: string; market_cap_rank: number | null };
+      }>;
+    };
     return (data.coins ?? []).map((c) => c.item);
-  } catch { return []; }
+  } catch {
+    return [];
+  }
 }
 
 type TrendingCandidate = {
@@ -1695,14 +1913,18 @@ type TrendingCandidate = {
   source: "dexscreener" | "coingecko";
 };
 
-async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
+async function handleTrendingRequest(req: ResearchRequest, force = false): Promise<boolean> {
   const q = (req.question ?? req.rawText ?? "").toLowerCase();
-  const isTrending = /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
+  const isTrending =
+    force || /\b(trending|trend|hot|alpha|movers?|new listing|pumping|top tokens?)\b/.test(q);
   if (!isTrending) return false;
 
   const filterChains = detectChainsFromText(req.rawText ?? "");
   const chainLabel = filterChains.length > 0 ? filterChains.join(" + ") : "all chains";
-  log.agent("research", `trending query: chains=[${filterChains.join(",") || "all"}] text="${q.slice(0, 60)}"`);
+  log.agent(
+    "research",
+    `trending query: chains=[${filterChains.join(",") || "all"}] text="${q.slice(0, 60)}"`,
+  );
 
   try {
     // Source 1: DexScreener profiles + boosts (real DEX activity)
@@ -1719,7 +1941,8 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
     // Process DexScreener profiles + boosts
     const dexTokens = [...profiles, ...boosts];
     for (const t of dexTokens) {
-      const addr = (t as { tokenAddress?: string }).tokenAddress ?? (t as { address?: string }).address ?? "";
+      const addr =
+        (t as { tokenAddress?: string }).tokenAddress ?? (t as { address?: string }).address ?? "";
       const cid = (t as { chainId?: string }).chainId ?? "";
       if (!addr || !cid) continue;
       const key = `${cid}:${addr.toLowerCase()}`;
@@ -1757,7 +1980,9 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
             })
             .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
           return filtered[0] ?? null;
-        } catch { return null; }
+        } catch {
+          return null;
+        }
       }),
     );
 
@@ -1800,7 +2025,9 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
               c.priceChange24h = match.priceChange?.h24 ?? null;
               c.marketCap = match.marketCap ?? null;
             }
-          } catch { /* skip */ }
+          } catch {
+            /* skip */
+          }
         }),
       );
     }
@@ -1832,7 +2059,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
     try {
       const scans = await Promise.all(
         filtered.map(async (d) => {
-          const cc = d.chainId === "solana" ? "solana" as const : "evm" as const;
+          const cc = d.chainId === "solana" ? ("solana" as const) : ("evm" as const);
           try {
             const result = await Promise.race([
               runSecurityScan(d.address, cc, d.chainId),
@@ -1847,7 +2074,9 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
         }),
       );
       for (const s of scans) safetyMap.set(s.address, s);
-    } catch { /* safety scan failed */ }
+    } catch {
+      /* safety scan failed */
+    }
 
     // Format output
     const lines: string[] = [];
@@ -1859,9 +2088,10 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       const price = d.priceUsd ? `$${parseFloat(d.priceUsd).toPrecision(4)}` : "n/a";
       const vol = d.volume24h > 0 ? formatCompact(d.volume24h) : "";
       const liq = d.liquidity > 0 ? formatCompact(d.liquidity) : "";
-      const h24 = d.priceChange24h != null
-        ? `${d.priceChange24h > 0 ? "+" : ""}${d.priceChange24h.toFixed(1)}%`
-        : "";
+      const h24 =
+        d.priceChange24h != null
+          ? `${d.priceChange24h > 0 ? "+" : ""}${d.priceChange24h.toFixed(1)}%`
+          : "";
       const mc = d.marketCap ? formatCompact(d.marketCap) : "";
 
       const safety = safetyMap.get(d.address);
@@ -1874,8 +2104,16 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       }
 
       lines.push(`${rank}. ${sym} (${d.name})${safetyLabel}`);
-      const details = [d.chainId, price, liq ? `liq ${liq}` : "", h24 ? `24h ${h24}` : "", vol ? `vol ${vol}` : "", mc ? `mc ${mc}` : ""]
-        .filter(Boolean).join(" | ");
+      const details = [
+        d.chainId,
+        price,
+        liq ? `liq ${liq}` : "",
+        h24 ? `24h ${h24}` : "",
+        vol ? `vol ${vol}` : "",
+        mc ? `mc ${mc}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
       lines.push(`   ${details}`);
       lines.push(`   ${d.address}`);
     }
@@ -1893,6 +2131,7 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       flags: [],
       completedAt: Date.now(),
       isTrending: true,
+      subIntent: "TRENDING",
     });
   } catch (err) {
     log.error("trending query failed", err as Error);
@@ -1906,22 +2145,344 @@ async function handleTrendingRequest(req: ResearchRequest): Promise<boolean> {
       liquidityUsd: null,
       flags: [],
       completedAt: Date.now(),
+      subIntent: "TRENDING",
     });
   }
   return true;
 }
 
-async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkham?: ArkhamClient): Promise<void> {
-  log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"}`);
+async function handleMarketOverviewRequest(req: ResearchRequest, llm?: LlmClient): Promise<void> {
+  log.agent("research", "market overview request");
+  const [cgTop, fgS] = await Promise.allSettled([
+    fetchCoinGeckoTrending("", 10),
+    getFearGreedIndex(),
+  ]);
+  const topCoins = cgTop.status === "fulfilled" ? cgTop.value : [];
+  const fg = fgS.status === "fulfilled" ? fgS.value : 50;
 
+  const lines: string[] = [`Fear & Greed Index: ${fg}/100`];
+  for (const coin of topCoins.slice(0, 5)) {
+    const change =
+      coin.price_change_percentage_24h != null
+        ? ` (${coin.price_change_percentage_24h.toFixed(1)}% 24h)`
+        : "";
+    const price = coin.current_price != null ? ` $${coin.current_price.toLocaleString()}` : "";
+    lines.push(`${coin.symbol?.toUpperCase() ?? coin.name}:${price}${change}`);
+  }
+
+  const contextStr = lines.join("\n");
+  const prompt = `Market data:\n${contextStr}\n\nUser question: ${req.question}\n\nFocus: Cover BTC/ETH prices, 24h changes, fear & greed index, and top movers. 3-4 sentences.\n\nONLY use numbers and facts from the data above. Never invent statistics.`;
+  let summary = await callLLM(prompt, llm);
+  if (!summary) summary = `Fear & Greed: ${fg}/100. Market overview data:\n${lines.join("; ")}`;
+
+  bus.emit("RESEARCH_RESULT", {
+    requestId: req.requestId,
+    address: "market",
+    chain: "evm",
+    summary,
+    safetyScore: null,
+    priceUsd: null,
+    liquidityUsd: null,
+    flags: [],
+    completedAt: Date.now(),
+    subIntent: "MARKET_OVERVIEW",
+    fearGreed: fg,
+  } satisfies ResearchResult);
+}
+
+async function handleWalletRequest(
+  req: ResearchRequest,
+  arkham?: ArkhamClient,
+  llm?: LlmClient,
+): Promise<boolean> {
+  if (!req.address || !arkham) return false;
+  log.agent("research", `wallet research: ${req.address.slice(0, 10)}...`);
+
+  const [intelS, flowsS] = await Promise.allSettled([
+    arkham.getAddressIntel(req.address),
+    arkham.getTokenFlows("ethereum", req.address, "24h", 10),
+  ]);
+  const intel =
+    intelS.status === "fulfilled" ? intelS.value : { entity: null, entityType: null, labels: [] };
+  const flows = flowsS.status === "fulfilled" ? flowsS.value : [];
+
+  const lines: string[] = [];
+  if (intel.entity)
+    lines.push(`Entity: ${intel.entity}${intel.entityType ? ` (${intel.entityType})` : ""}`);
+  if (intel.labels.length > 0) lines.push(`Labels: ${intel.labels.join(", ")}`);
+  if (flows.length > 0) {
+    lines.push(`\nRecent 24h flows:`);
+    for (const f of flows.slice(0, 5)) {
+      const dir = f.netUSD >= 0 ? "net inflow" : "net outflow";
+      lines.push(
+        `  ${f.entityName ?? f.address.slice(0, 8)}: ${dir} $${formatCompact(Math.abs(f.netUSD))}`,
+      );
+    }
+  }
+
+  const contextStr = lines.join("\n") || "No Arkham data found for this address.";
+  const prompt = `Wallet: ${req.address}\n${contextStr}\n\nQuestion: ${req.question ?? "Who is this wallet and what have they been doing?"}\n\nFocus: ${"Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences."}\n\nONLY use numbers and facts from the provided data.`;
+
+  let summary = await callLLM(prompt, llm);
+  if (!summary) summary = contextStr || "No wallet data available.";
+
+  bus.emit("RESEARCH_RESULT", {
+    requestId: req.requestId,
+    address: req.address,
+    chain: req.chain ?? "evm",
+    summary,
+    safetyScore: null,
+    priceUsd: null,
+    liquidityUsd: null,
+    flags: [],
+    completedAt: Date.now(),
+    subIntent: "RESEARCH_WALLET",
+  } satisfies ResearchResult);
+  return true;
+}
+
+// Chains where CoinGecko has a dedicated category (returns chain-specific results).
+// All others fall back to DexScreener profiles/boosts for genuinely chain-local tokens.
+const COINGECKO_SPECIFIC_CATEGORY_CHAINS = new Set(["base", "bsc", "solana"]);
+
+async function handleCategoryRequest(req: ResearchRequest): Promise<boolean> {
+  const chainHints = detectChainsFromText(req.rawText ?? "");
+  const chain = chainHints[0] ?? "ethereum";
+  log.agent("research", `category query: chain=${chain}`);
+
+  const chainLabel = chain.charAt(0).toUpperCase() + chain.slice(1);
+
+  // CoinGecko path: only for chains with a dedicated category
+  if (COINGECKO_SPECIFIC_CATEGORY_CHAINS.has(chain)) {
+    const coins = await fetchCoinGeckoTrending(chain, 10).catch(() => [] as CoinGeckoMarketItem[]);
+    if (coins.length > 0) {
+      const lines: string[] = [`Top memecoins on ${chainLabel} by volume:\n`];
+      let rank = 0;
+      for (const c of coins.slice(0, 10)) {
+        rank++;
+        const price = c.current_price != null ? `$${c.current_price.toPrecision(4)}` : "n/a";
+        const vol =
+          c.total_volume != null && c.total_volume > 0 ? formatCompact(c.total_volume) : "";
+        const h24 =
+          c.price_change_percentage_24h != null
+            ? `${c.price_change_percentage_24h > 0 ? "+" : ""}${c.price_change_percentage_24h.toFixed(1)}%`
+            : "";
+        lines.push(
+          `${rank}. ${c.symbol.toUpperCase()} — ${price}${h24 ? ` (${h24})` : ""}${vol ? ` | vol ${vol}` : ""}`,
+        );
+      }
+      bus.emit("RESEARCH_RESULT", {
+        requestId: req.requestId,
+        address: "category",
+        chain: req.chain ?? "evm",
+        summary: lines.join("\n"),
+        safetyScore: null,
+        priceUsd: null,
+        liquidityUsd: null,
+        flags: [],
+        completedAt: Date.now(),
+        subIntent: "CATEGORY",
+      } satisfies ResearchResult);
+      return true;
+    }
+  }
+
+  // DexScreener path: profiles + boosts filtered to the requested chain
+  const [profilesS, boostsS] = await Promise.allSettled([
+    getLatestTokenProfiles(),
+    getLatestBoosts(),
+  ]);
+  const profiles = profilesS.status === "fulfilled" ? profilesS.value : [];
+  const boosts = boostsS.status === "fulfilled" ? boostsS.value : [];
+
+  const seen = new Set<string>();
+  const candidates: Array<{ address: string }> = [];
+  for (const t of [...profiles, ...boosts]) {
+    const addr = (t as { tokenAddress?: string }).tokenAddress ?? "";
+    const cid = (t as { chainId?: string }).chainId ?? "";
+    if (!addr || cid !== chain) continue;
+    const key = addr.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ address: addr });
+  }
+
+  // If profiles/boosts feed has no tokens for this chain right now, fall back to
+  // searching common meme keywords directly on DexScreener filtered to the chain.
+  if (candidates.length === 0) {
+    for (const term of ["meme", "pepe", "dog", "inu", "cat", "shib"]) {
+      const { pairs } = await searchPairs(term, { limit: 10 }).catch(() => ({
+        pairs: [] as DexPair[],
+      }));
+      for (const p of pairs) {
+        if (p.chainId !== chain || (p.volume?.h24 ?? 0) === 0) continue;
+        const addr = p.baseToken?.address ?? "";
+        if (!addr) continue;
+        const key = addr.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ address: addr });
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "category",
+      chain: req.chain ?? "evm",
+      summary: `No active memecoins found on ${chainLabel} right now. DexScreener's trending feed has nothing for this chain at the moment — try again shortly.`,
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+      subIntent: "CATEGORY",
+    } satisfies ResearchResult);
+    return true;
+  }
+
+  // Enrich candidates with pair data
+  const enriched = (
+    await Promise.all(
+      candidates.slice(0, 15).map(async (c) => {
+        try {
+          const { pairs } = await searchPairs(c.address, { limit: 3 });
+          const best = pairs
+            .filter((p) => p.chainId === chain && (p.volume?.h24 ?? 0) > 0)
+            .sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0))[0];
+          if (!best?.baseToken?.address) return null;
+          return {
+            symbol: best.baseToken.symbol ?? "?",
+            name: best.baseToken.name ?? "?",
+            price: parseFloat(best.priceUsd ?? "0") || null,
+            volume24h: best.volume?.h24 ?? 0,
+            priceChange24h: best.priceChange?.h24 ?? null,
+          };
+        } catch {
+          return null;
+        }
+      }),
+    )
+  )
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .sort((a, b) => b.volume24h - a.volume24h)
+    .slice(0, 10);
+
+  if (enriched.length === 0) {
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "category",
+      chain: req.chain ?? "evm",
+      summary: `No active memecoins with volume found on ${chainLabel} right now. Try again shortly.`,
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+      subIntent: "CATEGORY",
+    } satisfies ResearchResult);
+    return true;
+  }
+
+  const lines: string[] = [`Top active tokens on ${chainLabel} (DexScreener):\n`];
+  let rank = 0;
+  for (const c of enriched) {
+    rank++;
+    const price = c.price != null ? `$${c.price.toPrecision(4)}` : "n/a";
+    const h24 =
+      c.priceChange24h != null
+        ? ` (${c.priceChange24h > 0 ? "+" : ""}${c.priceChange24h.toFixed(1)}%)`
+        : "";
+    const vol = c.volume24h > 0 ? ` | vol ${formatCompact(c.volume24h)}` : "";
+    lines.push(`${rank}. ${c.symbol.toUpperCase()} — ${price}${h24}${vol}`);
+  }
+
+  bus.emit("RESEARCH_RESULT", {
+    requestId: req.requestId,
+    address: "category",
+    chain: req.chain ?? "evm",
+    summary: lines.join("\n"),
+    safetyScore: null,
+    priceUsd: null,
+    liquidityUsd: null,
+    flags: [],
+    completedAt: Date.now(),
+    subIntent: "CATEGORY",
+  } satisfies ResearchResult);
+  return true;
+}
+
+async function handleResearchRequest(
+  req: ResearchRequest,
+  llm?: LlmClient,
+  arkham?: ArkhamClient,
+  nansen?: NansenClient,
+): Promise<void> {
+  const subIntent: ResearchSubIntent = req.subIntent ?? "TOKEN_LOOKUP";
+  log.agent("research", `request for ${req.address ?? req.tokenName ?? "unknown"} [${subIntent}]`);
+
+  const toolSet = new Set<string>(
+    req.tools && req.tools.length > 0 ? req.tools : TOOL_DEFAULTS[subIntent],
+  );
+
+  if (subIntent === "MARKET_OVERVIEW") {
+    await handleMarketOverviewRequest(req, llm);
+    return;
+  }
+
+  if (subIntent === "RESEARCH_WALLET") {
+    const handled = await handleWalletRequest(req, arkham, llm);
+    if (handled) return;
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: req.address ?? "unknown",
+      chain: req.chain ?? "evm",
+      summary: req.address
+        ? `Wallet intelligence for ${req.address} is not available right now. Arkham data is required but not configured.`
+        : "Could not identify a wallet address in your query. Please include the full address.",
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+      subIntent: "RESEARCH_WALLET",
+    } satisfies ResearchResult);
+    return;
+  }
+
+  if (subIntent === "CATEGORY") {
+    await handleCategoryRequest(req);
+    return;
+  }
+
+  if (subIntent === "TRENDING") {
+    await handleTrendingRequest(req, true);
+    return;
+  }
   if (!req.address && !req.tokenName) {
     const handled = await handleTrendingRequest(req);
     if (handled) return;
+    bus.emit("RESEARCH_RESULT", {
+      requestId: req.requestId,
+      address: "unknown",
+      chain: req.chain ?? "evm",
+      summary:
+        "I need a token address or name to look that up. Try asking about a specific token, or say 'what's trending' to see current movers.",
+      safetyScore: null,
+      priceUsd: null,
+      liquidityUsd: null,
+      flags: [],
+      completedAt: Date.now(),
+    } satisfies ResearchResult);
+    return;
   }
 
   let address = req.address;
   const hintedChain = detectChainFromText(req.rawText ?? "");
-  let resolvedChainId: DexScreenerChain = (hintedChain && isValidChain(hintedChain) ? hintedChain : "ethereum") as DexScreenerChain;
+  let resolvedChainId: DexScreenerChain = (
+    hintedChain && isValidChain(hintedChain) ? hintedChain : "ethereum"
+  ) as DexScreenerChain;
 
   if (!address && req.tokenName) {
     const { pairs } = await searchPairs(req.tokenName, { limit: 5 }).catch(() => ({
@@ -1948,7 +2509,14 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
 
   // If no pairs found on default chain, try other popular chains
   if (pairs.length === 0 && chainClass === "evm" && resolvedChainId === "ethereum") {
-    const tryChains: DexScreenerChain[] = ["base", "arbitrum", "bsc", "polygon", "optimism", "avalanche"];
+    const tryChains: DexScreenerChain[] = [
+      "base",
+      "arbitrum",
+      "bsc",
+      "polygon",
+      "optimism",
+      "avalanche",
+    ];
     const multiResults = await Promise.allSettled(
       tryChains.map((c) => getPairsByToken(c, address)),
     );
@@ -1976,17 +2544,46 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
       }
     : null;
 
-  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS] = await Promise.allSettled([
-    runSecurityScan(address, chainClass, resolvedChainId),
-    checkAgeAndHolders(address, chainClass, resolvedChainId),
-    checkTrendSignal(ticker, tokenName, true),
-    fetchCoinGecko(ticker),
-    chainClass === "solana" ? fetchBirdeye(address) : Promise.resolve(null),
-    searchBrave(`${ticker} ${tokenName} crypto`),
-    fetchGeckoTerminal(address, resolvedChainId),
-    arkham ? arkham.getTokenHolders(resolvedChainId, address, 10) : Promise.resolve([] as ArkhamHolder[]),
-    arkham ? arkham.getTokenFlows(resolvedChainId, address, "24h", 10) : Promise.resolve([] as ArkhamFlow[]),
-  ]);
+  const [secS, ageS, trendS, cgS, birdS, braveS, geckoS, arkHoldersS, arkFlowsS, nansenS, duneS] =
+    await Promise.allSettled([
+      toolSet.has("goplus") || toolSet.has("honeypot")
+        ? runSecurityScan(address, chainClass, resolvedChainId)
+        : Promise.resolve({ flags: [] as SafetyFlag[], score: 100, ok: true }),
+      toolSet.has("etherscan")
+        ? checkAgeAndHolders(address, chainClass, resolvedChainId)
+        : Promise.resolve({
+            ageHours: null,
+            top3Pct: null,
+            holderCount: null,
+            whaleAlert: null,
+            distributingWallets: null,
+          }),
+      subIntent === "TOKEN_LOOKUP" || subIntent === "PRICE_ACTION"
+        ? checkTrendSignal(ticker, tokenName, true)
+        : Promise.resolve({ mentionCount: 0, sources: [] as string[], fearGreed: 50 }),
+      toolSet.has("coingecko") ? fetchCoinGecko(ticker) : Promise.resolve(null),
+      toolSet.has("birdeye") && chainClass === "solana"
+        ? fetchBirdeye(address)
+        : Promise.resolve(null),
+      subIntent === "TOKEN_LOOKUP"
+        ? searchBrave(`${ticker} ${tokenName} crypto`)
+        : Promise.resolve([]),
+      toolSet.has("geckoterminal")
+        ? fetchGeckoTerminal(address, resolvedChainId)
+        : Promise.resolve(null),
+      toolSet.has("arkham") && arkham
+        ? arkham.getTokenHolders(resolvedChainId, address, 10)
+        : Promise.resolve([] as ArkhamHolder[]),
+      toolSet.has("arkham") && arkham
+        ? arkham.getTokenFlows(resolvedChainId, address, "24h", 10)
+        : Promise.resolve([] as ArkhamFlow[]),
+      toolSet.has("nansen") && nansen
+        ? nansen.getSmartMoneyFlows(address, resolvedChainId)
+        : Promise.resolve(null),
+      toolSet.has("dune")
+        ? fetchDuneSmartMoney(chainClass === "solana" ? "solana" : undefined)
+        : Promise.resolve([] as DuneSmartMoneyFlow[]),
+    ]);
 
   const security =
     secS.status === "fulfilled" ? secS.value : { flags: [] as SafetyFlag[], score: 50, ok: false };
@@ -2010,6 +2607,8 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
   const gecko = geckoS.status === "fulfilled" ? geckoS.value : null;
   const arkhamHolders = arkHoldersS.status === "fulfilled" ? arkHoldersS.value : [];
   const arkhamFlows = arkFlowsS.status === "fulfilled" ? arkFlowsS.value : [];
+  const nansenFlows = nansenS.status === "fulfilled" ? nansenS.value : null;
+  const duneFlows = duneS.status === "fulfilled" ? duneS.value : [];
 
   const tavilyHit = await checkTavily(ticker, 7);
   if (tavilyHit && !trend.sources.includes("tavily")) {
@@ -2017,18 +2616,45 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     trend.mentionCount++;
   }
 
+  // Merge market-based flags with contract flags and recompute final score.
+  const pairAgeHours = best?.pairCreatedAt ? (Date.now() - best.pairCreatedAt) / 3_600_000 : null;
+  const top3Pct = age.top3Pct ?? null;
+  const marketFlags = buildMarketFlags(
+    liquidityUsd,
+    best?.volume?.h24 ?? null,
+    pairAgeHours,
+    top3Pct,
+  );
+  if (marketFlags.length > 0) {
+    const mergedResult = computeScore([
+      ...security.flags.map((f) => ({ flag: f, source: "goplus" as const })),
+      ...marketFlags,
+    ]);
+    security.score = mergedResult.score;
+    for (const mf of mergedResult.flags) {
+      if (!security.flags.includes(mf)) security.flags.push(mf);
+    }
+  }
+
   // Apply transfer-based adjustments before narrative multiplier.
   let baseScore = security.score;
+  // Extra -20 for critically low liquidity (<$1k) on top of LOW_LIQUIDITY flag deduction.
+  if (liquidityUsd !== null && liquidityUsd < 1_000) baseScore = Math.max(0, baseScore - 20);
   if (age.whaleAlert) baseScore = Math.max(0, baseScore - 15);
   if (age.distributingWallets) baseScore = Math.max(0, baseScore - age.distributingWallets * 5);
   if (arkhamHolders.length > 0) {
     const top3ArkhamPct = arkhamHolders.slice(0, 3).reduce((s, h) => s + h.percentage, 0);
     if (top3ArkhamPct > 60) baseScore = Math.max(0, baseScore - 10);
   }
-  if (arkhamFlows.length > 0) {
-    const totalNet = arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
-    if (totalNet < -50_000) baseScore = Math.max(0, baseScore - 5);
-  }
+  const smartMoneyNetFlow = (() => {
+    let net = 0;
+    if (nansenFlows?.smartMoney)
+      net += nansenFlows.smartMoney.inflow - nansenFlows.smartMoney.outflow;
+    if (arkhamFlows.length > 0) net += arkhamFlows.reduce((s, f) => s + f.netUSD, 0);
+    return net;
+  })();
+  if (smartMoneyNetFlow < -50_000) baseScore = Math.max(0, baseScore - 5);
+  else if (smartMoneyNetFlow > 50_000) baseScore = Math.min(100, baseScore + 5);
 
   const multiplier = computeNarrativeMultiplier(trend);
   const opportunityScore = Math.min(100, Math.round(baseScore * multiplier));
@@ -2050,8 +2676,11 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     priceChange,
     arkhamHolders,
     arkhamFlows,
+    nansenFlows,
+    duneFlows,
     opportunityScore,
     question: req.question,
+    subIntent,
   };
 
   let summary = await callLLM(buildResearchPrompt(data), llm);
@@ -2073,6 +2702,15 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
     priceChange24h: priceChange?.h24 ?? null,
     fdv: best?.fdv ?? null,
     opportunityScore,
+    subIntent,
+    priceChange1h: priceChange?.h1 ?? null,
+    pairAge: pairAgeHours,
+    holderCount: age.holderCount ?? null,
+    topHolderPct: top3Pct,
+    fearGreed: trend.fearGreed,
+    smartMoneyNetFlow,
+    marketCap: cg?.marketCap ?? null,
+    priceChange7d: null,
   } satisfies ResearchResult);
 
   console.log(`[research] RESEARCH_RESULT emitted for ${ticker} (opportunity=${opportunityScore})`);
@@ -2089,14 +2727,19 @@ async function handleResearchRequest(req: ResearchRequest, llm?: LlmClient, arkh
  * Job 1: background polling loop — emits ALPHA_FOUND for tokens that pass all gates.
  * Job 2: RESEARCH_REQUEST listener — emits RESEARCH_RESULT with synthesised verdict.
  */
-export function startResearchAgent(deps?: { llm?: LlmClient; arkham?: ArkhamClient }): { stop(): void } {
+export function startResearchAgent(deps?: {
+  llm?: LlmClient;
+  arkham?: ArkhamClient;
+  nansen?: NansenClient;
+}): { stop(): void } {
+  _pollingArkham = deps?.arkham;
   void runPollingCycle();
   const timer = setInterval(() => {
     void runPollingCycle();
   }, POLL_INTERVAL_MS);
 
   const onRequest = (req: ResearchRequest) => {
-    void handleResearchRequest(req, deps?.llm, deps?.arkham);
+    void handleResearchRequest(req, deps?.llm, deps?.arkham, deps?.nansen);
   };
   bus.on("RESEARCH_REQUEST", onRequest);
 

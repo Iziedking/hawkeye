@@ -1,0 +1,65 @@
+# ─── Always exclude ──────────────────────────────────────────────────────────
+node_modules
+npm-debug.log*
+
+# Build output (we copy source and let tsx run it directly)
+dist
+build-artifacts
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# ─── Secrets — never bake into the image ─────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Persistent runtime state — comes from the volume mount, not the image ──
+data
+*.pem
+
+# ─── Dev/agent assets not needed at runtime ─────────────────────────────────
+.agents
+.claude
+.github
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Hackathon notes, plans, dev-experience scratchpads
+feedback_experience
+PLAN.md
+CONTRIBUTING.md
+CLAUDE.md
+MEMORY.md
+learning_
+
+# ─── Large reference trees that aren't loaded at runtime ────────────────────
+# 9.7 MB of Go source for the AXL P2P node — we connect to a separately-run
+# AXL daemon over HTTP, so the source isn't needed in the bot image.
+src/integrations/gensyn/axl-src
+
+# ─── Ops / dev-only files ───────────────────────────────────────────────────
+contracts
+scripts
+eslint.config.mjs
+.prettierignore
+.prettierrc.json
+.mcp.json
+skills-lock.json
+
+# Smoke tests + repo-root debug scripts (deleting these is on the cleanup list,
+# but for now just keep them out of the image)
+**/*.smoke-test.ts
+**/smoke-test.ts
+trace_bug.js
+test_regex.js
+verify_of_worth.js
+
+# Docker meta (don't recursively bake itself)
+Dockerfile
+.dockerignore
+docker-compose*.yml

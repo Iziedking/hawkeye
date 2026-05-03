@@ -5,6 +5,9 @@ node_modules/
 dist/
 build-artifacts/
 
+# Runtime state — local database files
+data/
+
 # Secrets — never commit
 .env
 .env.local
@@ -12,6 +15,9 @@ build-artifacts/
 
 # Temporary probe / debug scripts used during verification gates
 .tmp-*
+
+# Runtime data (positions, user state)
+data/
 
 # Private keys and binaries
 *.pem
@@ -29,3 +35,6 @@ Thumbs.db
 .claude/
 CLAUDE.md
 learning_/
+.samuel-plan.md
+research_agent_overhaul.md
+RESEARCH-AGENT-REBUILD.md

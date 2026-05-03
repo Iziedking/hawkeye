@@ -133,7 +133,7 @@ export const log = {
         typeof detail === "string"
           ? detail
           : detail instanceof Error
-            ? detail.stack ?? detail.message
+            ? (detail.stack ?? detail.message)
             : JSON.stringify(detail, null, 2);
       for (const ln of text.split("\n")) {
         process.stdout.write(`${C.gray}         ${C.dim}${ln}${C.reset}\n`);
@@ -150,27 +150,58 @@ export const log = {
     w(`  ${C.cyan}${C.bold}HAWKEYE v0.1${C.reset}  ${C.gray}Autonomous Trading Agent${C.reset}\n`);
     w(`${BAR}\n`);
 
-    const chainDetail = cfg.ogChain && cfg.ogChainAddr
-      ? `contract ${cfg.ogChainAddr.slice(0, 6)}...`
-      : cfg.ogChain
-        ? "contract deployed"
-        : "not deployed";
+    const chainDetail =
+      cfg.ogChain && cfg.ogChainAddr
+        ? `contract ${cfg.ogChainAddr.slice(0, 6)}...`
+        : cfg.ogChain
+          ? "contract deployed"
+          : "not deployed";
 
-    const gensynDetail = cfg.gensyn
-      ? `${cfg.gensynPeers ?? 0} peers on AXL`
-      : "local-only";
+    const gensynDetail = cfg.gensyn ? `${cfg.gensynPeers ?? 0} peers on AXL` : "local-only";
 
-    w(bannerLine(C.lightPink, "0G Compute", cfg.ogCompute, cfg.ogCompute ? "qwen-2.5-7b" : "disabled") + "\n");
-    w(bannerLine(C.lightPink, "0G Storage", cfg.ogStorage, cfg.ogStorage ? "testnet" : "disabled") + "\n");
+    w(
+      bannerLine(
+        C.lightPink,
+        "0G Compute",
+        cfg.ogCompute,
+        cfg.ogCompute ? "qwen-2.5-7b" : "disabled",
+      ) + "\n",
+    );
+    w(
+      bannerLine(C.lightPink, "0G Storage", cfg.ogStorage, cfg.ogStorage ? "testnet" : "disabled") +
+        "\n",
+    );
     w(bannerLine(C.lightPink, "0G Chain", cfg.ogChain, chainDetail) + "\n");
     w(bannerLine(C.lightBrown, "Gensyn AXL", cfg.gensyn, gensynDetail) + "\n");
-    w(bannerLine(C.deepPink, "Uniswap API", cfg.uniswap, cfg.uniswap ? "Trading API v1" : "disabled") + "\n");
-    w(bannerLine(C.green, "KeeperHub", cfg.keeperHub, cfg.keeperHub ? "MEV protection" : "disabled") + "\n");
-    w(bannerLine(C.cyan, "Privy Wallets", cfg.privy, cfg.privy ? "agent wallets" : "disabled") + "\n");
-    w(bannerLine(C.cyan, "LLM Fallback", cfg.llmFallback !== null, cfg.llmFallback ?? "disabled") + "\n");
+    w(
+      bannerLine(
+        C.deepPink,
+        "Uniswap API",
+        cfg.uniswap,
+        cfg.uniswap ? "Trading API v1" : "disabled",
+      ) + "\n",
+    );
+    w(
+      bannerLine(
+        C.green,
+        "KeeperHub",
+        cfg.keeperHub,
+        cfg.keeperHub ? "MEV protection" : "disabled",
+      ) + "\n",
+    );
+    w(
+      bannerLine(C.cyan, "Privy Wallets", cfg.privy, cfg.privy ? "per-user wallets" : "disabled") +
+        "\n",
+    );
+    w(
+      bannerLine(C.cyan, "LLM Fallback", cfg.llmFallback !== null, cfg.llmFallback ?? "disabled") +
+        "\n",
+    );
 
     w(`${BAR}\n`);
-    w(`  ${C.white}${C.bold}${cfg.agentCount} agents online${C.reset} ${C.gray}swarm ready${C.reset}\n`);
+    w(
+      `  ${C.white}${C.bold}${cfg.agentCount} agents online${C.reset} ${C.gray}swarm ready${C.reset}\n`,
+    );
     w(`${BAR}\n`);
     w("\n");
   },
