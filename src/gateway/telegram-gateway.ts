@@ -1394,17 +1394,11 @@ export async function startTelegramGateway(
           lines.push(``, `${emailInput}`, ``, `Send ETH to your EVM address to start trading.`);
           await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 
-          // Newbie-friendly follow-up: explain that the wallet is fully theirs
-          // and can be exported to MetaMask, Phantom, Rabby, etc. via Privy.
           await ctx.reply(
             [
-              `<b>Your wallet, your keys.</b>`,
+              `<b>This is your HAWKEYE agent wallet.</b>`,
               ``,
-              `This wallet is yours forever. You can sign in at <a href="https://home.privy.io/">home.privy.io</a> with <b>${emailInput}</b> to export the private key.`,
-              ``,
-              `Once exported, import the key into any wallet you like — MetaMask, Phantom, Rabby, Trust Wallet — and you'll see the same balance and history.`,
-              ``,
-              `New to crypto? Stay here — HAWKEYE handles the hard parts. Export only when you want to.`,
+              `Trade, swap, and send straight from chat — HAWKEYE handles the on-chain work for you.`,
             ].join("\n"),
             { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
           );
@@ -2483,7 +2477,16 @@ export async function startTelegramGateway(
     }
 
     if (balanceLines.length === 0 && positions.length === 0) {
-      void reply(rctx, `No balances or positions. Send ETH to your wallet to start.`);
+      const solWallet = walletMgr.getSolanaWallet(userId);
+      const lines = [
+        `<b>Your wallets</b>`,
+        ``,
+        `EVM  ${codeAddr(addr)}`,
+        ...(solWallet ? [`SOL  ${codeAddr(solWallet.address)}`] : []),
+        ``,
+        `No balances or positions yet. Send ETH to your EVM address to start trading.`,
+      ];
+      void reply(rctx, lines.join("\n"));
       return;
     }
 

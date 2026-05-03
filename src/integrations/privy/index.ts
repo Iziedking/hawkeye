@@ -1,3 +1,4 @@
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { PrivyClient } from "@privy-io/node";
 import { loadEnvLocal, envOr } from "../../shared/env";
 import { log } from "../../shared/logger";
@@ -6,6 +7,18 @@ import type { StoredUser, StoredExternalWallet, StoredActiveWallet } from "../..
 import type { ChainId, ActiveWalletRef } from "../../shared/types";
 
 loadEnvLocal();
+
+// Derives the SPKI/base64 P-256 public key from the PKCS8 private key in
+// PRIVY_AUTHORIZATION_PRIVATE_KEY. Privy expects this exact encoding when
+// stamping ownership via `owner: { public_key }` (matches the format that
+// the SDK's own generateP256KeyPair() produces — base64-encoded SPKI DER).
+function derivePrivyAuthPublicKey(privateKeyB64: string): string {
+  const stripped = privateKeyB64.replace(/^wallet-auth:|^wallet-api:/, "");
+  const der = Buffer.from(stripped, "base64");
+  const priv = createPrivateKey({ key: der, format: "der", type: "pkcs8" });
+  const pub = createPublicKey(priv);
+  return pub.export({ type: "spki", format: "der" }).toString("base64");
+}
 
 const CAIP2_MAP: Partial<Record<ChainId, string>> = {
   ethereum: "eip155:1",
@@ -116,6 +129,22 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     throw new Error("PRIVY_APP_ID and PRIVY_APP_SECRET required. Set them in .env.local");
   }
 
+  // Server-wallet signing requires an Authorization Key configured in the
+  // Privy dashboard. The base64-PKCS8 private key is passed per request as
+  // `authorization_context.authorization_private_keys`. Without it,
+  // `sendTransaction` returns 401 "No valid authorization keys or user
+  // signing keys available".
+  const authPrivateKey = envOr("PRIVY_AUTHORIZATION_PRIVATE_KEY", "");
+  const authContext: { authorization_private_keys: string[] } | undefined =
+    authPrivateKey.length > 0 ? { authorization_private_keys: [authPrivateKey] } : undefined;
+
+  // Public counterpart of the auth key. Stamped onto every newly created
+  // wallet via `owner: { public_key }` so the bot's auth private key is the
+  // sole authorized signer for that wallet (Path B). Without it, wallets
+  // would have no recognized signer and signing requests would 401.
+  const authPublicKey: string | null =
+    authPrivateKey.length > 0 ? derivePrivyAuthPublicKey(authPrivateKey) : null;
+
   const client = new PrivyClient({ appId, appSecret });
   const store = new JsonStore();
 
@@ -161,7 +190,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     }
 
     const evmOpts: Record<string, unknown> = { chain_type: "ethereum" };
-    if (profile?.privyUserId) evmOpts["owner"] = { user_id: profile.privyUserId };
+    if (authPublicKey) evmOpts["owner"] = { public_key: authPublicKey };
     const wallet = await client.wallets().create(evmOpts as { chain_type: "ethereum" });
 
     const pw: PrivyWallet = {
@@ -212,7 +241,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
 
     try {
       const solOpts: Record<string, unknown> = { chain_type: "solana" };
-      if (profile.privyUserId) solOpts["owner"] = { user_id: profile.privyUserId };
+      if (authPublicKey) solOpts["owner"] = { public_key: authPublicKey };
       const wallet = await client.wallets().create(solOpts as { chain_type: "solana" });
 
       const sw: PrivyWallet = {
@@ -255,22 +284,8 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       if (profile?.agentWallet) return profile.agentWallet;
     }
 
-    let privyUserId: string | null = null;
-    try {
-      const privyUser = await client.users().create({
-        linked_accounts: [{ type: "email", address: email }],
-      });
-      privyUserId = privyUser.id;
-      console.log("[privy] created Privy user", privyUserId, "for", email);
-    } catch (err) {
-      console.warn(
-        "[privy] user creation failed, wallet-only mode:",
-        (err as Error).message?.slice(0, 80),
-      );
-    }
-
     const walletOpts: Record<string, unknown> = { chain_type: "ethereum" };
-    if (privyUserId) walletOpts["owner"] = { user_id: privyUserId };
+    if (authPublicKey) walletOpts["owner"] = { public_key: authPublicKey };
     const wallet = await client.wallets().create(walletOpts as { chain_type: "ethereum" });
 
     const pw: PrivyWallet = {
@@ -283,7 +298,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     const newProfile: StoredUser = {
       v: 2,
       email,
-      privyUserId,
+      privyUserId: null,
       platformIds: [{ platform: "telegram", id: userId }],
       agentWallet: pw,
       solanaWallet: null,
@@ -328,27 +343,12 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     const profile = store.getUser(oldEmail);
     if (!profile) return false;
 
-    let privyUserId = profile.privyUserId;
-    if (!privyUserId) {
-      try {
-        const privyUser = await client.users().create({
-          linked_accounts: [{ type: "email", address: email }],
-        });
-        privyUserId = privyUser.id;
-        console.log("[privy] created Privy user", privyUserId, "for", email);
-      } catch (err) {
-        console.warn(
-          "[privy] user creation for link failed:",
-          (err as Error).message?.slice(0, 80),
-        );
-      }
-    }
-
-    // Re-key profile from old (synthetic) email to real email
+    // Re-key profile from old (synthetic) email to real email. We no longer
+    // create a Privy user record here — wallet ownership is bound to the
+    // bot's authorization key, not a Privy user.
     const updated: StoredUser = {
       ...profile,
       email,
-      privyUserId,
     };
 
     // Delete old entry if different key
@@ -548,6 +548,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
       .ethereum()
       .signTransaction(w.walletId, {
         params: { transaction: txObj as Record<string, unknown> },
+        ...(authContext ? { authorization_context: authContext } : {}),
       });
 
     return result.signed_transaction;
@@ -570,15 +571,29 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     if (tx.data) txObj["data"] = tx.data;
     if (tx.gasLimit) txObj["gas_limit"] = toHex(tx.gasLimit);
 
-    const result = await client
-      .wallets()
-      .ethereum()
-      .sendTransaction(w.walletId, {
-        caip2,
-        params: { transaction: txObj as Record<string, unknown> },
-      });
-
-    return { hash: result.hash, caip2: result.caip2 };
+    try {
+      const result = await client
+        .wallets()
+        .ethereum()
+        .sendTransaction(w.walletId, {
+          caip2,
+          params: { transaction: txObj as Record<string, unknown> },
+          ...(authContext ? { authorization_context: authContext } : {}),
+        });
+      return { hash: result.hash, caip2: result.caip2 };
+    } catch (err) {
+      const msg = (err as Error).message ?? String(err);
+      // Surface a clear hint for the most common Privy 401: missing
+      // Authorization Key. The user fixes this by registering an
+      // authorization key in the Privy dashboard and setting
+      // PRIVY_AUTHORIZATION_PRIVATE_KEY in .env.local.
+      if (msg.includes("No valid authorization keys") || msg.includes("user signing keys")) {
+        throw new Error(
+          "Wallet signing isn't authorized. Set up an Authorization Key in your Privy dashboard (Settings → Authorization Keys) and add the base64 private key as PRIVY_AUTHORIZATION_PRIVATE_KEY in .env.local. See https://docs.privy.io/wallets/using-wallets/authorization-keys",
+        );
+      }
+      throw err;
+    }
   }
 
   return {

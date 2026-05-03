@@ -2,6 +2,8 @@
 
 HAWKEYE is an autonomous on-chain trading agent that lives in your Telegram chat.
 
+> **Scope today: EVM only.** Trade execution ships on Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, and Sepolia testnet. Solana trade execution is **coming soon** — the agents and Jupiter quote path are scaffolded but not live. Solana token research (RugCheck, GoPlus Solana, Birdeye) is already wired into the Research and Safety agents.
+
 Behind the bot is a swarm of seven specialised agents that talk to each other over a typed event bus. They split the work the way a real trading desk would: one watches for risk, one prices the trade, one decides whether to pull the trigger, one places the swap, one watches the position after entry, one researches new tokens, and one mirrors interesting wallets.
 
 The agents run on **0G Compute** (verifiable LLM inference), persist memory to **0G Storage**, and register their identities and trade decisions on **0G Chain**. Trades route through **Uniswap**, mainnet swaps are MEV-protected by **KeeperHub**, wallets are provisioned per user by **Privy**, and the swarm can be bridged across nodes via **Gensyn AXL**.
@@ -455,7 +457,7 @@ See [`FEEDBACK.md`](./FEEDBACK.md) for the full builder-experience write-up requ
 
 ### KeeperHub, MEV protection and reliability
 
-Every mainnet swap on EVM (Ethereum, Base, Arbitrum, Optimism, BSC, Polygon) routes through KeeperHub. Solana uses Jito instead.
+Every mainnet swap on EVM (Ethereum, Base, Arbitrum, Optimism, BSC, Polygon) routes through KeeperHub. Solana trade execution (with Jito for MEV) is on the roadmap; the EVM path is what ships today.
 
 KeeperHub failures don't break the user's trade. `KeeperHubClient.circuitOpen` flips on transient errors and the trade falls through to the wallet manager without aborting. At boot, a reachability probe writes `[execution] KeeperHub reachable, all mainnet swaps will be MEV-protected` so an operator can tell whether protection is live without checking logs after the fact.
 
@@ -469,7 +471,11 @@ Paths: `src/shared/axl-bus.ts`, plus the local MCP server at `src/tools/gensyn-a
 
 ### Privy, per-user agent wallets
 
-Logging in with an email provisions an EVM agent wallet for that user. Users can also link an external wallet via RainbowKit and a SIWE-style signed nonce, which attaches the wallet to the same email-rooted profile. After linking, the user can flip between agent and external as the active wallet. Trades from the agent wallet stay one-tap; trades from an external wallet require an explicit signature on each one. See `src/integrations/privy/index.ts`.
+Logging in with an email provisions a managed EVM agent wallet for that user. The wallet is server-custodied: HAWKEYE signs and submits every trade, swap, and `/send` on the user's behalf using a Privy server-side **authorization key** (`PRIVY_AUTHORIZATION_PRIVATE_KEY`), and ownership is bound to that key via `owner: { public_key }` at wallet creation. The user authenticates by signing back in with the same email — the wallet stays bound to their account across sessions and platforms.
+
+This is intentionally not a self-custody wallet. The private key is **not** exportable through the Privy UI; that is the trade-off for one-tap trading and the security model HAWKEYE is built around. Sending native tokens out of the agent wallet (`/send`) is fully supported, so funds are never trapped — users decide what flows in and what flows out, the bot just handles the on-chain mechanics.
+
+Users can also link an **external wallet** via RainbowKit and a SIWE-style signed nonce, which attaches the wallet to the same email-rooted profile. After linking, the user can flip between agent and external as the active wallet. Trades from the agent wallet stay one-tap; trades from an external wallet require an explicit signature on each one. See `src/integrations/privy/index.ts`.
 
 ---
 
@@ -516,7 +522,7 @@ Sells size off your live on-chain balance, in token decimals, capped at what you
 
 ### On the roadmap
 
-Solana execution is the next sprint. The agents are already wired, the Jupiter quote path is stubbed in, and on-chain submission via Privy Solana wallets is in flight.
+Solana trade execution is **coming soon** — the focus today is EVM. The agents are already wired, the Jupiter quote path is stubbed in, and on-chain submission via Privy Solana wallets is in flight. Until that lands, anything Solana-related in the trade path returns a clear "coming soon" message; the Research and Safety agents already cover Solana tokens via RugCheck, GoPlus Solana, Jupiter strict list, and Birdeye.
 
 Copy-trade currently uses a single shared DexScreener WebSocket. That is efficient for the small watchlists every demo user has, but per-wallet subscriptions are the right design once we are scaling to thousands of watchers.
 
