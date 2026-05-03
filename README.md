@@ -1,73 +1,17 @@
 # HAWKEYE
 
-Autonomous crypto trading agent swarm on Telegram. Seven specialized agents
-coordinate through a typed event bus to handle the full trade lifecycle: safety
-checks, quoting, strategy, execution, monitoring, research, and copy trading.
+HAWKEYE is an autonomous on-chain trading agent that lives in your Telegram chat.
 
-Built for the **Open Agent Hackathon**. Powered by **0G Compute** (LLM),
-**0G Storage** (audit trail), and **0G Chain** (on-chain registry), with
-**Gensyn AXL** for P2P swarm transport, **KeeperHub** for MEV protection,
-**Uniswap** for routing, and **Privy** for per-user wallets.
+Behind the bot is a swarm of seven specialised agents that talk to each other over a typed event bus. They split the work the way a real trading desk would: one watches for risk, one prices the trade, one decides whether to pull the trigger, one places the swap, one watches the position after entry, one researches new tokens, and one mirrors interesting wallets.
 
-> **0G Mainnet contract**: [`0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F`](https://chainscan.0g.ai/address/0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F) — chain `16661`. All seven agents registered on-chain.
+The agents run on **0G Compute** (verifiable LLM inference), persist memory to **0G Storage**, and register their identities and trade decisions on **0G Chain**. Trades route through **Uniswap**, mainnet swaps are MEV-protected by **KeeperHub**, wallets are provisioned per user by **Privy**, and the swarm can be bridged across nodes via **Gensyn AXL**.
 
----
-
-## Submission — partner prize eligibility
-
-HAWKEYE applies partner technologies as load-bearing infrastructure rather than
-checkbox integrations. Quick map for judges:
-
-| Partner / track                                  | Where it lives in HAWKEYE                                                                                                                                                                                                | Required deliverable                                                   |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| **0G — Track A: Framework / Tooling**            | Reusable agent-swarm framework: typed event bus, skill system (`src/skills/`), 0G Storage audit pattern (6 lifecycle write-points), `HawkeyeRegistry` contract on 0G Mainnet. Other builders can reuse the bus + skills. | Mainnet contract ✅, repo ✅, demo video ✅                            |
-| **0G — Track B: Autonomous Agents / Swarms**     | 7-agent swarm with bus-based coordination (`src/agents/`), persistent memory in 0G Storage, sealed inference via 0G Compute, on-chain provenance via `HawkeyeRegistry`. AXL-bridge ready for cross-node swarms.          | Architecture diagram ✅, working examples ✅                           |
-| **Uniswap Foundation — Trading API integration** | Execution agent built on Uniswap Trading API (`src/agents/execution/index.ts`). 3-step flow (`/check_approval` → `/quote` → `/swap`) across 17+ EVM chains; Permit2-aware; routing-aware error humanization.             | [`FEEDBACK.md`](./FEEDBACK.md) ✅ (required)                           |
-| **KeeperHub — MEV-protected execution**          | Every mainnet swap routes through KeeperHub with circuit-breaker fall-through (`src/integrations/keeperhub/`). MCP server pre-wired in `.mcp.json`. Boot-time reachability probe.                                        | [`KEEPERHUB-FEEDBACK.md`](./KEEPERHUB-FEEDBACK.md) ✅ (builder bounty) |
-| **Gensyn — AXL transport**                       | Same `EventBus` interface, swappable backend: `LocalEventBus` or `AxlEventBus` for cross-node P2P coordination. Bridge in `initAxlBus()` with re-emit-loop guard.                                                        | Cross-node demo (run multiple nodes for full credit)                   |
-
-We're applying for **0G** (both tracks count as one partner prize per ETHGlobal
-rules), **Uniswap**, and **KeeperHub** — three partners, the maximum per the
-submission form. KeeperHub's Builder Feedback Bounty is independent and we're
-also submitting that.
-
-See [`FEEDBACK.md`](./FEEDBACK.md) and [`KEEPERHUB-FEEDBACK.md`](./KEEPERHUB-FEEDBACK.md)
-for the candid builder-experience write-ups, and the
-[Partner integrations section](#partner-integrations) below for the full
-file-level mapping.
-
-### Anti-hallucination + safety guards (judging criterion: practicality)
-
-The LLM never invents data that hits execution. Hard guards:
-
-- **Addresses must be in the user's message verbatim**. `validateTradeData`
-  (`src/gateway/llm-router.ts`) rejects any LLM-returned token address that
-  isn't found in the raw user text — the trade falls through to `UNKNOWN`
-  rather than executing on a phantom contract. Same guard applies to
-  `SEND_TOKEN` recipients.
-- **Side is preserved end-to-end.** Earlier the validator hardcoded
-  `side: "buy"`, silently turning sells into buys. Now sides survive from
-  the LLM (or a regex backstop on the raw text — `sell|dump|exit|close|short`)
-  to the Execution agent.
-- **Chains resolve via DexScreener, never LLM hints.** Quote populates
-  `tokenName` / `tokenSymbol` from `pair.baseToken` so on-chain truth
-  overrides anything the LLM said about the token.
-- **Sells size off on-chain balance.** The Execution agent reads the live
-  token balance and resolves the user's intent (PERCENT, USD, TOKEN, NATIVE)
-  into an exact token amount in the token's own decimals, capped at balance.
-  Always `EXACT_INPUT` to Uniswap — `EXACT_OUTPUT` is no longer used for
-  sells, which fixes a class of mid-swap reverts on non-18-decimal tokens.
-- **Sells short-circuit Strategy gates.** Chain-mismatch / liquidity-floor /
-  testnet-resolution rejects only apply to buys; users can always attempt to
-  exit a position they hold (warnings travel via the strategy reason instead).
-- **Privacy in logs.** The Telegram gateway logs `len=N` instead of the
-  user's message body; only command surfaces and bus events are logged.
+> **0G Mainnet contract:** [`0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F`](https://chainscan.0g.ai/address/0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F) on chain `16661`. All seven agents are registered on-chain.
 
 ---
 
 ## Table of contents
 
-- [Submission — partner prize eligibility](#submission--partner-prize-eligibility)
 - [Architecture](#architecture)
 - [How a trade flows](#how-a-trade-flows)
 - [The seven agents](#the-seven-agents)
@@ -76,7 +20,6 @@ The LLM never invents data that hits execution. Hard guards:
 - [LLM fallback chain](#llm-fallback-chain)
 - [0G integration](#0g-integration)
 - [Sponsor integrations](#sponsor-integrations)
-- [Project layout](#project-layout)
 - [Setup](#setup)
 - [Environment variables](#environment-variables)
 - [Commands](#commands)
@@ -156,8 +99,7 @@ The LLM never invents data that hits execution. Hard guards:
         └─► EXECUTE_SELL  ──►  Execution Agent
 ```
 
-A bare contract address pasted in Telegram skips the LLM entirely and reaches
-the bus in under 1 ms via the gateway's degen shortcut.
+A bare contract address pasted into Telegram skips the LLM entirely and hits the bus in under a millisecond. We call it the degen shortcut, because that is what it is for.
 
 ---
 
@@ -191,23 +133,17 @@ the bus in under 1 ms via the gateway's degen shortcut.
 | **Research**   | `RESEARCH_REQUEST`                                                                 | `RESEARCH_RESULT`, `ALPHA_FOUND`     | Token analysis and trending discovery from DexScreener, DeFiLlama, CoinGecko, Arkham, Nansen, Birdeye, Etherscan             |
 | **Copy Trade** | `ADD_WATCHED_WALLET`, `REMOVE_WATCHED_WALLET`                                      | `COPY_TRADE_REQUEST`                 | DexScreener WebSocket wallet watch; tx-hash + pair-window dedup (15 s); buys-only mirror                                     |
 
-All agents talk **exclusively** through the bus — no agent imports another
-directly. The bus is local `EventEmitter` by default; when `AXL_API_URL` is set,
-the same events are bridged peer-to-peer through Gensyn AXL for cross-node
-swarms.
+All agents talk to each other only through the bus. No agent imports another directly. By default the bus is a local `EventEmitter`. When `AXL_API_URL` is set, the same events are bridged peer-to-peer through Gensyn AXL, which is how cross-node swarms work.
 
 ---
 
 ## Skill system
 
-Every LLM-using agent composes its system prompt from a stack of
-**markdown-defined skills** (`src/skills/available/*.md`). Each skill carries
-YAML frontmatter (`name`, `description`, `enabled`, `priority`, `tags`) and a
-markdown body of behavior rules. The loader (`src/shared/skills.ts`) parses
-the frontmatter, sorts by `priority` desc, and injects the relevant skill
-bodies into each agent's system prompt — filtered by tag so the Strategy agent
-gets `safety` / `risk-management` / `mev` skills while the Research agent gets
-`analysis` / `whale` / `narratives` skills.
+Every agent that talks to an LLM composes its system prompt from a stack of skills written in plain markdown.
+
+Each skill lives under `src/skills/available/` as a single `.md` file. The frontmatter declares the skill's name, a short description, whether it is enabled by default, a priority (higher priority overrides lower when guidance conflicts), and a list of tags. The body is just the rules in plain English.
+
+The loader at `src/shared/skills.ts` reads the directory at boot, parses the frontmatter, sorts skills by priority, and injects the relevant ones into each agent's prompt. The selection is filtered by tag, so the Strategy agent sees the safety, risk-management and MEV skills, the Research agent sees the analysis, whale and narratives skills, and so on. Nothing is hardcoded; drop a new file in the directory and the agents pick it up next boot.
 
 | Skill                 | Priority | Default | Purpose                                                            |
 | --------------------- | -------- | ------- | ------------------------------------------------------------------ |
@@ -228,11 +164,7 @@ gets `safety` / `risk-management` / `mev` skills while the Research agent gets
 | Bridge Navigator      | 68       | on      | Cross-chain routing comparison                                     |
 | Portfolio Coach       | 65       | on      | Position sizing and diversification advice                         |
 
-Per-user toggles: `/skills` lists all skills with their on/off state,
-`/skills on rug-detector` enables a skill, `/skills off degen-trader` disables.
-User overrides are persisted to `data/skill-overrides.json`. Wired into:
-gateway conversational replies (greeting + chat), strategy reason enhancement,
-and research summaries.
+Skills are togglable per user. `/skills` in Telegram lists every skill with its current state, `/skills on rug-detector` flips one on, `/skills off degen-trader` flips one off. Overrides persist to `data/skill-overrides.json` so a user's choices survive restarts. The skill stack is currently wired into the gateway's conversational replies, the Strategy agent's reasoning, and the Research agent's summaries.
 
 ---
 
@@ -271,76 +203,52 @@ remote transports.
 
 ## LLM fallback chain
 
-The LLM Router and several agents share a single `FallbackLlmClient`
-(`src/integrations/claude/index.ts`) that wraps four tiers:
+The LLM Router and several agents share a single `FallbackLlmClient` defined in `src/integrations/claude/index.ts`. It wraps four tiers and routes every inference request through them in order.
 
-1. **0G Compute** — primary, on-chain verifiable inference via the 0G Serving
-   Broker; uses `processResponse()` to verify TEE attestation receipts when
-   available.
-2. **OpenRouter** — configurable model via `OPENROUTER_MODEL`
-   (default `google/gemini-2.5-flash-lite`). Used when 0G Compute is unhealthy.
-3. **Claude** (`ANTHROPIC_API_KEY`) — secondary fallback, only when 0G and
-   OpenRouter are both unavailable.
-4. **Regex-only** — last resort. Bare-address degen snipes still work, intent
-   classification degrades to keyword heuristics.
+The first tier is **0G Compute**, our primary path. Inference happens through the 0G Serving Broker, and where TEE attestations are returned we verify them with `processResponse()`.
+
+The second tier is **OpenRouter**, configurable through `OPENROUTER_MODEL` (default `google/gemini-2.5-flash-lite`). It only sees traffic when 0G Compute is unhealthy.
+
+The third tier is **Claude**, gated on `ANTHROPIC_API_KEY`, which only sees traffic when both 0G Compute and OpenRouter are unavailable.
+
+The fourth tier is the **regex-only fallback**. If every LLM is gone, bare-address degen snipes still work and intent classification degrades to keyword heuristics. The bot never goes fully dark.
 
 ### Self-healing routing
 
-Failures are tracked per-call. When 0G Compute throws, the client marks the
-primary tier unhealthy and **suppresses it for 5 minutes** while routing every
-subsequent call directly to the fallback. After the suppression window the
-next request gets one re-probe of 0G; if it succeeds the primary path is
-restored automatically with a "0G Compute recovered" log line. This means a
-single 0G outage costs at most one extra timeout, not one per inference call,
-and a recovered 0G takes traffic back without an operator restart.
+Failures are tracked per call. When 0G Compute throws, the client marks the primary tier unhealthy and suppresses it for five minutes. Every request inside that window goes straight to the fallback. After the window, the next request gets one re-probe of 0G. If the re-probe succeeds, the primary path is restored automatically and the log shows `0G Compute recovered`. A single outage now costs one extra timeout, not one per inference call, and a recovered 0G picks up traffic again without an operator restart.
 
-The `/llm` Telegram command surfaces the live routing state (active path,
-configured tiers, suppression remaining); `/llm reset` forces an immediate
-re-probe so a freshly-funded 0G ledger doesn't have to wait out the window.
+The `/llm` Telegram command shows the live routing state, including which tier is active, what is configured, and how much suppression time is left. `/llm reset` forces an immediate re-probe, which is handy if you have just funded the 0G ledger and don't want to wait out the window.
 
 ---
 
 ## 0G integration
 
-HAWKEYE uses three 0G components, all funded from the same
-`HAWKEYE_EVM_PRIVATE_KEY`.
+HAWKEYE uses three 0G components. All three are funded from the same `HAWKEYE_EVM_PRIVATE_KEY`.
 
 ### 0G Compute (`src/integrations/0g/compute.ts`)
 
-LLM brain. Classifies every user message into intent categories, powers
-conversational responses, and drives Strategy/Research analysis. Verified
-inference via `processResponse()`. Includes ledger-balance preflight and
-nonce-serialized broker calls.
+This is the LLM brain. It classifies every user message into an intent category, powers our conversational replies, and drives the Strategy and Research agents. Inference is verified through `processResponse()`. The client preflights the ledger balance before each call and serializes broker calls by nonce.
 
 ### 0G Storage (`src/integrations/0g/storage.ts`, `audit-trail.ts`)
 
-Immutable audit trail. Writes at six lifecycle points, each returning a
-`rootHash`:
+This is the immutable audit trail. We write at six points in the trade lifecycle, and each write returns a verifiable `rootHash`:
 
-1. `TRADE_REQUEST` — intent payload
-2. `SAFETY_RESULT` — safety report (cached locally for the matching
-   `TRADE_EXECUTED` log)
-3. `STRATEGY_DECISION` — execute/reject/await reason
-4. `TRADE_EXECUTED` — receipt with tx hash
-5. `RESEARCH_RESULT` — synthesis
-6. `ALPHA_FOUND` — background discovery
+1. `TRADE_REQUEST` for the intent payload.
+2. `SAFETY_RESULT` for the safety report (cached locally so it can be matched to the eventual `TRADE_EXECUTED` log).
+3. `STRATEGY_DECISION` for the execute, reject, or await-confirm reason.
+4. `TRADE_EXECUTED` for the receipt with the tx hash.
+5. `RESEARCH_RESULT` for the synthesis.
+6. `ALPHA_FOUND` for the background-discovery loop.
 
-Writes are queued sequentially and protected by a circuit breaker (3 failures →
-5-minute open), so a slow indexer never blocks the trade path.
+Writes go through a sequential queue with a circuit breaker. After three failures the breaker opens for five minutes, so a slow indexer can never block the trade path.
 
 ### 0G Chain (`src/integrations/0g/registry-client.ts`, `contracts/HawkeyeRegistry.sol`)
 
-`HawkeyeRegistry` is a Solidity contract that records agent identities and
-trade execution proofs:
+`HawkeyeRegistry` is the on-chain receipt for the swarm. It records agent identities and the proofs of every trade decision.
 
-- `registerAgent(name, role)` — onlyOwner; stores agent metadata.
-- `storeIntent(intentId, data)` — emits intent on every `TRADE_REQUEST`.
-- `logTrade(intentId, token, chain, safetyScore, decision)` — appended on
-  every `TRADE_EXECUTED`.
-- View: `getAgentCount()`, `getTradeCount()`, `getActiveAgents()`.
+The contract exposes a small surface. `registerAgent(name, role)` is owner-only and stores agent metadata. `storeIntent(intentId, data)` is called on every `TRADE_REQUEST` and emits the intent on chain. `logTrade(intentId, token, chain, safetyScore, decision)` is appended on every `TRADE_EXECUTED`. Reads come from `getAgentCount()`, `getTradeCount()`, and `getActiveAgents()`.
 
-Chain writes use a separate sequential queue from Storage writes so neither
-blocks the other.
+Chain writes have their own sequential queue, separate from Storage, so neither blocks the other.
 
 ---
 
@@ -356,60 +264,7 @@ blocks the other.
 | **Arkham**     | Token holders, fund flows, entity intel for Research   | `src/integrations/arkham/`                           |
 | **Nansen**     | Smart-money flow data (10-min in-memory cache)         | `src/integrations/nansen/`                           |
 
-Anthropic Claude and OpenRouter are not sponsors; they are LLM fallbacks for
-when 0G Compute is unavailable.
-
----
-
-## Project layout
-
-```
-src/
-  index.ts                         main startup, dependency wiring, cleanup
-  shared/                          cross-cutting utilities
-    event-bus.ts                   typed local EventEmitter
-    axl-bus.ts                     Gensyn AXL P2P transport
-    types.ts                       BusEvents + every payload type
-    env.ts                         .env loader with required/optional checks
-    constants.ts                   safety thresholds, timeouts, TTLs
-    evm-chains.ts                  16-chain RPC + token metadata
-    tokens.ts                      symbol → address resolver
-    store.ts                       AES-256-GCM encrypted wallet store
-    swarm-tracer.ts                bus-event latency tracing
-    health.ts                      HTTP health server + agent registry
-    logger.ts                      ANSI logger with sponsor status
-  gateway/
-    telegram-gateway.ts            primary user surface (grammY)
-    llm-router.ts                  intent classifier (11 categories)
-    openclaw-adapter.ts            alternative WebSocket gateway (reference)
-  agents/
-    safety/                        token risk analysis
-    quote/                         price discovery and routing
-    strategy/                      trade decision engine
-    execution/                     on-chain swap execution
-    monitor/                       position tracking and exit triggers
-    research/                      token analysis and alpha scanning
-    copy-trade/                    wallet watching
-  integrations/
-    0g/                            Compute, Storage, Registry, audit trail
-    openrouter/                    OpenRouter LLM client
-    claude/                        Claude LLM + FallbackLlmClient
-    privy/                         per-user agent wallets
-    keeperhub/                     MEV-protected tx submission
-    arkham/                        on-chain entity intel
-    nansen/                        smart-money flows
-  tools/                           MCP servers
-    dexscreener-mcp/               7-tool DEX data MCP
-    gensyn-axl-mcp/                P2P topology + messaging
-    openclaw-docs-mcp/             docs search MCP
-    goplus-mcp-launcher.mjs        bridges .env to goplus-mcp@latest
-contracts/
-  HawkeyeRegistry.sol              on-chain agent registry + trade proofs
-scripts/
-  deploy-registry.ts               contract deployment
-  run-smoke-tests.mjs              walks src/ and runs every *.smoke-test.ts
-.agents/skills/                    Uniswap AI swap-planning skills
-```
+Anthropic Claude and OpenRouter are not sponsors. They sit in the fallback chain for the moments when 0G Compute is unavailable.
 
 ---
 
@@ -422,8 +277,7 @@ cp .env.example .env.local       # fill in required vars (see below)
 npm start                         # launches Telegram bot
 ```
 
-Node 22+ recommended (the OpenClaw adapter relies on the global `WebSocket`
-implementation that landed in Node 22).
+Node 22 or newer is recommended. The OpenClaw adapter uses the global `WebSocket` implementation that shipped with Node 22.
 
 ---
 
@@ -497,38 +351,30 @@ npx tsx src/gateway/llm-router.smoke-test.ts
 | `/status`    | System health and agent status                                 |
 | `/help`      | Full command guide                                             |
 
-Paste any contract address to trigger an instant trade flow. Natural-language
-queries like _"What's trending on Ethereum?"_ are routed through the LLM to
-the appropriate agent.
+You don't have to use commands. Paste any contract address and the trade flow starts immediately. Natural-language messages such as _"what's trending on Ethereum?"_ get routed through the LLM to the right agent.
 
 ### Sell-amount syntax (natural language)
 
-The Execution agent reads on-chain balance as the source of truth for every
-sell, then converts the user's intent into an exact token amount via the
-token's own decimals — `EXACT_INPUT` to Uniswap, never `EXACT_OUTPUT` for
-sells. Any of these all work:
+When you sell, the Execution agent reads your live on-chain balance and uses that as the source of truth. It converts whatever you said into an exact token amount in the token's own decimals and sends an `EXACT_INPUT` swap to Uniswap. We never use `EXACT_OUTPUT` for sells.
+
+Any of these phrasings work:
 
 | You say            | What happens                                               |
 | ------------------ | ---------------------------------------------------------- |
-| `sell 50% of PEPE` | Reads on-chain balance, sells 50% of it                    |
-| `sell all my LINK` | Sells the entire on-chain balance                          |
-| `dump everything`  | Sells the entire on-chain balance of the active position   |
-| `sell $25 of UNI`  | Computes tokens via live price, capped at on-chain balance |
-| `sell 100 PEPE`    | Sells exactly 100 tokens, capped at on-chain balance       |
-| `exit half my bag` | Same as 50%                                                |
+| `sell 50% of PEPE` | Reads your on-chain balance and sells half of it.          |
+| `sell all my LINK` | Sells your entire on-chain balance.                        |
+| `dump everything`  | Same idea, applied to the position you are looking at.     |
+| `sell $25 of UNI`  | Computes tokens at live price, capped at on-chain balance. |
+| `sell 100 PEPE`    | Sells exactly 100 tokens, capped at on-chain balance.      |
+| `exit half my bag` | Treated as 50%.                                            |
 
-The `AmountUnit` type carries `"NATIVE" | "USD" | "TOKEN" | "PERCENT"` and the
-LLM Router has a regex backstop on the raw text so "50%" or "all" still hit
-the right unit even if the LLM omits it.
+Internally the `AmountUnit` type carries `"NATIVE"`, `"USD"`, `"TOKEN"`, or `"PERCENT"`. The LLM Router also has a regex backstop on the raw text, so phrases like `"50%"` or `"all"` still resolve to the right unit even if the LLM forgets to set it.
 
 ---
 
 ## Development workflow
 
-The repo uses **per-subtree tsconfigs** because the gateway, agents, and each
-integration have different TypeScript settings (e.g. `verbatimModuleSyntax`
-relaxed for agents). The root `tsc` is **not** expected to pass — always
-typecheck through scoped configs:
+Each subtree of the repo has its own `tsconfig.json`. The gateway, the agents folder, and each integration set their own TypeScript options (for example, `verbatimModuleSyntax` is relaxed for agents). The root `tsc` is not expected to pass on its own. Always typecheck through the scoped configs:
 
 ```bash
 npx tsc -p src/shared/tsconfig.json --noEmit
@@ -536,32 +382,13 @@ npx tsc -p src/gateway/tsconfig.json --noEmit
 npx tsc -p src/agents/tsconfig.json --noEmit
 ```
 
-The root `tsconfig.json` enables both `noUncheckedIndexedAccess` and
-`exactOptionalPropertyTypes`. When constructing objects with optional fields,
-prefer:
+The root `tsconfig.json` turns on both `noUncheckedIndexedAccess` and `exactOptionalPropertyTypes`. When you construct an object that may include an optional field, the strict-checked pattern is:
 
 ```typescript
 { ...(value !== undefined ? { foo: value } : {}) }
 ```
 
-over `{ foo: value ?? undefined }` — the latter fails the strict check.
-
-### Project rules (learned the hard way)
-
-- **LLM Router never calls DexScreener or GoPlus.** It returns
-  `chain: "evm" | "solana"` only — sub-chain resolution belongs to Quote/Safety.
-- **Always resolve chains via DexScreener first; never hardcode chain IDs.**
-  LLM-provided token names are overridden by on-chain pair data.
-- **Amounts are always `{ value, unit }`** — `0.5 ETH` is
-  `{ value: 0.5, unit: "NATIVE" }`. `unit` is `"NATIVE" | "USD" | "TOKEN"`.
-- **DexScreener search accepts a single word.** Strip extras client-side.
-- **MEV protection is always on.** Mainnet EVM swaps route through KeeperHub
-  with a 3-failure / 5-minute circuit breaker; Solana uses Jito.
-- **Honeypot.is is EVM-only.** Use RugCheck for Solana tokens.
-- **Strategy validates chain + liquidity before mode logic.** Rejects
-  testnet-vs-mainnet mismatches and liquidity below $500.
-- **Monitor emits `EXECUTE_SELL` but never executes.** The Execution agent
-  owns every on-chain submission.
+The shorter `{ foo: value ?? undefined }` looks the same but fails the strict check.
 
 ---
 
@@ -612,147 +439,98 @@ in the codebase and what they actually do for the swarm.
 | **0G Storage** | Persistent audit trail. Six lifecycle write points: intent, safety report, strategy decision, execution receipt, research result, alpha discovery — each returns a verifiable rootHash that's pinned in Telegram replies and on the contract. | `src/integrations/0g/storage.ts`, `src/integrations/0g/audit-trail.ts`                                  |
 | **0G Chain**   | `HawkeyeRegistry` Solidity contract on 0G mainnet (above). 7 agents registered on-chain at deploy; every trade fires `storeIntent()` and `logTrade()` for verifiable swarm provenance.                                                        | `contracts/HawkeyeRegistry.sol`, `src/integrations/0g/registry-client.ts`, `scripts/deploy-registry.ts` |
 
-The same `HAWKEYE_EVM_PRIVATE_KEY` funds Compute, Storage, and Chain — boot
-prints a balance warning if it's low. The boot banner shows live status of
-each 0G primitive (`0G Compute [ON/OFF]`, `0G Storage [ON]`, `0G Chain [ON]`).
+The same `HAWKEYE_EVM_PRIVATE_KEY` funds Compute, Storage, and Chain. The boot script prints a balance warning if it is low. The boot banner shows the live status of each 0G primitive: `0G Compute [ON/OFF]`, `0G Storage [ON]`, `0G Chain [ON]`.
 
-### Uniswap — agent execution layer
+### Uniswap, the execution layer
 
-The Execution agent is built directly on the **Uniswap Trading API**:
+The Execution agent is built directly on the Uniswap Trading API.
 
-- 3-step flow per swap: `POST /check_approval` → `POST /quote` → `POST /swap`
-- Permit2-aware: classic CLASSIC routes use the on-chain ERC20 approve path;
-  UniswapX (DUTCH_V2 / DUTCH_V3 / PRIORITY) routes attach the Permit2 signature.
-- Routing-aware error humanization (`humanizeQuoteError`) translates 4xx/5xx
-  into user-facing messages like "Token may not be tradeable on this chain"
-  vs "Wallet doesn't hold this token to sell".
-- Pre-flight on-chain balance check via `fetchTokenBalance` blocks an obvious
-  class of revert (selling tokens you don't hold).
-- 17+ EVM chains, chain ID resolution via DexScreener (no hardcoded chain hints
-  trusted from the LLM — see Anti-hallucination below).
+Every swap is a three-step flow: `POST /check_approval`, then `POST /quote`, then `POST /swap`. The flow is Permit2-aware. Classic routes use the on-chain ERC20 approval path. UniswapX routes (`DUTCH_V2`, `DUTCH_V3`, `PRIORITY`) attach the Permit2 signature instead.
 
-See `FEEDBACK.md` for the full builder-experience write-up required by the
-Uniswap track.
+When Uniswap returns an error, our `humanizeQuoteError` helper translates the 4xx/5xx body into something the user can act on. Instead of `INSUFFICIENT_LIQUIDITY` they see "this token might not be tradeable on this chain", and instead of `Execution reverted` on a sell they see "your wallet doesn't hold this token, or doesn't have gas".
 
-Path: `src/agents/execution/index.ts`, `.agents/skills/swap-integration/`,
-`.agents/skills/swap-planner/`.
+Before we even quote, the agent calls `fetchTokenBalance` and refuses to sell tokens you don't hold. That alone removes the most common revert class. The integration is wired across more than 17 EVM chains, and chain selection always goes through DexScreener so we never trust a chain hint from the LLM.
 
-### KeeperHub — MEV-protected execution + reliability
+See [`FEEDBACK.md`](./FEEDBACK.md) for the full builder-experience write-up required by the Uniswap track. The code lives in `src/agents/execution/index.ts`, with prompt-engineering hints under `.agents/skills/swap-integration/` and `.agents/skills/swap-planner/`.
 
-| Feature                        | How HAWKEYE uses it                                                                                                                             |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **MEV-protected swap submit**  | Every mainnet trade is routed through KeeperHub. Solana uses Jito; EVM mainnet (Ethereum, Base, Arbitrum, BSC, Polygon) uses KeeperHub keepers. |
-| **Circuit breaker**            | `KeeperHubClient.circuitOpen` flag flips on transient failures, allowing fall-through to the wallet manager without aborting the user trade.    |
-| **Connectivity probe at boot** | Boot prints `[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected` so the operator knows MEV protection is live.           |
-| **MCP server**                 | Wired into `.mcp.json` for use by agent skills.                                                                                                 |
+### KeeperHub, MEV protection and reliability
 
-See `KEEPERHUB-FEEDBACK.md` for the builder-feedback bounty submission.
+Every mainnet swap on EVM (Ethereum, Base, Arbitrum, Optimism, BSC, Polygon) routes through KeeperHub. Solana uses Jito instead.
 
-Paths: `src/integrations/keeperhub/`, `src/integrations/keeperhub/dual-wallet.ts`.
+KeeperHub failures don't break the user's trade. `KeeperHubClient.circuitOpen` flips on transient errors and the trade falls through to the wallet manager without aborting. At boot, a reachability probe writes `[execution] KeeperHub reachable, all mainnet swaps will be MEV-protected` so an operator can tell whether protection is live without checking logs after the fact.
 
-### Gensyn AXL — P2P swarm transport
+The KeeperHub MCP server is also pre-wired into `.mcp.json` so agent skills can call it directly. Paths: `src/integrations/keeperhub/` and `src/integrations/keeperhub/dual-wallet.ts`. The builder-feedback bounty write-up lives in [`KEEPERHUB-FEEDBACK.md`](./KEEPERHUB-FEEDBACK.md).
 
-The local `EventBus` and `AxlEventBus` implement the same interface; agents
-never know which is active. When `AXL_API_URL` is set, the bus bridge in
-`initAxlBus()` mirrors a configured set of `BusEvents` over Gensyn AXL P2P
-transport with a `forwarding` flag to break re-emit loops between local and P2P.
+### Gensyn AXL, P2P swarm transport
 
-Paths: `src/shared/axl-bus.ts`, `src/tools/gensyn-axl-mcp/` (local MCP server
-wrapping AXL topology + messaging).
+The local `EventBus` and the `AxlEventBus` implement the same interface, so the agents never know which one is active. When `AXL_API_URL` is set, the bridge in `initAxlBus()` mirrors a configured set of bus events over Gensyn AXL P2P transport. A `forwarding` flag breaks the obvious re-emit loops between local and remote.
 
-### Privy — per-user agent wallets
+Paths: `src/shared/axl-bus.ts`, plus the local MCP server at `src/tools/gensyn-axl-mcp/` that wraps AXL topology and messaging.
 
-Email-only login provisions an EVM agent wallet per user. External-wallet
-linking (RainbowKit + SIWE-style nonce) attaches user-controlled wallets to the
-same email-rooted profile so external-wallet trades require explicit signing
-while agent-wallet trades stay one-tap. See `src/integrations/privy/index.ts`.
+### Privy, per-user agent wallets
+
+Logging in with an email provisions an EVM agent wallet for that user. Users can also link an external wallet via RainbowKit and a SIWE-style signed nonce, which attaches the wallet to the same email-rooted profile. After linking, the user can flip between agent and external as the active wallet. Trades from the agent wallet stay one-tap; trades from an external wallet require an explicit signature on each one. See `src/integrations/privy/index.ts`.
 
 ---
 
 ## Web API
 
-In addition to the Telegram surface, HAWKEYE exposes a small read/write HTTP
-API on the same port as `/health` (default `:8080`, configurable via
-`HEALTH_PORT`). CORS is open so a Next.js dashboard can hit it directly.
+Telegram is the primary surface, but the bot also serves a small read/write HTTP API on the same port as `/health` (default `:8080`, configurable via `HEALTH_PORT`). CORS is open so a Next.js dashboard can call it directly.
 
-| Endpoint                         | Method | Purpose                                                                   |
-| -------------------------------- | ------ | ------------------------------------------------------------------------- |
-| `/health`                        | GET    | Aggregate health + agent + subsystem report                               |
-| `/api/agents/health`             | GET    | Same payload, namespaced under `/api/`                                    |
-| `/api/profile?email=…`           | GET    | Privy agent wallet + linked external wallets + active wallet ref          |
-| `/api/positions?email=…`         | GET    | Open positions + last 20 trades for the user                              |
-| `/api/link-wallet/nonce?email=…` | GET    | Mint a single-use nonce + the message to sign with the external wallet    |
-| `/api/link-wallet`               | POST   | `{ email, address, signature }` → ECDSA-verify and bind the wallet        |
-| `/api/active-wallet`             | POST   | `{ email, kind: "agent" \| "external", address? }` → switch active wallet |
+| Endpoint                         | Method | Purpose                                                              |
+| -------------------------------- | ------ | -------------------------------------------------------------------- |
+| `/health`                        | GET    | Aggregate health, agent and subsystem report.                        |
+| `/api/agents/health`             | GET    | Same payload, namespaced under `/api/`.                              |
+| `/api/profile?email=…`           | GET    | Privy agent wallet, linked external wallets, and active wallet ref.  |
+| `/api/positions?email=…`         | GET    | Open positions and last 20 trades for the user.                      |
+| `/api/link-wallet/nonce?email=…` | GET    | Mint a single-use nonce and the message to sign.                     |
+| `/api/link-wallet`               | POST   | `{ email, address, signature }`; verifies the signature and binds.   |
+| `/api/active-wallet`             | POST   | `{ email, kind: "agent" \| "external", address? }`; switches active. |
 
-The link-wallet flow is fully SIWE-style: nonce issued server-side with a
-5-minute TTL, message includes the email + nonce, signature verified with
-`ethers.verifyMessage`, binding happens via the existing
-`connectExternalWallet` plumbing in `src/integrations/privy/index.ts`. The
-front-end on the dashboard:
+The link-wallet flow is SIWE-style. The server mints a nonce with a 5-minute TTL. The message you sign includes your email and the nonce. The server verifies the signature with `ethers.verifyMessage` and binds the wallet through `connectExternalWallet` in `src/integrations/privy/index.ts`.
 
-1. `GET /api/link-wallet/nonce?email=…` → `{ nonce, message }`
-2. Wagmi / RainbowKit signs `message` with the connected external wallet
-3. `POST /api/link-wallet` with `{ email, address, signature }`
-4. Server returns the updated profile; UI re-renders the wallet list and the
-   active-wallet switcher
+From the dashboard:
 
-External-wallet trades require explicit signing; agent-wallet trades remain
-one-tap. The `activeWallet: { kind } | { kind, address }` discriminated union
-on `StoredUser` (`src/shared/store.ts`) lets a single user flip between the
-two without losing either.
+1. `GET /api/link-wallet/nonce?email=…` returns `{ nonce, message }`.
+2. Wagmi or RainbowKit signs the message with the connected external wallet.
+3. `POST /api/link-wallet` with `{ email, address, signature }`.
+4. The server returns the updated profile, and the UI re-renders the wallet list and the active-wallet switcher.
 
----
+Trades from the agent wallet stay one-tap. Trades from an external wallet require a signature each time. The `activeWallet` field on `StoredUser` (in `src/shared/store.ts`) is a discriminated union of `{ kind: "agent" }` and `{ kind: "external", address }`, which lets a single user flip between the two without losing either.
 
 ---
 
 ## Status and roadmap
 
-The EVM trade lifecycle is production-quality end-to-end on the chains in our
-demo (Ethereum, Base, Arbitrum, Optimism, BSC, Polygon): natural-language
-intent → safety + quote → strategy → MEV-protected execution → live monitor
-→ TP/SL exits — including FDV / market-cap exit targets, evaluated against
-`priceNow × totalSupply` derived from DexScreener at quote time.
+The EVM trade lifecycle is production-quality end to end on the chains we demo with: Ethereum, Base, Arbitrum, Optimism, BSC, and Polygon. A natural-language intent flows through safety, quoting, strategy, MEV-protected execution, and a live monitor that fires TP/SL exits. That includes FDV and market-cap exit targets, evaluated against `priceNow × totalSupply` which we derive from DexScreener at quote time.
 
-**Resilience built in this hackathon:**
+### Resilience we built during this hackathon
 
-- **Self-healing LLM routing.** 0G Compute failures suppress the primary tier
-  for 5 min then auto re-probe — a single outage costs one timeout, not one
-  per request. Visible via `/llm`, manually overridable via `/llm reset`.
-- **0G Storage circuit breaker.** Three consecutive write failures opens the
-  breaker for 5 min so audit-trail issues never block trade flow; reads stay
-  available, writes resume automatically when the indexer recovers.
-- **KeeperHub circuit breaker.** Same pattern for MEV submission — when
-  KeeperHub is unreachable we fall through to the wallet manager so the user
-  never sees a hard failure.
-- **Sells size off live on-chain balance** so a position is always exit-able
-  even if DexScreener price drift or balance changes since the buy would
-  otherwise produce a bad amount.
+The LLM routing is self-healing. When 0G Compute fails, the primary tier is suppressed for five minutes and every request goes straight to the fallback. After that window the next request re-probes 0G, and if it works the primary path is restored automatically. A single outage now costs one timeout, not one per request. The state is visible via `/llm` and can be reset by hand with `/llm reset`.
 
-**On the roadmap (next sprint, not blocking demo):**
+The 0G Storage layer has its own circuit breaker. Three consecutive write failures opens it for five minutes. Audit-trail problems never block the trade path, reads stay available, and writes resume on their own once the indexer recovers.
 
-- **Solana execution.** Agents are wired and the Jupiter quote path is
-  stubbed; on-chain submission via Privy Solana wallets is in flight.
-- **Per-wallet copy-trade subscriptions.** The current implementation uses a
-  single shared DexScreener WebSocket which is efficient for the small
-  watchlists every demo user has; per-wallet subscriptions matter when
-  scaling to thousands of watchers, not before.
-- **Mainnet 0G Compute + Storage.** Per 0G's deployment guidance, free public
-  Compute providers and Storage indexers live on Galileo testnet today; the
-  Chain registry is full mainnet. We'll migrate Compute + Storage when the
-  mainnet endpoints open up.
+KeeperHub uses the same pattern. When it is unreachable, we fall through to the wallet manager so the user never sees a hard failure on a swap.
+
+Sells size off your live on-chain balance, in token decimals, capped at what you actually hold. That makes a position always exit-able even when price drift or balance changes since the buy would otherwise produce a bad amount.
+
+### On the roadmap
+
+Solana execution is the next sprint. The agents are already wired, the Jupiter quote path is stubbed in, and on-chain submission via Privy Solana wallets is in flight.
+
+Copy-trade currently uses a single shared DexScreener WebSocket. That is efficient for the small watchlists every demo user has, but per-wallet subscriptions are the right design once we are scaling to thousands of watchers.
+
+0G Compute and 0G Storage run on Galileo testnet for now. That follows 0G's own deployment guidance: free public Compute providers and Storage indexers currently live on testnet, while the Chain registry is full mainnet. We will migrate Compute and Storage as soon as the mainnet endpoints open up.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Branch off `feat/<name>-<feature>`,
-add or modify code under your agent's `src/agents/<name>/` folder, and open a
-PR into `main`. Smoke tests must pass before merge.
+The full guide is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-`src/shared/types.ts`, `src/gateway/`, and `src/index.ts` are reserved to
-avoid merge conflicts during the hackathon push — coordinate before touching
-them.
+Short version: branch off `feat/<name>-<feature>`, modify code only under your agent's `src/agents/<name>/` folder, and open a PR into `main`. Smoke tests must pass before merge.
+
+`src/shared/types.ts`, `src/gateway/`, and `src/index.ts` are reserved during the hackathon push to avoid merge conflicts. Coordinate before touching them.
 
 ---
 
