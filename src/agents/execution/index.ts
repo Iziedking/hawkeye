@@ -427,8 +427,15 @@ async function executeEvmSwap(intent: TradeIntent, quote: Quote): Promise<Execut
     );
   }
 
-  // Step 2: Get quote (chainId as string per Uniswap API spec)
-  const slippage = Math.min(quote.expectedSlippagePct, MAX_SLIPPAGE_PCT);
+  // Step 2: Get quote (chainId as string per Uniswap API spec).
+  // Floor at 0.5% — Uniswap interprets slippageTolerance=0 as "no tolerance"
+  // and the swap reverts on any drift. The quote agent should already enforce
+  // this, but we defend at submission too.
+  const MIN_SLIPPAGE_PCT = 0.5;
+  const slippage = Math.max(
+    MIN_SLIPPAGE_PCT,
+    Math.min(quote.expectedSlippagePct, MAX_SLIPPAGE_PCT),
+  );
   const quoteResp = await fetch(`${UNISWAP_API}/quote`, {
     method: "POST",
     headers: UNISWAP_HEADERS(apiKey),
@@ -587,7 +594,9 @@ async function executeEvmSwap(intent: TradeIntent, quote: Quote): Promise<Execut
 }
 
 async function executeSolanaSwap(intent: TradeIntent, quote: Quote): Promise<ExecutionReceipt> {
-  const slippageBps = Math.floor(quote.expectedSlippagePct * 100);
+  // Floor at 50 bps (0.5%) for the same reason as the EVM path: zero slippage
+  // on Jupiter means the swap reverts on any price drift between quote and fill.
+  const slippageBps = Math.max(50, Math.floor(quote.expectedSlippagePct * 100));
   const SOL_MINT = "So11111111111111111111111111111111111111112";
   const isSell = intent.side === "sell";
   const inputMint = isSell ? intent.address : SOL_MINT;

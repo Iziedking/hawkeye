@@ -280,7 +280,14 @@ export type TokenAsset = {
   thumbnail: string;
 };
 
-type WellKnownToken = { address: string; symbol: string; decimals: number };
+export type WellKnownToken = { address: string; symbol: string; decimals: number };
+
+export function findWellKnownToken(chain: string, symbol: string): WellKnownToken | null {
+  const tokens = WELL_KNOWN_TOKENS[chain];
+  if (!tokens) return null;
+  const upper = symbol.toUpperCase();
+  return tokens.find((t) => t.symbol.toUpperCase() === upper) ?? null;
+}
 
 const WELL_KNOWN_TOKENS: Record<string, WellKnownToken[]> = {
   ethereum: [

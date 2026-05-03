@@ -32,6 +32,8 @@ import {
   fetchNativeBalance,
   fetchTokenHoldings,
   fetchTokenBalance,
+  fetchTokenDecimals,
+  findWellKnownToken,
 } from "../shared/evm-chains";
 import { CONVERSATION_MAX_MESSAGES, CONVERSATION_TTL_MS } from "../shared/constants";
 import { getPositionsByUser, getPosition } from "../agents/execution/index";
@@ -146,6 +148,24 @@ function nativeToWei(amount: number): string {
   const whole = parts[0] ?? "0";
   const frac = (parts[1] ?? "").padEnd(18, "0").slice(0, 18);
   return (BigInt(whole) * BigInt("1000000000000000000") + BigInt(frac)).toString();
+}
+
+// Convert a human amount (e.g. 3.997) into the token's raw integer units
+// using its decimals. Mirrors nativeToWei but parameterised on `decimals`.
+function tokenAmountToRaw(amount: number, decimals: number): bigint {
+  const parts = amount.toFixed(decimals).split(".");
+  const whole = parts[0] ?? "0";
+  const frac = (parts[1] ?? "").padEnd(decimals, "0").slice(0, decimals);
+  const scale = BigInt(10) ** BigInt(decimals);
+  return BigInt(whole) * scale + BigInt(frac || "0");
+}
+
+// ERC-20 transfer(address,uint256) calldata. Selector 0xa9059cbb followed by
+// two 32-byte params: address (left-padded) and amount.
+function encodeErc20Transfer(to: string, amount: bigint): string {
+  const addr = to.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+  const amt = amount.toString(16).padStart(64, "0");
+  return "0xa9059cbb" + addr + amt;
 }
 
 const nativePriceCache: Record<string, { usd: number; at: number }> = {
@@ -1065,7 +1085,7 @@ export async function startTelegramGateway(
     if (args.length < 2) {
       await reply(
         rctx,
-        "Usage: <code>/send &lt;amount&gt; &lt;recipient&gt; [chain]</code>\nExample: <code>/send 0.01 0xABC... base</code>",
+        "Usage: <code>/send &lt;amount&gt; [&lt;asset&gt;] &lt;recipient&gt; [chain]</code>\nExamples:\n<code>/send 0.01 0xABC... base</code>\n<code>/send 5 USDC 0xABC... base</code>",
       );
       return;
     }
@@ -1075,13 +1095,23 @@ export async function startTelegramGateway(
       await reply(rctx, `Invalid amount: ${html(args[0] ?? "")}`);
       return;
     }
-    const recipient = args[1]!;
-    if (!/^0x[a-fA-F0-9]{40}$/.test(recipient)) {
+
+    // Accept "/send 5 USDC 0xABC base" (asset between amount and recipient)
+    // or the existing "/send 0.01 0xABC base" native form. We detect the asset
+    // by looking at args[1]: if it's not a 0x address, treat it as a symbol.
+    let asset: string | null = null;
+    let recipientIdx = 1;
+    if (!/^0x[a-fA-F0-9]{40}$/.test(args[1]!)) {
+      asset = args[1]!.toUpperCase();
+      recipientIdx = 2;
+    }
+    const recipient = args[recipientIdx];
+    if (!recipient || !/^0x[a-fA-F0-9]{40}$/.test(recipient)) {
       await reply(rctx, "Invalid recipient address. Must be a 0x address (40 hex chars).");
       return;
     }
 
-    const chainInput = args[2] ?? "ethereum";
+    const chainInput = args[recipientIdx + 1] ?? "ethereum";
     const chain = resolveChainNumeric(chainInput);
     if (!chain) {
       await reply(
@@ -1091,7 +1121,7 @@ export async function startTelegramGateway(
       return;
     }
 
-    await executeSend(rctx, userId, recipient, amount, chain.name, chain.id);
+    await executeSend(rctx, userId, recipient, amount, chain.name, chain.id, asset);
   });
 
   const pendingEmailPrompts = new Map<string, { chatId: number; action: "create" | "link" }>();
@@ -1729,7 +1759,16 @@ export async function startTelegramGateway(
       return;
     }
 
-    await executeSend(rctx, userId, recipient, amount, chain.name, chain.id);
+    // The LLM puts the source token in `asset`. The regex fallback path in the
+    // router doesn't extract it, so also scan the raw text for a stablecoin
+    // ticker (covers the typo'd "udsc" case from real-world testing too).
+    let asset = typeof d["asset"] === "string" ? d["asset"] : null;
+    if (!asset) {
+      const tickerMatch = result.rawText.match(/\b(usdc|usdt|dai|udsc)\b/i);
+      if (tickerMatch) asset = tickerMatch[1]!.toLowerCase() === "udsc" ? "USDC" : tickerMatch[1]!;
+    }
+
+    await executeSend(rctx, userId, recipient, amount, chain.name, chain.id, asset);
   }
 
   async function executeSend(
@@ -1739,6 +1778,7 @@ export async function startTelegramGateway(
     amount: number,
     chainName: string,
     chainId: number,
+    asset: string | null,
   ): Promise<void> {
     if (!wm) {
       void reply(rctx, "Wallet system not available.");
@@ -1746,58 +1786,117 @@ export async function startTelegramGateway(
     }
 
     const explorer = getChainExplorer(chainName);
-    const weiValue = nativeToWei(amount);
+    const NATIVE_SEND_SYMBOLS = new Set(["ETH", "BNB", "MATIC", "AVAX", "POL"]);
+    const upperAsset = asset?.toUpperCase() ?? null;
+    const isErc20Send = upperAsset !== null && !NATIVE_SEND_SYMBOLS.has(upperAsset);
 
-    // Check if recipient is a contract (not a wallet)
-    try {
-      const rpc = getChainRpc(chainName);
-      const codeResp = await fetch(rpc, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "eth_getCode",
-          params: [recipient, "latest"],
-        }),
-      });
-      const codeResult = (await codeResp.json()) as { result?: string };
-      if (codeResult.result && codeResult.result !== "0x" && codeResult.result.length > 2) {
+    // Resolve token contract for ERC-20 sends. Well-known stables first, then
+    // fall back to the user's positions / seen tokens for less common tokens.
+    let tokenContract: string | null = null;
+    let tokenDecimals = 18;
+    let tokenSymbol = upperAsset ?? "";
+    if (isErc20Send) {
+      const known = findWellKnownToken(chainName, upperAsset!);
+      if (known) {
+        tokenContract = known.address;
+        tokenDecimals = known.decimals;
+        tokenSymbol = known.symbol;
+      } else {
+        const positionMatch = getPositionsByUser(userId).find(
+          (p) => p.chainId === chainName && p.symbol?.toUpperCase() === upperAsset,
+        );
+        if (positionMatch) {
+          tokenContract = positionMatch.address;
+          tokenSymbol = positionMatch.symbol ?? upperAsset!;
+          tokenDecimals = await fetchTokenDecimals(chainName, positionMatch.address);
+        } else {
+          const seenMatch = getSeenTokens(userId).find(
+            (t) => t.chainId === chainName && t.symbol?.toUpperCase() === upperAsset,
+          );
+          if (seenMatch) {
+            tokenContract = seenMatch.address;
+            tokenSymbol = seenMatch.symbol ?? upperAsset!;
+            tokenDecimals = await fetchTokenDecimals(chainName, seenMatch.address);
+          }
+        }
+      }
+      if (!tokenContract) {
         void reply(
           rctx,
-          [
-            `That address is a <b>contract</b>, not a wallet.`,
-            `Sending native tokens to a contract may result in permanent loss.`,
-            ``,
-            `If you meant to trade this token, just paste the address by itself.`,
-            `If you really want to send to this contract, use your wallet app directly.`,
-          ].join("\n"),
+          `Couldn't find ${html(upperAsset!)} on ${html(chainName)}. Paste the token address or pick a different chain.`,
         );
         return;
       }
-    } catch {
-      // RPC check failed — proceed with warning
-      console.warn(`[telegram] eth_getCode check failed for ${recipient} on ${chainName}`);
     }
 
+    // Contract-recipient guard. Skip for ERC-20 sends because the destination
+    // for an ERC-20 transfer() call is the *token contract*, not the recipient,
+    // and many recipients (e.g. multisigs, smart wallets) are themselves
+    // contracts that legitimately receive tokens.
+    if (!isErc20Send) {
+      try {
+        const rpc = getChainRpc(chainName);
+        const codeResp = await fetch(rpc, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "eth_getCode",
+            params: [recipient, "latest"],
+          }),
+        });
+        const codeResult = (await codeResp.json()) as { result?: string };
+        if (codeResult.result && codeResult.result !== "0x" && codeResult.result.length > 2) {
+          void reply(
+            rctx,
+            [
+              `That address is a <b>contract</b>, not a wallet.`,
+              `Sending native tokens to a contract may result in permanent loss.`,
+              ``,
+              `If you meant to trade this token, just paste the address by itself.`,
+              `If you really want to send to this contract, use your wallet app directly.`,
+            ].join("\n"),
+          );
+          return;
+        }
+      } catch {
+        // RPC check failed — proceed with warning
+        console.warn(`[telegram] eth_getCode check failed for ${recipient} on ${chainName}`);
+      }
+    }
+
+    const amountLabel = isErc20Send ? `${amount} ${tokenSymbol}` : `${amount}`;
     await reply(
       rctx,
       [
         `<b>Sending transaction</b>`,
         `To: ${codeAddr(recipient)}`,
-        `Amount: ${amount}`,
+        `Amount: ${html(amountLabel)}`,
         `Chain: ${html(chainName)} (${chainId})`,
         `\nSubmitting...`,
       ].join("\n"),
     );
 
     try {
-      const result = await wm.sendTransaction(userId, {
-        to: recipient,
-        value: weiValue,
-        chainId,
-        gasLimit: "21000",
-      });
+      const txInput = isErc20Send
+        ? {
+            to: tokenContract!,
+            value: "0",
+            data: encodeErc20Transfer(recipient, tokenAmountToRaw(amount, tokenDecimals)),
+            chainId,
+            // ERC-20 transfers cost ~50k. Add headroom for tokens with hooks
+            // (USDT, fee-on-transfer). Cheaper than a 21k native gas estimate
+            // failure and still well below mainnet block limits.
+            gasLimit: "100000",
+          }
+        : {
+            to: recipient,
+            value: nativeToWei(amount),
+            chainId,
+            gasLimit: "21000",
+          };
+      const result = await wm.sendTransaction(userId, txInput);
       void reply(
         rctx,
         [
@@ -1944,6 +2043,10 @@ export async function startTelegramGateway(
     //   3. token → token: BUY target, paying with source (token-to-token via Uniswap routing)
     let fromTokenAddress: string | null = null;
     let swapFromTokenAmount = false;
+    // For "swap USDC to ETH" we re-point toToken=fromToken below so positions
+    // are labelled with the source token. That clobbers the original target,
+    // so capture it here for the user-facing confirm message.
+    let swapNativeTarget: string | null = null;
     if (sideHint === "swap" && fromToken && toToken) {
       const fromUpper = fromToken.toUpperCase();
       const toUpper = toToken.toUpperCase();
@@ -1966,6 +2069,11 @@ export async function startTelegramGateway(
         sideHint = "sell";
         // Mark that amount is in source token units, not native ETH
         swapFromTokenAmount = true;
+        // Remember the user's stated target ("ETH"/"BNB"/etc) so the confirm
+        // message can say "Swapping 0.1 USDC for ETH". toToken gets re-pointed
+        // to fromToken below so receipts/positions are labelled with the
+        // source token, but the user wants to see what they're getting.
+        swapNativeTarget = toUpper;
         // Re-point toToken so downstream code labels the receipt and position
         // with the SOURCE token (the one being sold), not the native it's
         // being exchanged for. Without this, the position tracks USDC's
@@ -1974,7 +2082,7 @@ export async function startTelegramGateway(
         toToken = fromToken;
         hlog.agent(
           "gateway",
-          `swap: "${fromToken} → ${toToken}" treated as SELL ${fromToken} for native`,
+          `swap: "${fromToken} → ${swapNativeTarget}" treated as SELL ${fromToken} for native`,
         );
       } else {
         // "swap USDC to PEPE" = token-to-token: resolve both, route through Uniswap
@@ -2406,8 +2514,11 @@ export async function startTelegramGateway(
     const isSwap = !!(fromToken && toToken);
     let confirmMsg: string;
     if (isSwap && side === "sell") {
-      // "swap USDC to ETH" → "Swapping 0.1 USDC for ETH on Ethereum"
-      const toLabel = html(toToken!.toUpperCase());
+      // "swap USDC to ETH" → "Swapping 0.1 USDC for ETH on Ethereum".
+      // swapNativeTarget holds the original target ("ETH") since toToken was
+      // re-pointed to fromToken for position labelling; fall back to toToken
+      // for safety if that branch wasn't taken.
+      const toLabel = html((swapNativeTarget ?? toToken!).toUpperCase());
       confirmMsg = amountDisplay
         ? `Swapping ${amountDisplay} for ${toLabel} on ${chainLabel}...`
         : `Swapping ${html(fromToken!.toUpperCase())} for ${toLabel} on ${chainLabel}...`;

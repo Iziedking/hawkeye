@@ -92,13 +92,19 @@ async function resolveBestPair(address: string, preferChain?: string): Promise<D
  * Rough 2× price-impact model. Real slippage depends on pool depth and
  * curve type — this is a conservative upper-bound estimate.
  *
+ * Floored at 0.5%: a $4 trade into a $50M pool has ~0% modelled impact, but
+ * sending `slippageTolerance: 0` to Uniswap makes `amountOutMin == quotedOut`
+ * exactly, and any block-level price drift reverts the swap. 0.5% is the
+ * industry default for liquid stablecoin/native pairs and gives small trades
+ * enough headroom to clear without exposing them to meaningful MEV.
+ *
  * @param liquidityUsd  Total liquidity in the pair
  * @param tradeValueUsd Estimated USD value of the trade
  */
 function estimateSlippagePct(liquidityUsd: number, tradeValueUsd: number): number {
   if (liquidityUsd <= 0) return 15; // unknown pool — assume high slippage
   const rawImpact = (tradeValueUsd / liquidityUsd) * 100;
-  return Math.min(rawImpact * 2, 50); // capped at 50 %
+  return Math.max(0.5, Math.min(rawImpact * 2, 50)); // floor 0.5%, cap 50%
 }
 
 /**
