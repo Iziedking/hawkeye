@@ -128,7 +128,34 @@ export class FallbackLlmClient {
   }
 
   /**
-   * Test hook + Telegram /llm command surface.
+   * Snapshot of routing state — surfaced via the Telegram /llm command.
+   */
+  status(): {
+    primaryConfigured: boolean;
+    fallbackConfigured: boolean;
+    fallbackName: string | null;
+    activePath: "primary" | "fallback" | "none";
+    suppressedForMs: number;
+  } {
+    const now = Date.now();
+    const suppressedForMs = Math.max(0, this.suppressedUntil - now);
+    const activePath: "primary" | "fallback" | "none" = this.ogHealthy
+      ? "primary"
+      : this.fallback
+        ? "fallback"
+        : "none";
+    return {
+      primaryConfigured: this.primary !== null,
+      fallbackConfigured: this.fallback !== null,
+      fallbackName: this.fallbackName,
+      activePath,
+      suppressedForMs,
+    };
+  }
+
+  /**
+   * Force-clear the 0G suppression so the next inference re-probes immediately.
+   * Surfaced via /llm reset.
    */
   resetPrimary(): void {
     this.primaryHealthy = true;

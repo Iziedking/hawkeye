@@ -99,6 +99,7 @@ export function startStrategyAgent(deps: StrategyDeps = {}): () => void {
         txHash: "",
         remainingExits: intent.exits,
         openedAt: Date.now(),
+        ...(quote.totalSupply ? { totalSupply: quote.totalSupply } : {}),
       });
       console.log(`[strategy] ${intent.intentId} — user confirmed, executing`);
     } else {
@@ -184,6 +185,7 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
         txHash: "",
         remainingExits: intent.exits,
         openedAt: Date.now(),
+        ...(quote.totalSupply ? { totalSupply: quote.totalSupply } : {}),
       });
     }
     return;
@@ -259,6 +261,7 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
       txHash: "",
       remainingExits: intent.exits,
       openedAt: Date.now(),
+      ...(quote.totalSupply ? { totalSupply: quote.totalSupply } : {}),
     });
   } else if (decision.decision === "AWAIT_USER_CONFIRM") {
     awaitingConfirm.set(intent.intentId, entry);

@@ -74,14 +74,15 @@ async function fetchPriceUsd(tokenAddress: string, chainId: ChainId): Promise<nu
  *
  * multiplier — price has risen N× from entry.
  * price      — price has reached a specific USD level.
- * fdv/mc     — requires total supply (not in Position today).
- *              Logged as a warning and skipped until Strategy enriches
- *              Position with supply data.
+ * fdv        — current FDV (priceNow × totalSupply) >= target USD.
+ * marketcap  — same evaluation as fdv; circulating-supply distinction is
+ *              not currently available from DexScreener at quote time.
  */
 function evaluateTarget(
   target: ExitTarget,
   currentPriceUsd: number,
   entryPriceUsd: number,
+  totalSupply?: number,
 ): boolean {
   switch (target.kind) {
     case "multiplier":
@@ -92,13 +93,14 @@ function evaluateTarget(
 
     case "fdv":
     case "marketcap":
-      // Cannot evaluate without total supply.
-      // Strategy Agent should enrich Position with totalSupply before this runs.
-      console.warn(
-        `[Monitor] ${target.kind} exit ($${target.usd}) skipped — ` +
-          `total supply not available in Position yet`,
-      );
-      return false;
+      if (!totalSupply || totalSupply <= 0) {
+        console.warn(
+          `[Monitor] ${target.kind} exit ($${target.usd}) skipped — ` +
+            `totalSupply missing from Position (DexScreener fdv unavailable at quote time)`,
+        );
+        return false;
+      }
+      return currentPriceUsd * totalSupply >= target.usd;
   }
 }
 
@@ -189,7 +191,7 @@ function spawnPriceWatcher(position: Position): void {
       const exit = exits[i];
       if (exit === undefined) continue;
 
-      if (!evaluateTarget(exit.target, priceUsd, entryPriceUsd)) continue;
+      if (!evaluateTarget(exit.target, priceUsd, entryPriceUsd, pos.totalSupply)) continue;
 
       console.log(
         `[Monitor] Exit triggered — positionId=${positionId} ` +

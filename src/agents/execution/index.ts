@@ -656,6 +656,7 @@ async function handleExecute(intentId: string): Promise<void> {
     openedAt: receipt.confirmedAt,
     ...(intent.symbol ? { symbol: intent.symbol } : {}),
     ...(receipt.mevProtected ? { mevProtected: true } : {}),
+    ...(quote.totalSupply ? { totalSupply: quote.totalSupply } : {}),
   };
 
   setPosition(position.positionId, position);

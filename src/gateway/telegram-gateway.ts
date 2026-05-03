@@ -1125,6 +1125,41 @@ export async function startTelegramGateway(
     );
   });
 
+  bot.command("llm", async (ctx) => {
+    if (!llm) {
+      await ctx.reply("No LLM configured.");
+      return;
+    }
+    const arg = (ctx.match as string).trim().toLowerCase();
+    if (arg === "reset") {
+      llm.resetPrimary();
+      await ctx.reply(
+        "0G Compute primary state reset. Next inference will re-probe 0G; if it fails the fallback takes over for the next 5 minutes.",
+      );
+      return;
+    }
+    const s = llm.status();
+    const lines: string[] = [`<b>LLM routing</b>`, ``];
+    if (s.activePath === "primary") {
+      lines.push(`🟢 Active: <b>0G Compute</b> (sealed inference, primary)`);
+    } else if (s.activePath === "fallback") {
+      lines.push(`🟡 Active: <b>${html(s.fallbackName ?? "fallback")}</b>`);
+      if (s.suppressedForMs > 0) {
+        const secs = Math.ceil(s.suppressedForMs / 1000);
+        lines.push(`   0G suppressed for ${secs}s after a failure; auto re-probes after that.`);
+      }
+    } else {
+      lines.push(`🔴 No LLM available.`);
+    }
+    lines.push(``, `<b>Configured</b>:`);
+    lines.push(`• 0G Compute: ${s.primaryConfigured ? "yes" : "no"}`);
+    lines.push(`• Fallback (OpenRouter/Claude): ${s.fallbackConfigured ? "yes" : "no"}`);
+    if (s.activePath !== "primary" && s.primaryConfigured) {
+      lines.push(``, `<code>/llm reset</code> forces an immediate 0G re-probe.`);
+    }
+    await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+  });
+
   // /watch — add wallet to copy-trade watch list
   bot.command("watch", async (ctx) => {
     const args = (ctx.match as string).trim().split(/\s+/);
@@ -2580,6 +2615,8 @@ export async function startTelegramGateway(
       { command: "history", description: "Recent trade history" },
       { command: "send", description: "Transfer native tokens" },
       { command: "mode", description: "Trading mode: degen, normal, safe" },
+      { command: "skills", description: "Toggle agent behavior skills" },
+      { command: "llm", description: "LLM routing status (0G vs fallback)" },
       { command: "watch", description: "Copy a wallet's buys" },
       { command: "unwatch", description: "Stop copying a wallet" },
       { command: "watchlist", description: "Show watched wallets" },

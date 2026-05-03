@@ -116,6 +116,9 @@ export type Quote = {
   completedAt: number;
   tokenName?: string;
   tokenSymbol?: string;
+  fdvUsd?: number;
+  marketCapUsd?: number;
+  totalSupply?: number;
 };
 
 export type StrategyDecision =
@@ -151,6 +154,12 @@ export type Position = {
   openedAt: number;
   symbol?: string;
   mevProtected?: boolean;
+  /**
+   * Token total supply, derived from DexScreener (`fdv / priceUsd`) at quote
+   * time. Carried so the Monitor can evaluate `fdv` and `marketcap` exit
+   * targets — `priceNow * totalSupply` gives current FDV.
+   */
+  totalSupply?: number;
 };
 
 export type ExecuteSellPayload = {

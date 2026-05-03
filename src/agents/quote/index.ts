@@ -222,6 +222,9 @@ export function startQuoteAgent(): () => void {
 
       // 5. Emit QUOTE_RESULT
       const tokenInfo = isQuoteSide ? pair.quoteToken : pair.baseToken;
+      // Derive totalSupply from DexScreener fdv/price so Monitor can evaluate
+      // FDV and market-cap exit targets.
+      const totalSupply = pair.fdv && finalPriceUsd > 0 ? pair.fdv / finalPriceUsd : undefined;
       const quote: Quote = {
         intentId: intent.intentId,
         address: intent.address,
@@ -235,6 +238,9 @@ export function startQuoteAgent(): () => void {
         completedAt: Date.now(),
         ...(tokenInfo?.name ? { tokenName: tokenInfo.name } : {}),
         ...(tokenInfo?.symbol ? { tokenSymbol: tokenInfo.symbol } : {}),
+        ...(pair.fdv ? { fdvUsd: pair.fdv } : {}),
+        ...(pair.marketCap ? { marketCapUsd: pair.marketCap } : {}),
+        ...(totalSupply ? { totalSupply } : {}),
       };
 
       bus.emit("QUOTE_RESULT", quote);
