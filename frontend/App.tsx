@@ -352,7 +352,14 @@ export default function App() {
                   {a}
                 </button>
               ))}
-              <button className="connect-btn">Connect Wallet</button>
+              <button className="connect-btn" onClick={async () => {
+  if (typeof window.ethereum !== 'undefined') {
+    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    alert('Connected: ' + accounts[0]);
+  } else {
+    alert('Please install MetaMask!');
+  }
+}}>Connect Wallet</button>
             </div>
           </nav>
 
