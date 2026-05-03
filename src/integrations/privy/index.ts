@@ -96,6 +96,7 @@ export type WalletManager = {
   ensureSolanaWallet: (userId: string) => Promise<PrivyWallet | null>;
   walletAddress: (userId: string) => string | undefined;
   signTransaction: (userId: string, tx: SignTxInput) => Promise<string>;
+  signTypedData: (userId: string, typedData: TypedDataInput) => Promise<string>;
   sendTransaction: (userId: string, tx: SignTxInput) => Promise<SendTxResult>;
   connectExternalWallet: (userId: string, address: string, label?: string) => void;
   disconnectExternalWallet: (userId: string, address: string) => boolean;
@@ -114,6 +115,16 @@ export type SignTxInput = {
   data?: string;
   chainId: number;
   gasLimit?: string;
+};
+
+// EIP-712 typed-data input. Field names match the standard JSON shape
+// (camelCase `primaryType`); we translate to Privy's snake_case body before
+// sending. Uniswap's trade API returns permitData in this shape.
+export type TypedDataInput = {
+  domain: Record<string, unknown>;
+  types: Record<string, Array<{ name: string; type: string }>>;
+  primaryType: string;
+  message: Record<string, unknown>;
 };
 
 export type SendTxResult = {
@@ -559,6 +570,35 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     return "0x" + n.toString(16);
   }
 
+  async function signTypedData(userId: string, typedData: TypedDataInput): Promise<string> {
+    const w = resolveAgentWallet(userId);
+
+    // Privy expects snake_case `primary_type`. Strip EIP712Domain from `types`
+    // since Privy adds it implicitly and rejects duplicates from some callers.
+    const types: Record<string, Array<{ name: string; type: string }>> = {};
+    for (const [k, v] of Object.entries(typedData.types)) {
+      if (k === "EIP712Domain") continue;
+      types[k] = v;
+    }
+
+    const result = await client
+      .wallets()
+      .ethereum()
+      .signTypedData(w.walletId, {
+        params: {
+          typed_data: {
+            domain: typedData.domain,
+            types,
+            primary_type: typedData.primaryType,
+            message: typedData.message,
+          },
+        },
+        ...(authContext ? { authorization_context: authContext } : {}),
+      });
+
+    return result.signature;
+  }
+
   async function sendTransaction(userId: string, tx: SignTxInput): Promise<SendTxResult> {
     const w = resolveAgentWallet(userId);
     const caip2 = resolveCaip2(tx.chainId);
@@ -605,6 +645,7 @@ export function createWalletManager(deps: WalletManagerDeps = {}): WalletManager
     ensureSolanaWallet,
     walletAddress,
     signTransaction,
+    signTypedData,
     sendTransaction,
     connectExternalWallet,
     disconnectExternalWallet,

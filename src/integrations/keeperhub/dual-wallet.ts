@@ -3,6 +3,7 @@ import type {
   PrivyWallet,
   SignTxInput,
   SendTxResult,
+  TypedDataInput,
   WalletMode,
   UserWalletConfig,
   FullWalletConfig,
@@ -105,6 +106,10 @@ export function createDualWalletManager(
 
     async signTransaction(userId: string, tx: SignTxInput): Promise<string> {
       return getManager(userId).signTransaction(userId, tx);
+    },
+
+    async signTypedData(userId: string, typedData: TypedDataInput): Promise<string> {
+      return getManager(userId).signTypedData(userId, typedData);
     },
 
     async sendTransaction(userId: string, tx: SignTxInput): Promise<SendTxResult> {

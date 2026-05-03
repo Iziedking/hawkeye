@@ -317,19 +317,42 @@ export async function startTelegramGateway(
     const explorer = getChainExplorer(pos.chainId);
     const chainName = getChainName(pos.chainId);
     const tokenLabel = pos.symbol ?? pos.address.slice(0, 10) + "...";
+    const verb = pending.isSell ? "Sold" : "Bought";
+
+    // Format the filled amount with the actual token symbol when the unit is
+    // TOKEN/PERCENT (otherwise the literal string "TOKEN" leaks into the UI).
+    const amtStr = (() => {
+      switch (pos.filled.unit) {
+        case "USD":
+          return `$${pos.filled.value}`;
+        case "TOKEN":
+          return `${pos.filled.value} ${pos.symbol ?? "tokens"}`;
+        case "PERCENT":
+          return `${pos.filled.value}% of position`;
+        case "NATIVE":
+          return `${pos.filled.value} ${pos.chainId === "ethereum" || pos.chainId === "sepolia" || pos.chainId === "base" || pos.chainId === "arbitrum" || pos.chainId === "optimism" ? "ETH" : "native"}`;
+        default:
+          return `${pos.filled.value}`;
+      }
+    })();
+
+    // Suppress the price suffix when there's no real price (testnet tokens
+    // come back as 0 since DexScreener doesn't index them).
     const priceStr =
-      pos.entryPriceUsd >= 1
-        ? `$${pos.entryPriceUsd.toFixed(2)}`
-        : `$${pos.entryPriceUsd.toFixed(6)}`;
-    const amtStr =
-      pos.filled.unit === "USD" ? `$${pos.filled.value}` : `${pos.filled.value} ${pos.filled.unit}`;
+      pos.entryPriceUsd > 0
+        ? pos.entryPriceUsd >= 1
+          ? `$${pos.entryPriceUsd.toFixed(2)}`
+          : `$${pos.entryPriceUsd.toFixed(6)}`
+        : null;
+    const fillLine = priceStr ? `${verb} ${amtStr} at ${priceStr}` : `${verb} ${amtStr}`;
+
     const tags: string[] = [];
     if (pos.mevProtected) tags.push("MEV Protected");
     if (pending.rootHash) tags.push("0G Verified");
     const msgLines = [
       `<b>${html(tokenLabel)}</b> on ${html(chainName)}`,
       ``,
-      `${amtStr} at ${priceStr}`,
+      fillLine,
       ``,
       `<a href="${explorer}/tx/${pos.txHash}">${pos.txHash.slice(0, 16)}...</a>`,
       ...(tags.length > 0 ? [`${tags.join(" | ")}`] : []),
@@ -789,8 +812,10 @@ export async function startTelegramGateway(
       }
     }
 
-    // Fetch native balances and token holdings in parallel
-    const nonTestnetChains = chains.filter((c) => c !== "sepolia");
+    // Fetch native balances and token holdings in parallel.
+    // We include testnets (Sepolia) too — the well-known stable list won't
+    // match anything there, but tracked positions and seen tokens still get
+    // a balanceOf call so e.g. Sepolia USDC bought through the bot shows up.
     const [nativeResults, tokenData] = await Promise.all([
       Promise.all(
         chains.map(async (chain) => {
@@ -817,7 +842,7 @@ export async function startTelegramGateway(
           return { line: `  ${getChainName(chain)}: 0`, usd: 0, hasBalance: false };
         }),
       ),
-      fetchTokenHoldings(addr, nonTestnetChains, 10_000, extraTokens),
+      fetchTokenHoldings(addr, chains, 10_000, extraTokens),
     ]);
 
     const balanceLines = nativeResults.map((r) => r.line);
@@ -1873,6 +1898,12 @@ export async function startTelegramGateway(
         sideHint = "sell";
         // Mark that amount is in source token units, not native ETH
         swapFromTokenAmount = true;
+        // Re-point toToken so downstream code labels the receipt and position
+        // with the SOURCE token (the one being sold), not the native it's
+        // being exchanged for. Without this, the position tracks USDC's
+        // address but is labelled "ETH", which prints e.g. "ETH on Sepolia"
+        // for what was actually a USDC sell.
+        toToken = fromToken;
         hlog.agent(
           "gateway",
           `swap: "${fromToken} → ${toToken}" treated as SELL ${fromToken} for native`,
@@ -2439,30 +2470,67 @@ export async function startTelegramGateway(
     }
 
     const chains = ["ethereum", "sepolia", "base", "arbitrum", "optimism", "polygon", "bsc"];
-    let portfolioUsd = 0;
-    const fetches = chains.map(async (chain) => {
-      const cfg = EVM_CHAIN_CONFIG[chain];
-      const currency = cfg?.nativeCurrency ?? "ETH";
-      const { balance, error } = await fetchNativeBalance(chain, addr);
-      if (error) return null;
-      const ethVal = Number(balance) / 1e18;
-      if (ethVal > 0.00001) {
-        const isTestnet = chain === "sepolia";
-        let usdStr = "";
-        if (!isTestnet) {
-          const price = await fetchNativePrice(currency);
-          const usd = ethVal * price;
-          portfolioUsd += usd;
-          usdStr = usd >= 0.01 ? ` (~$${formatUsd(usd)})` : "";
-        }
-        return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${currency}${usdStr}`;
+
+    // Build the extra-tokens list from tracked positions + seen tokens so
+    // anything the user has bought through the bot (incl. on Sepolia) gets
+    // a balanceOf call even though it's not in the well-known stable list.
+    const userPositions = getPositionsByUser(userId);
+    const seenTokens = getSeenTokens(userId);
+    const extraSet = new Set<string>();
+    const extraTokens: Array<{ address: string; chainId: string; symbol?: string | undefined }> =
+      [];
+    for (const p of userPositions) {
+      const key = `${p.chainId}:${p.address.toLowerCase()}`;
+      if (!extraSet.has(key)) {
+        extraSet.add(key);
+        extraTokens.push({ address: p.address, chainId: p.chainId, symbol: p.symbol });
       }
-      return null;
-    });
+    }
+    for (const s of seenTokens) {
+      const key = `${s.chainId}:${s.address.toLowerCase()}`;
+      if (!extraSet.has(key)) {
+        extraSet.add(key);
+        extraTokens.push({ address: s.address, chainId: s.chainId, symbol: s.symbol });
+      }
+    }
 
-    const balanceLines = (await Promise.all(fetches)).filter((l): l is string => l !== null);
+    let portfolioUsd = 0;
+    const [nativeLines, tokenData] = await Promise.all([
+      Promise.all(
+        chains.map(async (chain) => {
+          const cfg = EVM_CHAIN_CONFIG[chain];
+          const currency = cfg?.nativeCurrency ?? "ETH";
+          const { balance, error } = await fetchNativeBalance(chain, addr);
+          if (error) return null;
+          const ethVal = Number(balance) / 1e18;
+          if (ethVal > 0.00001) {
+            const isTestnet = chain === "sepolia";
+            let usdStr = "";
+            if (!isTestnet) {
+              const price = await fetchNativePrice(currency);
+              const usd = ethVal * price;
+              portfolioUsd += usd;
+              usdStr = usd >= 0.01 ? ` (~$${formatUsd(usd)})` : "";
+            }
+            return `  ${getChainName(chain)}: ${ethVal.toFixed(6)} ${currency}${usdStr}`;
+          }
+          return null;
+        }),
+      ),
+      fetchTokenHoldings(addr, chains, 10_000, extraTokens),
+    ]);
 
-    const positions = getPositionsByUser(userId);
+    const balanceLines = nativeLines.filter((l): l is string => l !== null);
+
+    const tokenLines: string[] = [];
+    const heldTokens = tokenData.assets.filter(
+      (a) => a.tokenSymbol !== "ETH" && a.tokenSymbol !== "WETH" && parseFloat(a.balance) > 0,
+    );
+    for (const t of heldTokens.slice(0, 15)) {
+      tokenLines.push(`  ${t.tokenSymbol} (${getChainName(t.blockchain)}): ${t.balance}`);
+    }
+
+    const positions = userPositions;
     const posLines: string[] = [];
     if (positions.length > 0) {
       posLines.push(``);
@@ -2476,7 +2544,7 @@ export async function startTelegramGateway(
       }
     }
 
-    if (balanceLines.length === 0 && positions.length === 0) {
+    if (balanceLines.length === 0 && tokenLines.length === 0 && positions.length === 0) {
       const solWallet = walletMgr.getSolanaWallet(userId);
       const lines = [
         `<b>Your wallets</b>`,
@@ -2491,12 +2559,12 @@ export async function startTelegramGateway(
     }
 
     const totalLine = portfolioUsd >= 0.01 ? [``, `Total ~$${formatUsd(portfolioUsd)}`] : [];
-    void reply(
-      rctx,
-      [`<b>Portfolio</b>  ${codeAddr(addr)}`, ``, ...balanceLines, ...totalLine, ...posLines].join(
-        "\n",
-      ),
-    );
+    const sections = [`<b>Portfolio</b>  ${codeAddr(addr)}`, ``, ...balanceLines];
+    if (tokenLines.length > 0) {
+      sections.push(``, ...tokenLines);
+    }
+    sections.push(...totalLine, ...posLines);
+    void reply(rctx, sections.join("\n"));
   }
 
   function handleSettings(result: RouterResult, rctx: ReplyCtx): void {

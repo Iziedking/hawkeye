@@ -2,8 +2,6 @@
 
 HAWKEYE is an autonomous on-chain trading agent that lives in your Telegram chat.
 
-> **Scope today: EVM only.** Trade execution ships on Ethereum, Base, Arbitrum, Optimism, Polygon, BSC, Avalanche, and Sepolia testnet. Solana trade execution is **coming soon** — the agents and Jupiter quote path are scaffolded but not live. Solana token research (RugCheck, GoPlus Solana, Birdeye) is already wired into the Research and Safety agents.
-
 Behind the bot is a swarm of seven specialised agents that talk to each other over a typed event bus. They split the work the way a real trading desk would: one watches for risk, one prices the trade, one decides whether to pull the trigger, one places the swap, one watches the position after entry, one researches new tokens, and one mirrors interesting wallets.
 
 The agents run on **0G Compute** (verifiable LLM inference), persist memory to **0G Storage**, and register their identities and trade decisions on **0G Chain**. Trades route through **Uniswap**, mainnet swaps are MEV-protected by **KeeperHub**, wallets are provisioned per user by **Privy**, and the swarm can be bridged across nodes via **Gensyn AXL**.

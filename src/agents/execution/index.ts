@@ -204,6 +204,31 @@ function validateSwapResponse(swap: { to?: string; data?: string; value?: string
   }
 }
 
+// Convert Uniswap permitData (EIP-712 with `values` + camelCase) into the
+// shape WalletManager.signTypedData expects (`message` + camelCase
+// primaryType). Falls back to "PermitSingle" when Uniswap omits primaryType,
+// which is the type Permit2 always uses for single-token approvals.
+function normalizePermitData(raw: Record<string, unknown>): {
+  domain: Record<string, unknown>;
+  types: Record<string, Array<{ name: string; type: string }>>;
+  primaryType: string;
+  message: Record<string, unknown>;
+} {
+  const domain = (raw["domain"] as Record<string, unknown>) ?? {};
+  const types = (raw["types"] as Record<string, Array<{ name: string; type: string }>>) ?? {};
+  const message = ((raw["values"] ?? raw["message"]) as Record<string, unknown> | undefined) ?? {};
+
+  let primaryType = (raw["primaryType"] as string) ?? "";
+  if (!primaryType) {
+    const candidates = Object.keys(types).filter((k) => k !== "EIP712Domain");
+    primaryType = candidates.includes("PermitSingle")
+      ? "PermitSingle"
+      : (candidates[0] ?? "PermitSingle");
+  }
+
+  return { domain, types, primaryType, message };
+}
+
 function prepareSwapRequest(
   quoteResponse: Record<string, unknown>,
   permit2Signature?: string,
@@ -431,8 +456,32 @@ async function executeEvmSwap(intent: TradeIntent, quote: Quote): Promise<Execut
   const routingType = (quoteData["routing"] as string) ?? "CLASSIC";
   console.log(`[execution] Uniswap routing: ${routingType}`);
 
-  // Step 3: Prepare and submit swap — routing-aware Permit2 handling
-  const swapRequest = prepareSwapRequest(quoteData);
+  // Step 3: Sign Permit2 typed data if Uniswap returned permitData.
+  // CLASSIC routes that move ERC-20s through Permit2 require an EIP-712
+  // signature over the permit; without it the swap reverts on-chain because
+  // Permit2 won't authorize the token transfer. UniswapX uses the same
+  // mechanism for the order itself (no separate permitData → signature is the
+  // permit). Native-token (ETH) input swaps return no permitData.
+  let permit2Signature: string | undefined;
+  const rawPermitData = quoteData["permitData"];
+  if (rawPermitData && typeof rawPermitData === "object") {
+    if (!walletMgr) throw new Error("Wallet manager not available for Permit2 signing");
+    try {
+      const typed = normalizePermitData(rawPermitData as Record<string, unknown>);
+      permit2Signature = await walletMgr.signTypedData(intent.userId, typed);
+      console.log(
+        `[execution] signed Permit2 typed data (${typed.primaryType}, sig=${permit2Signature.slice(0, 10)}...)`,
+      );
+    } catch (err) {
+      console.error(`[execution] Permit2 signing failed:`, (err as Error).message);
+      throw new Error(
+        `Couldn't sign the Permit2 authorization: ${(err as Error).message}. The swap can't proceed without it.`,
+      );
+    }
+  }
+
+  // Step 4: Prepare and submit swap — routing-aware Permit2 handling
+  const swapRequest = prepareSwapRequest(quoteData, permit2Signature);
 
   const swapResp = await fetch(`${UNISWAP_API}/swap`, {
     method: "POST",

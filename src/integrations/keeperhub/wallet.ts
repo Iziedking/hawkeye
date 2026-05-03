@@ -361,6 +361,12 @@ export function createKeeperHubWalletManager(
     throw new Error("KeeperHub wallet does not support raw signing. Use sendTransaction.");
   }
 
+  async function signTypedData(): Promise<string> {
+    throw new Error(
+      "KeeperHub wallet does not support EIP-712 typed-data signing. Permit2-gated swaps must route through the Privy wallet manager.",
+    );
+  }
+
   async function sendTransaction(_userId: string, tx: SignTxInput): Promise<SendTxResult> {
     const network = CHAIN_NUMERIC_TO_NAME[tx.chainId] ?? "ethereum";
 
@@ -463,6 +469,7 @@ export function createKeeperHubWalletManager(
     ensureSolanaWallet,
     walletAddress,
     signTransaction,
+    signTypedData,
     sendTransaction,
     connectExternalWallet,
     disconnectExternalWallet,
