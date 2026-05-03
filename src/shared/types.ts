@@ -27,7 +27,7 @@ export const CHAIN_IDS = [
 
 export type ChainId = (typeof CHAIN_IDS)[number];
 
-export type AmountUnit = "NATIVE" | "USD" | "TOKEN";
+export type AmountUnit = "NATIVE" | "USD" | "TOKEN" | "PERCENT";
 
 export type TradeAmount = {
   value: number;

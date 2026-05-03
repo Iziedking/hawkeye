@@ -290,40 +290,104 @@ async function executeEvmSwap(intent: TradeIntent, quote: Quote): Promise<Execut
   const tokenIn = hasFromToken ? intent.fromTokenAddress! : isSell ? intent.address : ETH_ADDRESS;
   const tokenOut = hasFromToken ? intent.address : isSell ? ETH_ADDRESS : intent.address;
 
-  // Pre-check: verify wallet holds the input token before attempting the swap
+  // Read on-chain balance for any swap whose input is an ERC-20 (sells, swaps).
+  // This is the source of truth for sell amount resolution.
+  let onchainBalance = 0n;
   if (isSell || hasFromToken) {
-    const { balance: tokenBal, error: balErr } = await fetchTokenBalance(
+    const { balance, error: balErr } = await fetchTokenBalance(
       quote.chainId,
       tokenIn,
       swapperAddress,
       5_000,
     ).catch(() => ({ balance: 0n, error: "fetch_failed" }));
 
-    if (!balErr && tokenBal === 0n) {
+    if (!balErr) onchainBalance = balance;
+
+    if (!balErr && balance === 0n) {
       throw new Error(
         `Your wallet doesn't hold any of this token on ${quote.chainId}. ` +
           `Buy it first, then sell. Use /wallet to check your balances.`,
       );
     }
-    if (tokenBal > 0n) {
+    if (balance > 0n) {
       console.log(
-        `[execution] token balance check: ${tokenBal.toString()} raw units on ${quote.chainId}`,
+        `[execution] on-chain balance: ${balance.toString()} raw units on ${quote.chainId}`,
       );
     }
   }
 
   const inputDecimals = getTokenDecimals(tokenIn);
-  // NATIVE unit with ETH as tokenIn → 18 decimals (wei)
-  // NATIVE unit with non-ETH tokenIn (e.g. "swap 0.1 USDC to ETH") → use token's decimals
-  const amountDecimals =
-    intent.amount.unit === "NATIVE" && tokenIn === ETH_ADDRESS ? 18 : inputDecimals;
-  const amountRaw = toSmallestUnit(intent.amount.value, amountDecimals);
+  const outputDecimals = getTokenDecimals(tokenOut);
 
-  if (amountRaw === "0" || intent.amount.value <= 0) {
+  // Resolve the swap amount + Uniswap "type" (EXACT_INPUT vs EXACT_OUTPUT).
+  // For sells we ALWAYS use EXACT_INPUT against an on-chain-derived token amount,
+  // so the user can never request more tokens than they hold and so the math
+  // is independent of token decimals quirks.
+  let amountRaw: string;
+  const swapType: "EXACT_INPUT" | "EXACT_OUTPUT" = "EXACT_INPUT";
+
+  if (isSell || hasFromToken) {
+    // PERCENT and "all" → fraction of on-chain balance.
+    if (intent.amount.unit === "PERCENT") {
+      const pct = Math.max(0, Math.min(100, intent.amount.value));
+      const tokensRaw = (onchainBalance * BigInt(Math.floor(pct * 100))) / 10_000n;
+      if (tokensRaw === 0n) {
+        throw new Error(
+          `Cannot sell ${pct}% — wallet holds 0 raw units of this token on ${quote.chainId}.`,
+        );
+      }
+      amountRaw = tokensRaw.toString();
+    } else if (intent.amount.unit === "TOKEN") {
+      // Exact token amount in display units.
+      const tokensRaw = BigInt(toSmallestUnit(intent.amount.value, inputDecimals));
+      // Cap at on-chain balance so a slightly-stale "sell 100 PEPE" still works.
+      amountRaw = (tokensRaw > onchainBalance ? onchainBalance : tokensRaw).toString();
+    } else if (intent.amount.unit === "USD") {
+      // "$10 of TOKEN" → token amount via current price.
+      if (!quote.priceUsd || quote.priceUsd <= 0) {
+        throw new Error("No live USD price available; can't size the sell.");
+      }
+      const tokens = intent.amount.value / quote.priceUsd;
+      const tokensRaw = BigInt(toSmallestUnit(tokens, inputDecimals));
+      amountRaw = (tokensRaw > onchainBalance ? onchainBalance : tokensRaw).toString();
+    } else {
+      // NATIVE — "sell 0.005 ETH worth": infer tokens from ETH-equivalent.
+      // priceUsd in quote is the token price; we need tokens = ethValue * ethUsd / tokenUsd.
+      // For a clean fallback we treat NATIVE as a synonym for "this many ETH worth"
+      // and compute via priceUsd against the well-known ETH price ~$2500.
+      const ethUsd = 2500;
+      const usd = intent.amount.value * ethUsd;
+      if (!quote.priceUsd || quote.priceUsd <= 0) {
+        throw new Error("No live price available; can't size the sell.");
+      }
+      const tokens = usd / quote.priceUsd;
+      const tokensRaw = BigInt(toSmallestUnit(tokens, inputDecimals));
+      amountRaw = (tokensRaw > onchainBalance ? onchainBalance : tokensRaw).toString();
+    }
+  } else {
+    // BUY path: input is ETH, amount is in ETH or USD.
+    if (intent.amount.unit === "USD") {
+      const ethUsd = 2500;
+      const ethValue = intent.amount.value / ethUsd;
+      amountRaw = toSmallestUnit(ethValue, 18);
+    } else {
+      // NATIVE (ETH): 18 decimals.
+      amountRaw = toSmallestUnit(intent.amount.value, 18);
+    }
+  }
+
+  if (amountRaw === "0" || BigInt(amountRaw) === 0n) {
     throw new Error(
-      "No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.",
+      isSell
+        ? "Resolved sell amount is 0. Try 'sell 50%' or 'sell all' to size off your on-chain balance."
+        : "No trade amount specified. Use /mode to set a default amount, or say 'buy 0.01 ETH of [token]'.",
     );
   }
+
+  // Diagnostics: useful in demos and post-mortems.
+  console.log(
+    `[execution] resolved ${intent.side} amount: raw=${amountRaw} unit=${intent.amount.unit} value=${intent.amount.value} type=${swapType} decimalsIn=${inputDecimals} decimalsOut=${outputDecimals}`,
+  );
 
   // Step 1: Check approval (skipped for native ETH, required for ERC-20 input tokens)
   const MAX_UINT = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
@@ -350,8 +414,7 @@ async function executeEvmSwap(intent: TradeIntent, quote: Quote): Promise<Execut
       tokenInChainId: String(numChainId),
       tokenOutChainId: String(numChainId),
       amount: amountRaw,
-      type:
-        isSell && !hasFromToken && intent.amount.unit === "NATIVE" ? "EXACT_OUTPUT" : "EXACT_INPUT",
+      type: swapType,
       slippageTolerance: parseFloat(slippage.toFixed(2)),
       routingPreference: "BEST_PRICE",
     }),
@@ -628,22 +691,22 @@ async function handleSell(payload: ExecuteSellPayload): Promise<void> {
     return;
   }
 
-  console.log(`[execution] sell ${payload.fraction * 100}% of ${position.address.slice(0, 10)}...`);
+  const pctOfBalance = Math.max(0, Math.min(100, payload.fraction * 100));
+  console.log(`[execution] sell ${pctOfBalance}% of ${position.address.slice(0, 10)}...`);
 
-  // Sell = swap token back to native
+  // Auto-sells size off the live on-chain balance via PERCENT — never against
+  // the original buy-side ETH amount. executeEvmSwap will read the balance
+  // and compute the exact token amount to swap (EXACT_INPUT).
   const sellIntent: TradeIntent = {
     intentId: randomUUID(),
     userId: position.userId,
     channel: "telegram",
     address: position.address,
     chain: position.address.startsWith("0x") ? "evm" : "solana",
-    amount: {
-      value: position.filled.value * payload.fraction,
-      unit: position.filled.unit,
-    },
+    amount: { value: pctOfBalance, unit: "PERCENT" },
     exits: [],
     urgency: "NORMAL",
-    rawText: `auto-sell ${payload.fraction * 100}%`,
+    rawText: `auto-sell ${pctOfBalance}%`,
     createdAt: Date.now(),
     side: "sell",
   };
@@ -655,7 +718,7 @@ async function handleSell(payload: ExecuteSellPayload): Promise<void> {
     pairAddress: "",
     priceUsd: position.entryPriceUsd,
     liquidityUsd: 0,
-    expectedSlippagePct: 1,
+    expectedSlippagePct: 2,
     feeEstimateUsd: 0,
     route: "auto-sell",
     completedAt: Date.now(),

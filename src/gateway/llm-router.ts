@@ -15,6 +15,8 @@ const SOL_ADDR = /(?:^|\s)([1-9A-HJ-NP-Za-km-z]{32,44})(?:$|\s|[.,!?])/;
 const NATIVE_AMOUNT = /\b(\d+(?:\.\d+)?)\s*(?:\w+\s+)?(eth|sol|bnb|matic|avax|native)\b/i;
 const USD_TOKEN_AMOUNT = /\b(\d+(?:\.\d+)?)\s*(usdc|usdt|dai|busd)\b/i;
 const USD_DOLLAR = /\$(\d+(?:,\d{3})*(?:\.\d+)?)\b/;
+const PERCENT_AMOUNT = /\b(\d{1,3}(?:\.\d+)?)\s*%/;
+const ALL_KEYWORDS = /\b(all|everything|whole\s+bag|full\s+exit|max)\b/i;
 
 const URGENCY_FAST = /\b(now|asap|instant|ape|fast|quick)\b/i;
 const URGENCY_CAREFUL = /\b(careful|slow|safe|cautious)\b/i;
@@ -120,6 +122,14 @@ function tryDegenShortcut(text: string): SnipeData | null {
 }
 
 function extractAmount(text: string): TradeAmount {
+  const percent = text.match(PERCENT_AMOUNT);
+  if (percent && percent[1]) {
+    const v = Number(percent[1]);
+    if (Number.isFinite(v) && v > 0) return { value: Math.min(v, 100), unit: "PERCENT" };
+  }
+  if (ALL_KEYWORDS.test(text)) {
+    return { value: 100, unit: "PERCENT" };
+  }
   const dollar = text.match(USD_DOLLAR);
   if (dollar && dollar[1]) {
     const v = Number(dollar[1].replace(/,/g, ""));
@@ -381,8 +391,14 @@ function validateTradeData(data: Record<string, unknown>, rawText: string): Snip
     const a = amountRaw as Record<string, unknown>;
     const v = typeof a["value"] === "number" ? a["value"] : 0;
     const u = a["unit"];
-    const unit: TradeAmount["unit"] = u === "USD" || u === "TOKEN" || u === "NATIVE" ? u : "NATIVE";
+    const unit: TradeAmount["unit"] =
+      u === "USD" || u === "TOKEN" || u === "NATIVE" || u === "PERCENT" ? u : "NATIVE";
     amount = { value: Number.isFinite(v) && v > 0 ? v : 0, unit };
+  }
+  // Regex backstop: if the LLM missed "%" or "all", catch it from raw text.
+  if (amount.value === 0 || amount.unit === "NATIVE") {
+    const fromRegex = extractAmount(rawText);
+    if (fromRegex.unit === "PERCENT" && fromRegex.value > 0) amount = fromRegex;
   }
 
   const urgency = data["urgency"];

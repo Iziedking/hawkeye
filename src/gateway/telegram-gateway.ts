@@ -2089,9 +2089,11 @@ export async function startTelegramGateway(
     ]);
     const isTestnetTrade = specificChainEarly ? TESTNET_SET.has(specificChainEarly) : false;
 
-    // Convert USD amounts to approximate native token amount
+    // Convert USD amounts to approximate native token amount — for BUYS only.
+    // Sells keep `unit: "USD"` so the execution agent can size off live token
+    // price + on-chain balance, not pre-converted ETH equivalents.
     // Testnet ETH has no real-world price — ask user to specify in ETH directly
-    if (amount.unit === "USD" && amount.value > 0) {
+    if (amount.unit === "USD" && amount.value > 0 && sideHint !== "sell") {
       if (isTestnetTrade) {
         const sym = verifiedTokenSymbol ?? toToken ?? "this token";
         void reply(
@@ -2121,8 +2123,10 @@ export async function startTelegramGateway(
       amount = { value: ethEquiv, unit: "NATIVE" };
     }
 
-    // Apply user's default amount when none specified
-    if (amount.value <= 0) {
+    // Apply user's default amount when none specified — BUYS only.
+    // For sells, missing amount means "ask the user how much" rather than
+    // defaulting to a NATIVE buy-size.
+    if (amount.value <= 0 && sideHint !== "sell") {
       const defAmt = userSettings.get(userId)?.defaultAmount;
       if (defAmt && defAmt > 0) {
         amount = { value: defAmt, unit: "NATIVE" };
@@ -2257,15 +2261,19 @@ export async function startTelegramGateway(
       : codeAddr(address.slice(0, 10) + "...");
     const chainLabel = specificChain ? html(getChainName(specificChain)) : chain;
     const amountUnit =
-      originalUsdAmount != null
-        ? `$${originalUsdAmount}`
-        : swapFromTokenAmount && fromToken
-          ? `${amount.value} ${fromToken.toUpperCase()}`
-          : amount.unit === "TOKEN" && fromToken
-            ? `${amount.value} ${fromToken.toUpperCase()}`
-            : amount.value > 0
-              ? `${amount.value.toFixed(6)} ETH`
-              : "";
+      amount.unit === "PERCENT" && amount.value > 0
+        ? `${amount.value}%`
+        : amount.unit === "USD" && amount.value > 0
+          ? `$${amount.value}`
+          : originalUsdAmount != null
+            ? `$${originalUsdAmount}`
+            : swapFromTokenAmount && fromToken
+              ? `${amount.value} ${fromToken.toUpperCase()}`
+              : amount.unit === "TOKEN" && fromToken
+                ? `${amount.value} ${fromToken.toUpperCase()}`
+                : amount.value > 0
+                  ? `${amount.value.toFixed(6)} ETH`
+                  : "";
     const amountDisplay = amount.value > 0 ? amountUnit : "";
     const isSwap = !!(fromToken && toToken);
     let confirmMsg: string;

@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { log } from "./logger";
 
 export type SubsystemStatus = {
@@ -6,6 +6,18 @@ export type SubsystemStatus = {
   ok: boolean;
   detail?: string;
 };
+
+export type WebApiHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+) => Promise<boolean> | boolean;
+
+const apiHandlers: WebApiHandler[] = [];
+
+export function registerWebApi(handler: WebApiHandler): void {
+  apiHandlers.push(handler);
+}
 
 export type HealthReport = {
   status: "ok" | "degraded" | "down";
@@ -131,16 +143,53 @@ export function formatHealthForTelegram(): string {
 
 let server: Server | null = null;
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
 export function startHealthServer(port = 8080): Server {
-  server = createServer((req, res) => {
-    if (req.url === "/health" && req.method === "GET") {
+  server = createServer(async (req, res) => {
+    // CORS preflight — answer everything.
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, CORS_HEADERS);
+      res.end();
+      return;
+    }
+
+    if (!req.url) {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+
+    const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+
+    if (url.pathname === "/health" && req.method === "GET") {
       const report = getHealth();
       const status = report.status === "down" ? 503 : 200;
-      res.writeHead(status, { "Content-Type": "application/json" });
+      res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json" });
       res.end(JSON.stringify(report));
       return;
     }
-    res.writeHead(404);
+
+    // Try registered API handlers in order; first one to claim wins.
+    for (const handler of apiHandlers) {
+      try {
+        const handled = await handler(req, res, url);
+        if (handled) return;
+      } catch (err) {
+        console.error("[web-api] handler error:", (err as Error).message);
+        if (!res.headersSent) {
+          res.writeHead(500, { ...CORS_HEADERS, "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "internal_error" }));
+        }
+        return;
+      }
+    }
+
+    res.writeHead(404, CORS_HEADERS);
     res.end();
   });
 

@@ -9,10 +9,54 @@ Built for the **Open Agent Hackathon**. Powered by **0G Compute** (LLM),
 **Gensyn AXL** for P2P swarm transport, **KeeperHub** for MEV protection,
 **Uniswap** for routing, and **Privy** for per-user wallets.
 
+> **0G Mainnet contract**: [`0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F`](https://chainscan.0g.ai/address/0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F) — chain `16661`. All seven agents registered on-chain.
+
+---
+
+## Submission — partner prize eligibility
+
+HAWKEYE applies partner technologies as load-bearing infrastructure rather than
+checkbox integrations. Quick map for judges:
+
+| Partner / track                                  | Where it lives in HAWKEYE                                                                                                                                                                                                | Required deliverable                                                   |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| **0G — Track A: Framework / Tooling**            | Reusable agent-swarm framework: typed event bus, skill system (`src/skills/`), 0G Storage audit pattern (6 lifecycle write-points), `HawkeyeRegistry` contract on 0G Mainnet. Other builders can reuse the bus + skills. | Mainnet contract ✅, repo ✅, demo video ✅                            |
+| **0G — Track B: Autonomous Agents / Swarms**     | 7-agent swarm with bus-based coordination (`src/agents/`), persistent memory in 0G Storage, sealed inference via 0G Compute, on-chain provenance via `HawkeyeRegistry`. AXL-bridge ready for cross-node swarms.          | Architecture diagram ✅, working examples ✅                           |
+| **Uniswap Foundation — Trading API integration** | Execution agent built on Uniswap Trading API (`src/agents/execution/index.ts`). 3-step flow (`/check_approval` → `/quote` → `/swap`) across 17+ EVM chains; Permit2-aware; routing-aware error humanization.             | [`FEEDBACK.md`](./FEEDBACK.md) ✅ (required)                           |
+| **KeeperHub — MEV-protected execution**          | Every mainnet swap routes through KeeperHub with circuit-breaker fall-through (`src/integrations/keeperhub/`). MCP server pre-wired in `.mcp.json`. Boot-time reachability probe.                                        | [`KEEPERHUB-FEEDBACK.md`](./KEEPERHUB-FEEDBACK.md) ✅ (builder bounty) |
+| **Gensyn — AXL transport**                       | Same `EventBus` interface, swappable backend: `LocalEventBus` or `AxlEventBus` for cross-node P2P coordination. Bridge in `initAxlBus()` with re-emit-loop guard.                                                        | Cross-node demo (run multiple nodes for full credit)                   |
+
+We're applying for **0G** (both tracks count as one partner prize per ETHGlobal
+rules), **Uniswap**, and **KeeperHub** — three partners, the maximum per the
+submission form. KeeperHub's Builder Feedback Bounty is independent and we're
+also submitting that.
+
+See [`FEEDBACK.md`](./FEEDBACK.md) and [`KEEPERHUB-FEEDBACK.md`](./KEEPERHUB-FEEDBACK.md)
+for the candid builder-experience write-ups, and the
+[Partner integrations section](#partner-integrations) below for the full
+file-level mapping.
+
+### Anti-hallucination (judging criterion: practicality)
+
+The LLM never invents data that hits execution. Hard guards:
+
+- **Addresses must be in the user's message verbatim**. `validateTradeData`
+  (`src/gateway/llm-router.ts`) rejects any LLM-returned token address that
+  isn't found in the original user text. Same guard for SEND_TOKEN recipients.
+- **Side is preserved end-to-end.** A previous bug where the validator
+  hardcoded `side: "buy"` is now fixed; sells flow through correctly.
+- **Chains resolve via DexScreener, never LLM hints.** The Quote agent
+  populates `tokenName`/`tokenSymbol` from `pair.baseToken` so on-chain
+  truth overrides anything the LLM said.
+- **Sells short-circuit Strategy gates.** Users can always attempt to exit a
+  position they hold; chain-mismatch / liquidity-floor rejects only apply to
+  buys.
+
 ---
 
 ## Table of contents
 
+- [Submission — partner prize eligibility](#submission--partner-prize-eligibility)
 - [Architecture](#architecture)
 - [How a trade flows](#how-a-trade-flows)
 - [The seven agents](#the-seven-agents)
@@ -27,6 +71,7 @@ Built for the **Open Agent Hackathon**. Powered by **0G Compute** (LLM),
 - [Telegram commands](#telegram-commands)
 - [Development workflow](#development-workflow)
 - [On-chain deployments](#on-chain-deployments)
+- [Partner integrations](#partner-integrations)
 - [Status and known limitations](#status-and-known-limitations)
 - [Contributing](#contributing)
 - [License](#license)
@@ -432,13 +477,13 @@ over `{ foo: value ?? undefined }` — the latter fails the strict check.
 
 ### 0G Mainnet (production)
 
-| Field        | Value                                                                                                                                          |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Contract** | [`0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F`](https://chainscan.0g.ai/address/0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F)                      |
-| **Chain ID** | `16661`                                                                                                                                        |
-| **Network**  | 0G Mainnet (`https://evmrpc.0g.ai`)                                                                                                            |
-| **Deploy tx**| [`0xc85dbc81bd9f9c0ae0642829aca0fe0984591832a1a611298f56605c9fd1851d`](https://chainscan.0g.ai/tx/0xc85dbc81bd9f9c0ae0642829aca0fe0984591832a1a611298f56605c9fd1851d) |
-| **Explorer** | https://chainscan.0g.ai                                                                                                                        |
+| Field         | Value                                                                                                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Contract**  | [`0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F`](https://chainscan.0g.ai/address/0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F)                                            |
+| **Chain ID**  | `16661`                                                                                                                                                               |
+| **Network**   | 0G Mainnet (`https://evmrpc.0g.ai`)                                                                                                                                   |
+| **Deploy tx** | [`0xc85dbc81bd9f9c0ae0642829aca0fe0984591832a1a611298f56605c9fd1851d`](https://chainscan.0g.ai/tx/0xc85dbc81bd9f9c0ae0642829aca0fe0984591832a1a611298f56605c9fd1851d) |
+| **Explorer**  | https://chainscan.0g.ai                                                                                                                                               |
 
 All seven agents are registered on-chain in a single deploy: Safety, Quote,
 Strategy, Execution, Research, Monitor, Copy Trade. Every trade intent and
@@ -469,11 +514,11 @@ in the codebase and what they actually do for the swarm.
 
 ### 0G — sealed inference, persistent memory, on-chain registry
 
-| 0G primitive   | What HAWKEYE does with it                                                                                                                                                | Path                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| **0G Compute** | Primary LLM brain for the router, strategy, and research agents. Sealed inference via `OgComputeClient`; falls back to OpenRouter / Claude only when 0G is unreachable.  | `src/integrations/0g/compute.ts`, `src/integrations/claude/index.ts`          |
-| **0G Storage** | Persistent audit trail. Six lifecycle write points: intent, safety report, strategy decision, execution receipt, research result, alpha discovery — each returns a verifiable rootHash that's pinned in Telegram replies and on the contract. | `src/integrations/0g/storage.ts`, `src/integrations/0g/audit-trail.ts`        |
-| **0G Chain**   | `HawkeyeRegistry` Solidity contract on 0G mainnet (above). 7 agents registered on-chain at deploy; every trade fires `storeIntent()` and `logTrade()` for verifiable swarm provenance. | `contracts/HawkeyeRegistry.sol`, `src/integrations/0g/registry-client.ts`, `scripts/deploy-registry.ts` |
+| 0G primitive   | What HAWKEYE does with it                                                                                                                                                                                                                     | Path                                                                                                    |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **0G Compute** | Primary LLM brain for the router, strategy, and research agents. Sealed inference via `OgComputeClient`; falls back to OpenRouter / Claude only when 0G is unreachable.                                                                       | `src/integrations/0g/compute.ts`, `src/integrations/claude/index.ts`                                    |
+| **0G Storage** | Persistent audit trail. Six lifecycle write points: intent, safety report, strategy decision, execution receipt, research result, alpha discovery — each returns a verifiable rootHash that's pinned in Telegram replies and on the contract. | `src/integrations/0g/storage.ts`, `src/integrations/0g/audit-trail.ts`                                  |
+| **0G Chain**   | `HawkeyeRegistry` Solidity contract on 0G mainnet (above). 7 agents registered on-chain at deploy; every trade fires `storeIntent()` and `logTrade()` for verifiable swarm provenance.                                                        | `contracts/HawkeyeRegistry.sol`, `src/integrations/0g/registry-client.ts`, `scripts/deploy-registry.ts` |
 
 The same `HAWKEYE_EVM_PRIVATE_KEY` funds Compute, Storage, and Chain — boot
 prints a balance warning if it's low. The boot banner shows live status of
@@ -502,12 +547,12 @@ Path: `src/agents/execution/index.ts`, `.agents/skills/swap-integration/`,
 
 ### KeeperHub — MEV-protected execution + reliability
 
-| Feature                       | How HAWKEYE uses it                                                                                                                          |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| **MEV-protected swap submit** | Every mainnet trade is routed through KeeperHub. Solana uses Jito; EVM mainnet (Ethereum, Base, Arbitrum, BSC, Polygon) uses KeeperHub keepers. |
-| **Circuit breaker**           | `KeeperHubClient.circuitOpen` flag flips on transient failures, allowing fall-through to the wallet manager without aborting the user trade.   |
-| **Connectivity probe at boot**| Boot prints `[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected` so the operator knows MEV protection is live.          |
-| **MCP server**                | Wired into `.mcp.json` for use by agent skills.                                                                                                |
+| Feature                        | How HAWKEYE uses it                                                                                                                             |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **MEV-protected swap submit**  | Every mainnet trade is routed through KeeperHub. Solana uses Jito; EVM mainnet (Ethereum, Base, Arbitrum, BSC, Polygon) uses KeeperHub keepers. |
+| **Circuit breaker**            | `KeeperHubClient.circuitOpen` flag flips on transient failures, allowing fall-through to the wallet manager without aborting the user trade.    |
+| **Connectivity probe at boot** | Boot prints `[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected` so the operator knows MEV protection is live.           |
+| **MCP server**                 | Wired into `.mcp.json` for use by agent skills.                                                                                                 |
 
 See `KEEPERHUB-FEEDBACK.md` for the builder-feedback bounty submission.
 

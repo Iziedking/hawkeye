@@ -12,6 +12,9 @@ import {
   startHealthServer,
   stopHealthServer,
 } from "./shared/health";
+import { startWebApi } from "./shared/web-api";
+import { getPositionsByUser } from "./agents/execution/index";
+import { getTradeHistory } from "./shared/trade-history";
 import { startTelegramGateway } from "./gateway/telegram-gateway";
 import { createWalletManager } from "./integrations/privy/index";
 import { OgComputeClient } from "./integrations/0g/compute";
@@ -276,6 +279,24 @@ async function main(): Promise<void> {
     detail: axl?.isConnected() ? `${axl.getPeerCount()} peers` : "local-only",
   }));
 
+  startWebApi({
+    getProfile: (email) => (wm ? (wm.getFullWalletConfig(email) ?? null) : null),
+    getPositions: (email) => getPositionsByUser(email),
+    getRecentTrades: (email, limit) => getTradeHistory(email, limit),
+    connectExternalWallet: (email, address, label) => {
+      if (!wm) return false;
+      try {
+        wm.connectExternalWallet(email, address, label);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    setActiveWallet: (email, ref) => {
+      if (!wm) return false;
+      return wm.setActiveWallet(email, ref);
+    },
+  });
   startHealthServer(Number(process.env["HEALTH_PORT"] ?? 8080));
 
   bus.on("ALPHA_FOUND", () => incrementBusEvents());
@@ -313,7 +334,13 @@ async function main(): Promise<void> {
     uniswap: sponsors.uniswap.active,
     keeperHub: sponsors.keeper.active,
     privy: wm !== null,
-    llmFallback: llm?.usingFallback ? (llm.fallbackName ?? "OpenRouter") : null,
+    llmFallback: llm
+      ? llm.usingFallback
+        ? `${llm.fallbackName ?? "OpenRouter"} (active)`
+        : llm.fallbackName
+          ? `${llm.fallbackName} (standby)`
+          : null
+      : null,
     agentCount: agentNames.length,
   };
   if (registry) readyCfg.ogChainAddr = registry.address;
