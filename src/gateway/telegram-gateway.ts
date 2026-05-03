@@ -1303,6 +1303,21 @@ export async function startTelegramGateway(
           }
           lines.push(``, `${emailInput}`, ``, `Send ETH to your EVM address to start trading.`);
           await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+
+          // Newbie-friendly follow-up: explain that the wallet is fully theirs
+          // and can be exported to MetaMask, Phantom, Rabby, etc. via Privy.
+          await ctx.reply(
+            [
+              `<b>Your wallet, your keys.</b>`,
+              ``,
+              `This wallet is yours forever. You can sign in at <a href="https://home.privy.io/">home.privy.io</a> with <b>${emailInput}</b> to export the private key.`,
+              ``,
+              `Once exported, import the key into any wallet you like — MetaMask, Phantom, Rabby, Trust Wallet — and you'll see the same balance and history.`,
+              ``,
+              `New to crypto? Stay here — HAWKEYE handles the hard parts. Export only when you want to.`,
+            ].join("\n"),
+            { parse_mode: "HTML", link_preview_options: { is_disabled: true } },
+          );
         } catch (err) {
           await ctx.reply(`Failed to create wallet: ${(err as Error).message}`);
         }
@@ -2480,6 +2495,30 @@ export async function startTelegramGateway(
 
   await bot.init();
   hlog.boot(`bot @${bot.botInfo.username} starting...`);
+
+  // Register the slash-command menu so typing `/` in Telegram suggests
+  // every command. Telegram caches this server-side; the call is
+  // idempotent and non-critical, so failures only warn.
+  try {
+    await bot.api.setMyCommands([
+      { command: "start", description: "Welcome and quick start" },
+      { command: "wallet", description: "Create or view your wallet" },
+      { command: "balance", description: "Balances across chains" },
+      { command: "positions", description: "Open trades and PnL" },
+      { command: "history", description: "Recent trade history" },
+      { command: "send", description: "Transfer native tokens" },
+      { command: "mode", description: "Trading mode: degen, normal, safe" },
+      { command: "watch", description: "Copy a wallet's buys" },
+      { command: "unwatch", description: "Stop copying a wallet" },
+      { command: "watchlist", description: "Show watched wallets" },
+      { command: "link", description: "Add email recovery to wallet" },
+      { command: "status", description: "System health and agent status" },
+      { command: "help", description: "Full command guide" },
+    ]);
+  } catch (err) {
+    hlog.warn(`setMyCommands failed: ${(err as Error).message}`);
+  }
+
   bot.start({
     onStart: () => hlog.boot(`bot @${bot.botInfo.username} is live`),
   });
