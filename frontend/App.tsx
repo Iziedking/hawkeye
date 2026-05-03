@@ -1,41 +1,173 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from "react";
 
-type IconStatus = boolean | 'warn'
+type IconStatus = boolean | "warn";
 
 interface Token {
-  name: string
-  chain: string
-  addr: string
-  price: string
-  change: string
-  vol: string
-  liq: string
-  safety: number
-  lp: IconStatus
-  sniper: IconStatus
+  name: string;
+  chain: string;
+  addr: string;
+  price: string;
+  change: string;
+  vol: string;
+  liq: string;
+  safety: number;
+  lp: IconStatus;
+  sniper: IconStatus;
 }
 
 interface ChatMessage {
-  role: 'agent' | 'user'
-  text: string
+  role: "agent" | "user";
+  text: string;
 }
 
 const TOKENS: Token[] = [
-  { name: 'BONK',     chain: 'Solana',   addr: '7GC1hg...W2hr',   price: '$0.000018',   change: '+42.3%', vol: '$2.4M',  liq: '$4.2M',  safety: 61, lp: true,   sniper: true   },
-  { name: 'PEPE2',    chain: 'Ethereum', addr: '0x1f98...F984',   price: '$0.000420',   change: '-12.1%', vol: '$890K', liq: '$1.1M',  safety: 34, lp: false,  sniper: 'warn' },
-  { name: 'SLERF',    chain: 'Solana',   addr: '9xQeW...3kPz',   price: '$0.8200',     change: '+8.7%',  vol: '$5.6M',  liq: '$12.4M', safety: 78, lp: true,   sniper: true   },
-  { name: 'DOGE2',    chain: 'BSC',      addr: '0x88c7...bDD52',  price: '$0.0034',     change: '+124.5%',vol: '$18.2M', liq: '$8.9M',  safety: 45, lp: true,   sniper: 'warn' },
-  { name: 'WIF',      chain: 'Solana',   addr: '7vfCX...mJh2',   price: '$2.1400',     change: '+3.2%',  vol: '$42M',   liq: '$89M',   safety: 92, lp: true,   sniper: true   },
-  { name: 'CHAD',     chain: 'Base',     addr: '0x912C...6548',   price: '$0.000010',   change: '-5.4%',  vol: '$120K', liq: '$340K',  safety: 28, lp: false,  sniper: true   },
-  { name: 'POPCAT',   chain: 'Solana',   addr: '7GC1h...Ym2h',   price: '$0.5400',     change: '+19.8%', vol: '$8.1M',  liq: '$22M',   safety: 85, lp: true,   sniper: true   },
-  { name: 'TURBO',    chain: 'Ethereum', addr: '0x4Fab...C53',    price: '$0.0092',     change: '+67.2%', vol: '$3.4M',  liq: '$5.6M',  safety: 71, lp: true,   sniper: 'warn' },
-  { name: 'MOODENG',  chain: 'BSC',      addr: '0xA3c9...1F2d',   price: '$0.0021',     change: '+88.4%', vol: '$6.7M',  liq: '$3.2M',  safety: 52, lp: true,   sniper: true   },
-  { name: 'GOAT',     chain: 'Solana',   addr: '7Nrtk...9xLe',   price: '$0.3100',     change: '-8.2%',  vol: '$1.9M',  liq: '$6.8M',  safety: 74, lp: true,   sniper: true   },
-  { name: 'PNUT',     chain: 'Base',     addr: '0x70c3...6A11',   price: '$0.000780',   change: '+211.3%',vol: '$24.1M', liq: '$11.4M', safety: 41, lp: false,  sniper: 'warn' },
-  { name: 'FARTCOIN', chain: 'Solana',   addr: '9NkpL...4nRt',   price: '$0.00002900', change: '-56.7%', vol: '$900K', liq: '$420K',  safety: 22, lp: false,  sniper: false  },
-]
+  {
+    name: "BONK",
+    chain: "Solana",
+    addr: "7GC1hg...W2hr",
+    price: "$0.000018",
+    change: "+42.3%",
+    vol: "$2.4M",
+    liq: "$4.2M",
+    safety: 61,
+    lp: true,
+    sniper: true,
+  },
+  {
+    name: "PEPE2",
+    chain: "Ethereum",
+    addr: "0x1f98...F984",
+    price: "$0.000420",
+    change: "-12.1%",
+    vol: "$890K",
+    liq: "$1.1M",
+    safety: 34,
+    lp: false,
+    sniper: "warn",
+  },
+  {
+    name: "SLERF",
+    chain: "Solana",
+    addr: "9xQeW...3kPz",
+    price: "$0.8200",
+    change: "+8.7%",
+    vol: "$5.6M",
+    liq: "$12.4M",
+    safety: 78,
+    lp: true,
+    sniper: true,
+  },
+  {
+    name: "DOGE2",
+    chain: "BSC",
+    addr: "0x88c7...bDD52",
+    price: "$0.0034",
+    change: "+124.5%",
+    vol: "$18.2M",
+    liq: "$8.9M",
+    safety: 45,
+    lp: true,
+    sniper: "warn",
+  },
+  {
+    name: "WIF",
+    chain: "Solana",
+    addr: "7vfCX...mJh2",
+    price: "$2.1400",
+    change: "+3.2%",
+    vol: "$42M",
+    liq: "$89M",
+    safety: 92,
+    lp: true,
+    sniper: true,
+  },
+  {
+    name: "CHAD",
+    chain: "Base",
+    addr: "0x912C...6548",
+    price: "$0.000010",
+    change: "-5.4%",
+    vol: "$120K",
+    liq: "$340K",
+    safety: 28,
+    lp: false,
+    sniper: true,
+  },
+  {
+    name: "POPCAT",
+    chain: "Solana",
+    addr: "7GC1h...Ym2h",
+    price: "$0.5400",
+    change: "+19.8%",
+    vol: "$8.1M",
+    liq: "$22M",
+    safety: 85,
+    lp: true,
+    sniper: true,
+  },
+  {
+    name: "TURBO",
+    chain: "Ethereum",
+    addr: "0x4Fab...C53",
+    price: "$0.0092",
+    change: "+67.2%",
+    vol: "$3.4M",
+    liq: "$5.6M",
+    safety: 71,
+    lp: true,
+    sniper: "warn",
+  },
+  {
+    name: "MOODENG",
+    chain: "BSC",
+    addr: "0xA3c9...1F2d",
+    price: "$0.0021",
+    change: "+88.4%",
+    vol: "$6.7M",
+    liq: "$3.2M",
+    safety: 52,
+    lp: true,
+    sniper: true,
+  },
+  {
+    name: "GOAT",
+    chain: "Solana",
+    addr: "7Nrtk...9xLe",
+    price: "$0.3100",
+    change: "-8.2%",
+    vol: "$1.9M",
+    liq: "$6.8M",
+    safety: 74,
+    lp: true,
+    sniper: true,
+  },
+  {
+    name: "PNUT",
+    chain: "Base",
+    addr: "0x70c3...6A11",
+    price: "$0.000780",
+    change: "+211.3%",
+    vol: "$24.1M",
+    liq: "$11.4M",
+    safety: 41,
+    lp: false,
+    sniper: "warn",
+  },
+  {
+    name: "FARTCOIN",
+    chain: "Solana",
+    addr: "9NkpL...4nRt",
+    price: "$0.00002900",
+    change: "-56.7%",
+    vol: "$900K",
+    liq: "$420K",
+    safety: 22,
+    lp: false,
+    sniper: false,
+  },
+];
 
-const TABS = ['All', 'Solana', 'Ethereum', 'BSC', 'Base', 'Arbitrum', 'Avalanche']
+const TABS = ["All", "Solana", "Ethereum", "BSC", "Base", "Arbitrum", "Avalanche"];
 
 const css = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;700;800&display=swap');
@@ -269,60 +401,70 @@ const css = `
     transition: opacity 0.15s; display: flex; align-items: center; justify-content: center;
   }
   .chat-send:hover { opacity: 0.85; }
-`
+`;
 
 function safetyClass(s: number) {
-  if (s >= 70) return 's-high'
-  if (s >= 40) return 's-mid'
-  return 's-low'
+  if (s >= 70) return "s-high";
+  if (s >= 40) return "s-mid";
+  return "s-low";
 }
 
 function StatusIcon({ val }: { val: IconStatus }) {
-  if (val === true)    return <span className="i-check">✓</span>
-  if (val === false)   return <span className="i-x">✕</span>
-  return <span className="i-warn">⚠</span>
+  if (val === true) return <span className="i-check">✓</span>;
+  if (val === false) return <span className="i-x">✕</span>;
+  return <span className="i-warn">⚠</span>;
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('All')
-  const [solAmt, setSolAmt] = useState('0.1 SOL')
+  const [activeTab, setActiveTab] = useState("All");
+  const [solAmt, setSolAmt] = useState("0.1 SOL");
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'agent', text: "Hey! I'm HAWKEYE, your on-chain trading agent. Say /wallet to get started, or paste a contract address to trade." }
-  ])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
-  const bottomRef = useRef<HTMLDivElement>(null)
+    {
+      role: "agent",
+      text: "Hey! I'm HAWKEYE, your on-chain trading agent. Say /wallet to get started, or paste a contract address to trade.",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   // ── Change this to your deployed URL when going live ──
-  http://172.160.227.225:8080/api/chat
-  const USER_ID = 'frontend-user'
+  //172.160.227.225:8080/api/chat
+  http: const USER_ID = "frontend-user";
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  const filtered = activeTab === 'All'
-    ? TOKENS
-    : TOKENS.filter(t => t.chain === activeTab)
+  const filtered = activeTab === "All" ? TOKENS : TOKENS.filter((t) => t.chain === activeTab);
 
   async function send() {
-    const t = input.trim()
-    if (!t || loading) return
-    setMessages(prev => [...prev, { role: 'user', text: t }])
-    setInput('')
-    setLoading(true)
+    const t = input.trim();
+    if (!t || loading) return;
+    setMessages((prev) => [...prev, { role: "user", text: t }]);
+    setInput("");
+    setLoading(true);
     try {
       const res = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: USER_ID, message: t }),
-      })
-      const data = await res.json()
-      setMessages(prev => [...prev, { role: 'agent', text: data.reply ?? 'No response from agent.' }])
+      });
+      const data = await res.json();
+      setMessages((prev) => [
+        ...prev,
+        { role: "agent", text: data.reply ?? "No response from agent." },
+      ]);
     } catch {
-      setMessages(prev => [...prev, { role: 'agent', text: '⚠️ Could not reach the HAWKEYE backend. Make sure the server is running on port 3001.' }])
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "agent",
+          text: "⚠️ Could not reach the HAWKEYE backend. Make sure the server is running on port 3001.",
+        },
+      ]);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
@@ -331,7 +473,6 @@ export default function App() {
       <style>{css}</style>
       <div className="outer-border">
         <div className="app">
-
           {/* Navbar */}
           <nav className="navbar">
             <div className="logo">
@@ -343,32 +484,39 @@ export default function App() {
               </div>
             </div>
             <div className="nav-right">
-              {['0.1 SOL', '0.5 SOL', '1.0 SOL'].map(a => (
+              {["0.1 SOL", "0.5 SOL", "1.0 SOL"].map((a) => (
                 <button
                   key={a}
-                  className={`sol-btn${solAmt === a ? ' active' : ''}`}
+                  className={`sol-btn${solAmt === a ? " active" : ""}`}
                   onClick={() => setSolAmt(a)}
                 >
                   {a}
                 </button>
               ))}
-              <button className="connect-btn" onClick={async () => {
-  if (typeof window.ethereum !== 'undefined') {
-    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-    alert('Connected: ' + accounts[0]);
-  } else {
-    alert('Please install MetaMask!');
-  }
-}}>Connect Wallet</button>
+              <button
+                className="connect-btn"
+                onClick={async () => {
+                  if (typeof window.ethereum !== "undefined") {
+                    const accounts = await window.ethereum.request({
+                      method: "eth_requestAccounts",
+                    });
+                    alert("Connected: " + accounts[0]);
+                  } else {
+                    alert("Please install MetaMask!");
+                  }
+                }}
+              >
+                Connect Wallet
+              </button>
             </div>
           </nav>
 
           {/* Tabs */}
           <div className="tabs">
-            {TABS.map(tab => (
+            {TABS.map((tab) => (
               <button
                 key={tab}
-                className={`tab${activeTab === tab ? ' active' : ''}`}
+                className={`tab${activeTab === tab ? " active" : ""}`}
                 onClick={() => setActiveTab(tab)}
               >
                 {tab}
@@ -378,7 +526,6 @@ export default function App() {
 
           {/* Main */}
           <div className="main">
-
             {/* Token table */}
             <div className="token-section">
               <div className="table-header-row">
@@ -405,21 +552,43 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map(t => (
+                    {filtered.map((t) => (
                       <tr key={t.name + t.addr}>
                         <td>
                           <div className="token-name">{t.name}</div>
                           <div className="token-chain">{t.chain}</div>
                         </td>
-                        <td><span className="address">{t.addr}</span></td>
-                        <td><span className="price">{t.price}</span></td>
-                        <td><span className={t.change.startsWith('+') ? 'pos' : 'neg'}>{t.change}</span></td>
-                        <td><span className="muted">{t.vol}</span></td>
-                        <td><span className="muted">{t.liq}</span></td>
-                        <td><span className={`safety-badge ${safetyClass(t.safety)}`}>{t.safety}</span></td>
-                        <td><StatusIcon val={t.lp} /></td>
-                        <td><StatusIcon val={t.sniper} /></td>
-                        <td><button className="buy-btn">BUY</button></td>
+                        <td>
+                          <span className="address">{t.addr}</span>
+                        </td>
+                        <td>
+                          <span className="price">{t.price}</span>
+                        </td>
+                        <td>
+                          <span className={t.change.startsWith("+") ? "pos" : "neg"}>
+                            {t.change}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="muted">{t.vol}</span>
+                        </td>
+                        <td>
+                          <span className="muted">{t.liq}</span>
+                        </td>
+                        <td>
+                          <span className={`safety-badge ${safetyClass(t.safety)}`}>
+                            {t.safety}
+                          </span>
+                        </td>
+                        <td>
+                          <StatusIcon val={t.lp} />
+                        </td>
+                        <td>
+                          <StatusIcon val={t.sniper} />
+                        </td>
+                        <td>
+                          <button className="buy-btn">BUY</button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -432,7 +601,7 @@ export default function App() {
               <div className="chat-title">Hawkeye Agent Chat</div>
               <div className="chat-messages">
                 {messages.map((m, i) => (
-                  <div key={i} className={m.role === 'agent' ? 'bubble-agent' : 'bubble-user'}>
+                  <div key={i} className={m.role === "agent" ? "bubble-agent" : "bubble-user"}>
                     {m.text}
                   </div>
                 ))}
@@ -440,7 +609,7 @@ export default function App() {
               </div>
               <div className="chat-footer">
                 <div className="chat-commands">
-                  {['/wallet', '/portfolio', '/help'].map(cmd => (
+                  {["/wallet", "/portfolio", "/help"].map((cmd) => (
                     <button key={cmd} className="cmd-tag" onClick={() => setInput(cmd)}>
                       {cmd}
                     </button>
@@ -449,22 +618,21 @@ export default function App() {
                 <div className="chat-input-row">
                   <input
                     className="chat-input"
-                    placeholder={loading ? 'Agent is thinking...' : 'Paste address or command...'}
+                    placeholder={loading ? "Agent is thinking..." : "Paste address or command..."}
                     value={input}
                     disabled={loading}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && send()}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && send()}
                   />
                   <button className="chat-send" onClick={send} disabled={loading}>
-                    {loading ? '⏳' : '↑'}
+                    {loading ? "⏳" : "↑"}
                   </button>
                 </div>
               </div>
             </div>
-
           </div>
         </div>
       </div>
     </>
-  )
+  );
 }
