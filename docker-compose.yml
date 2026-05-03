@@ -55,8 +55,7 @@ services:
     # Honour the HEALTHCHECK from the Dockerfile but make it visible here too,
     # so `docker compose ps` shows status without inspecting the image.
     healthcheck:
-      test:
-        ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3

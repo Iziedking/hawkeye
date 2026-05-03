@@ -123,15 +123,15 @@ the bus in under 1 ms via the gateway's degen shortcut.
 
 ## The seven agents
 
-| Agent          | Listens                                                              | Emits                                  | Responsibility                                              |
-| -------------- | -------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------- |
-| **Safety**     | `TRADE_REQUEST`, `COPY_TRADE_REQUEST`                                | `SAFETY_RESULT`                        | Multi-source token risk scoring (GoPlus, Honeypot, RugCheck, Jupiter list); 5-min cache; weighted source-reliability scoring |
-| **Quote**      | `TRADE_REQUEST`                                                      | `QUOTE_RESULT`, `QUOTE_FAILED`         | Pair discovery, price/liquidity, expected slippage, fee estimate |
-| **Strategy**   | `TRADE_REQUEST`, `SAFETY_RESULT`, `QUOTE_RESULT`, `QUOTE_FAILED`, `USER_CONFIRMED` | `STRATEGY_DECISION`, `EXECUTE_TRADE`   | Mode-aware merge of safety + quote (`INSTANT`/`NORMAL`/`CAREFUL`); 10 s merge timeout; 60 s user-confirm timeout |
-| **Execution**  | `EXECUTE_TRADE`, `EXECUTE_SELL`                                       | `TRADE_EXECUTED`, `QUOTE_FAILED`       | Uniswap Trade API 3-step flow (`check_approval`, `quote`, `swap`); KeeperHub for mainnet MEV; Permit2 signing |
-| **Monitor**    | `TRADE_EXECUTED`, `EXECUTE_SELL`                                      | `EXECUTE_SELL`, `POSITION_UPDATE`      | 5 s price polling per position; trailing-stop and multiplier exits; emits sells but never executes |
-| **Research**   | `RESEARCH_REQUEST`                                                    | `RESEARCH_RESULT`, `ALPHA_FOUND`       | Token analysis and trending discovery from DexScreener, DeFiLlama, CoinGecko, Arkham, Nansen, Birdeye, Etherscan |
-| **Copy Trade** | `ADD_WATCHED_WALLET`, `REMOVE_WATCHED_WALLET`                         | `COPY_TRADE_REQUEST`                   | DexScreener WebSocket wallet watch; tx-hash + pair-window dedup (15 s); buys-only mirror |
+| Agent          | Listens                                                                            | Emits                                | Responsibility                                                                                                               |
+| -------------- | ---------------------------------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| **Safety**     | `TRADE_REQUEST`, `COPY_TRADE_REQUEST`                                              | `SAFETY_RESULT`                      | Multi-source token risk scoring (GoPlus, Honeypot, RugCheck, Jupiter list); 5-min cache; weighted source-reliability scoring |
+| **Quote**      | `TRADE_REQUEST`                                                                    | `QUOTE_RESULT`, `QUOTE_FAILED`       | Pair discovery, price/liquidity, expected slippage, fee estimate                                                             |
+| **Strategy**   | `TRADE_REQUEST`, `SAFETY_RESULT`, `QUOTE_RESULT`, `QUOTE_FAILED`, `USER_CONFIRMED` | `STRATEGY_DECISION`, `EXECUTE_TRADE` | Mode-aware merge of safety + quote (`INSTANT`/`NORMAL`/`CAREFUL`); 10 s merge timeout; 60 s user-confirm timeout             |
+| **Execution**  | `EXECUTE_TRADE`, `EXECUTE_SELL`                                                    | `TRADE_EXECUTED`, `QUOTE_FAILED`     | Uniswap Trade API 3-step flow (`check_approval`, `quote`, `swap`); KeeperHub for mainnet MEV; Permit2 signing                |
+| **Monitor**    | `TRADE_EXECUTED`, `EXECUTE_SELL`                                                   | `EXECUTE_SELL`, `POSITION_UPDATE`    | 5 s price polling per position; trailing-stop and multiplier exits; emits sells but never executes                           |
+| **Research**   | `RESEARCH_REQUEST`                                                                 | `RESEARCH_RESULT`, `ALPHA_FOUND`     | Token analysis and trending discovery from DexScreener, DeFiLlama, CoinGecko, Arkham, Nansen, Birdeye, Etherscan             |
+| **Copy Trade** | `ADD_WATCHED_WALLET`, `REMOVE_WATCHED_WALLET`                                      | `COPY_TRADE_REQUEST`                 | DexScreener WebSocket wallet watch; tx-hash + pair-window dedup (15 s); buys-only mirror                                     |
 
 All agents talk **exclusively** through the bus — no agent imports another
 directly. The bus is local `EventEmitter` by default; when `AXL_API_URL` is set,
@@ -146,26 +146,26 @@ Every event payload is typed in `src/shared/types.ts` (the `BusEvents` map).
 Adding a new agent means: define the payload type, add it to `BusEvents`, and
 listen/emit through the shared `bus` singleton.
 
-| Event                   | Emitter                          | Listener                      |
-| ----------------------- | -------------------------------- | ----------------------------- |
-| `TRADE_REQUEST`         | Gateway, Copy Trade              | Safety, Quote, Audit Trail    |
-| `SAFETY_RESULT`         | Safety                           | Strategy, Audit Trail, Gateway|
-| `QUOTE_RESULT`          | Quote                            | Strategy, Execution           |
-| `QUOTE_FAILED`          | Quote, Execution                 | Strategy, Gateway             |
-| `STRATEGY_DECISION`     | Strategy                         | Gateway, Audit Trail          |
-| `EXECUTE_TRADE`         | Strategy                         | Execution                     |
-| `TRADE_EXECUTED`        | Execution                        | Monitor, Gateway, Audit Trail |
-| `EXECUTE_SELL`          | Monitor                          | Execution                     |
-| `POSITION_UPDATE`       | Monitor                          | Gateway                       |
-| `COPY_TRADE_REQUEST`    | Gateway, Copy Trade              | Safety pipeline               |
-| `ADD_WATCHED_WALLET`    | Gateway                          | Copy Trade                    |
-| `REMOVE_WATCHED_WALLET` | Gateway                          | Copy Trade                    |
-| `RESEARCH_REQUEST`      | Gateway                          | Research                      |
-| `RESEARCH_RESULT`       | Research                         | Gateway, Audit Trail          |
-| `ALPHA_FOUND`           | Research (background loop)       | Audit Trail                   |
-| `GENERAL_QUERY_REQUEST` | Gateway                          | (future agents)               |
-| `GENERAL_QUERY_RESULT`  | Gateway (inline LLM)             | (future agents)               |
-| `USER_CONFIRMED`        | Gateway (inline keyboard)        | Strategy                      |
+| Event                   | Emitter                    | Listener                       |
+| ----------------------- | -------------------------- | ------------------------------ |
+| `TRADE_REQUEST`         | Gateway, Copy Trade        | Safety, Quote, Audit Trail     |
+| `SAFETY_RESULT`         | Safety                     | Strategy, Audit Trail, Gateway |
+| `QUOTE_RESULT`          | Quote                      | Strategy, Execution            |
+| `QUOTE_FAILED`          | Quote, Execution           | Strategy, Gateway              |
+| `STRATEGY_DECISION`     | Strategy                   | Gateway, Audit Trail           |
+| `EXECUTE_TRADE`         | Strategy                   | Execution                      |
+| `TRADE_EXECUTED`        | Execution                  | Monitor, Gateway, Audit Trail  |
+| `EXECUTE_SELL`          | Monitor                    | Execution                      |
+| `POSITION_UPDATE`       | Monitor                    | Gateway                        |
+| `COPY_TRADE_REQUEST`    | Gateway, Copy Trade        | Safety pipeline                |
+| `ADD_WATCHED_WALLET`    | Gateway                    | Copy Trade                     |
+| `REMOVE_WATCHED_WALLET` | Gateway                    | Copy Trade                     |
+| `RESEARCH_REQUEST`      | Gateway                    | Research                       |
+| `RESEARCH_RESULT`       | Research                   | Gateway, Audit Trail           |
+| `ALPHA_FOUND`           | Research (background loop) | Audit Trail                    |
+| `GENERAL_QUERY_REQUEST` | Gateway                    | (future agents)                |
+| `GENERAL_QUERY_RESULT`  | Gateway (inline LLM)       | (future agents)                |
+| `USER_CONFIRMED`        | Gateway (inline keyboard)  | Strategy                       |
 
 Events bridged across AXL P2P are listed in `bridgedEvents` in
 `src/index.ts`. A `forwarding` flag breaks re-emit loops between local and
@@ -239,15 +239,15 @@ blocks the other.
 
 ## Sponsor integrations
 
-| Sponsor       | Used for                                                           | Path                             |
-| ------------- | ------------------------------------------------------------------ | -------------------------------- |
-| **0G**        | Compute (LLM), Storage (audit), Chain (registry)                   | `src/integrations/0g/`           |
-| **Gensyn AXL**| P2P bus transport between agent nodes                              | `src/shared/axl-bus.ts`, `src/tools/gensyn-axl-mcp/` |
-| **KeeperHub** | MEV-protected EVM tx submission, with circuit breaker              | `src/integrations/keeperhub/`    |
-| **Uniswap**   | Quote + swap routing (3-step flow over 17+ EVM chains)             | `src/agents/execution/`          |
-| **Privy**     | Per-user agent wallets, email login, signing                       | `src/integrations/privy/`        |
-| **Arkham**    | Token holders, fund flows, entity intel for Research               | `src/integrations/arkham/`       |
-| **Nansen**    | Smart-money flow data (10-min in-memory cache)                     | `src/integrations/nansen/`       |
+| Sponsor        | Used for                                               | Path                                                 |
+| -------------- | ------------------------------------------------------ | ---------------------------------------------------- |
+| **0G**         | Compute (LLM), Storage (audit), Chain (registry)       | `src/integrations/0g/`                               |
+| **Gensyn AXL** | P2P bus transport between agent nodes                  | `src/shared/axl-bus.ts`, `src/tools/gensyn-axl-mcp/` |
+| **KeeperHub**  | MEV-protected EVM tx submission, with circuit breaker  | `src/integrations/keeperhub/`                        |
+| **Uniswap**    | Quote + swap routing (3-step flow over 17+ EVM chains) | `src/agents/execution/`                              |
+| **Privy**      | Per-user agent wallets, email login, signing           | `src/integrations/privy/`                            |
+| **Arkham**     | Token holders, fund flows, entity intel for Research   | `src/integrations/arkham/`                           |
+| **Nansen**     | Smart-money flow data (10-min in-memory cache)         | `src/integrations/nansen/`                           |
 
 Anthropic Claude and OpenRouter are not sponsors; they are LLM fallbacks for
 when 0G Compute is unavailable.
@@ -322,29 +322,29 @@ implementation that landed in Node 22).
 
 ## Environment variables
 
-| Variable                            | Purpose                                  | Required    |
-| ----------------------------------- | ---------------------------------------- | ----------- |
-| `TELEGRAM_BOT_TOKEN`                | Telegram bot via @BotFather              | Yes         |
-| `HAWKEYE_EVM_PRIVATE_KEY`           | Funds 0G Compute, Storage, Chain         | Yes         |
-| `OPENROUTER_API_KEY`                | LLM fallback (any model via `OPENROUTER_MODEL`) | Recommended |
-| `ANTHROPIC_API_KEY`                 | Claude fallback (used after OpenRouter)  | Recommended |
-| `PRIVY_APP_ID` / `PRIVY_APP_SECRET` | Per-user agent wallets                   | Recommended |
-| `OG_PROVIDER_ADDRESS`               | 0G Compute provider (defaults to Galileo)| Optional    |
-| `OG_MODEL`                          | 0G inference model (default `qwen/qwen-2.5-7b-instruct`) | Optional |
-| `HAWKEYE_REGISTRY_ADDRESS`          | Deployed registry contract address       | Optional    |
-| `UNISWAP_API_KEY`                   | Swap routing                             | Optional    |
-| `GOPLUS_API_KEY` / `GOPLUS_API_SECRET` | Token safety scanning                  | Optional    |
-| `KH_API_KEY`                        | KeeperHub MEV protection                 | Optional    |
-| `KH_WALLET_ADDRESS`                 | KeeperHub Turnkey wallet address (auto-fetched if unset) | Optional |
-| `DUNE_API_KEY`                      | Smart-money flow data                    | Optional    |
-| `ETHERSCAN_API_KEY`                 | Holder concentration, contract age       | Optional    |
-| `ARKHAM_API_KEY`                    | Arkham entity intel for Research         | Optional    |
-| `NANSEN_API_KEY`                    | Smart-money flows for Research           | Optional    |
-| `BIRDEYE_API_KEY`                   | Solana token data                        | Optional    |
-| `BRAVE_API_KEY` / `TAVILY_API_KEY`  | Trend/news signal for Research           | Optional    |
-| `AXL_API_URL`                       | Local Gensyn AXL node (e.g. `http://127.0.0.1:9002`) | Optional |
-| `HAWKEYE_MASTER_KEY`                | AES-256-GCM key for wallet store at rest | Optional    |
-| `HEALTH_PORT`                       | HTTP health server (default 8080)        | Optional    |
+| Variable                               | Purpose                                                  | Required    |
+| -------------------------------------- | -------------------------------------------------------- | ----------- |
+| `TELEGRAM_BOT_TOKEN`                   | Telegram bot via @BotFather                              | Yes         |
+| `HAWKEYE_EVM_PRIVATE_KEY`              | Funds 0G Compute, Storage, Chain                         | Yes         |
+| `OPENROUTER_API_KEY`                   | LLM fallback (any model via `OPENROUTER_MODEL`)          | Recommended |
+| `ANTHROPIC_API_KEY`                    | Claude fallback (used after OpenRouter)                  | Recommended |
+| `PRIVY_APP_ID` / `PRIVY_APP_SECRET`    | Per-user agent wallets                                   | Recommended |
+| `OG_PROVIDER_ADDRESS`                  | 0G Compute provider (defaults to Galileo)                | Optional    |
+| `OG_MODEL`                             | 0G inference model (default `qwen/qwen-2.5-7b-instruct`) | Optional    |
+| `HAWKEYE_REGISTRY_ADDRESS`             | Deployed registry contract address                       | Optional    |
+| `UNISWAP_API_KEY`                      | Swap routing                                             | Optional    |
+| `GOPLUS_API_KEY` / `GOPLUS_API_SECRET` | Token safety scanning                                    | Optional    |
+| `KH_API_KEY`                           | KeeperHub MEV protection                                 | Optional    |
+| `KH_WALLET_ADDRESS`                    | KeeperHub Turnkey wallet address (auto-fetched if unset) | Optional    |
+| `DUNE_API_KEY`                         | Smart-money flow data                                    | Optional    |
+| `ETHERSCAN_API_KEY`                    | Holder concentration, contract age                       | Optional    |
+| `ARKHAM_API_KEY`                       | Arkham entity intel for Research                         | Optional    |
+| `NANSEN_API_KEY`                       | Smart-money flows for Research                           | Optional    |
+| `BIRDEYE_API_KEY`                      | Solana token data                                        | Optional    |
+| `BRAVE_API_KEY` / `TAVILY_API_KEY`     | Trend/news signal for Research                           | Optional    |
+| `AXL_API_URL`                          | Local Gensyn AXL node (e.g. `http://127.0.0.1:9002`)     | Optional    |
+| `HAWKEYE_MASTER_KEY`                   | AES-256-GCM key for wallet store at rest                 | Optional    |
+| `HEALTH_PORT`                          | HTTP health server (default 8080)                        | Optional    |
 
 See `.env.example` for the full list with descriptions and chain RPC overrides.
 
@@ -352,15 +352,15 @@ See `.env.example` for the full list with descriptions and chain RPC overrides.
 
 ## Commands
 
-| Script                 | What it does                                           |
-| ---------------------- | ------------------------------------------------------ |
-| `npm start`            | Run the bot via `tsx src/index.ts`                     |
-| `npm run typecheck`    | Per-subtree `tsc --noEmit` across all scoped configs   |
-| `npm test`             | Run every `*.smoke-test.ts` under `src/` (in series)   |
-| `npm run lint`         | ESLint                                                 |
-| `npm run lint:fix`     | ESLint with auto-fix                                   |
-| `npm run format`       | Prettier write                                         |
-| `npm run format:check` | Prettier check                                         |
+| Script                 | What it does                                         |
+| ---------------------- | ---------------------------------------------------- |
+| `npm start`            | Run the bot via `tsx src/index.ts`                   |
+| `npm run typecheck`    | Per-subtree `tsc --noEmit` across all scoped configs |
+| `npm test`             | Run every `*.smoke-test.ts` under `src/` (in series) |
+| `npm run lint`         | ESLint                                               |
+| `npm run lint:fix`     | ESLint with auto-fix                                 |
+| `npm run format`       | Prettier write                                       |
+| `npm run format:check` | Prettier check                                       |
 
 Run a single smoke test directly:
 
@@ -372,13 +372,13 @@ npx tsx src/gateway/llm-router.smoke-test.ts
 
 ## Telegram commands
 
-| Command    | What it does                          |
-| ---------- | ------------------------------------- |
-| `/start`   | Welcome message and setup             |
-| `/wallet`  | Create or view agent wallet           |
+| Command    | What it does                             |
+| ---------- | ---------------------------------------- |
+| `/start`   | Welcome message and setup                |
+| `/wallet`  | Create or view agent wallet              |
 | `/balance` | Native balances across configured chains |
-| `/status`  | System health and agent status        |
-| `/help`    | Full command guide                    |
+| `/status`  | System health and agent status           |
+| `/help`    | Full command guide                       |
 
 Paste any contract address to trigger an instant trade flow. Natural-language
 queries like _"What's trending on Ethereum?"_ are routed through the LLM to
