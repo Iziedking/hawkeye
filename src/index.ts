@@ -32,6 +32,7 @@ import { startExecutionAgent } from "./agents/execution/index";
 import { startResearchAgent } from "./agents/research/index";
 import { startMonitorAgent } from "./agents/monitor/index";
 import { startCopyTradeAgent } from "./agents/copy-trade/index";
+import { startWalletWatcherAgent } from "./agents/wallet-watcher/index";
 import { KeeperHubClient, KeeperHubError } from "./integrations/keeperhub/index";
 import { ArkhamClient } from "./integrations/arkham/index";
 import { NansenClient } from "./integrations/nansen/index";
@@ -234,6 +235,7 @@ async function main(): Promise<void> {
   });
   const stopMonitor = startMonitorAgent();
   const stopCopyTrade = startCopyTradeAgent();
+  const stopWalletWatcher = wm ? startWalletWatcherAgent() : { stop: () => {} };
 
   sponsors.uniswap.active = true;
 
@@ -245,6 +247,7 @@ async function main(): Promise<void> {
     "Research",
     "Monitor",
     "CopyTrade",
+    "WalletWatcher",
   ];
   setAgentList(agentNames);
 
@@ -314,6 +317,7 @@ async function main(): Promise<void> {
   bus.on("QUOTE_RESULT", () => incrementBusEvents());
   bus.on("STRATEGY_DECISION", () => incrementBusEvents());
   bus.on("TRADE_EXECUTED", () => incrementBusEvents());
+  bus.on("WALLET_FUNDED", () => incrementBusEvents());
 
   let gateway: Awaited<ReturnType<typeof startTelegramGateway>> | null = null;
   try {
@@ -356,6 +360,7 @@ async function main(): Promise<void> {
     () => stopResearch.stop(),
     () => stopMonitor.stop(),
     () => stopCopyTrade.stop(),
+    () => stopWalletWatcher.stop(),
     () => gateway?.stop(),
     () => axl?.stop(),
     stopHealthServer,

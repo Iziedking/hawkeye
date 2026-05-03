@@ -41,9 +41,11 @@ import { searchPairs } from "../tools/dexscreener-mcp/client";
 import { loadSeenTokens, trackToken, getSeenTokens } from "../shared/seen-tokens";
 import { composeSkillsPrompt, listSkills } from "../shared/skills";
 import { getUserSkillOverrides, setUserSkillOverride } from "../shared/user-skills";
+import { loadChats, getAllChats, rememberChatRoute } from "./chat-store";
 
 loadEnvLocal();
 loadSeenTokens();
+loadChats();
 
 type ReplyCtx = { chatId: number; userId: string };
 
@@ -204,6 +206,42 @@ export async function startTelegramGateway(
   });
   const wm = deps.walletManager ?? null;
   const replyByRequestId = new Map<string, PendingReply>();
+
+  // userId email → chat info, populated on every interaction. Lets the
+  // wallet-watcher (and any future async notification source) reach the user
+  // without having to thread chat context through the bus. Hydrated on boot
+  // from data/chats.json so async alerts work even before a user re-pings
+  // after a restart.
+  const chatByEmail = new Map<string, { chatId: number; telegramId: string }>();
+  for (const [email, route] of getAllChats()) {
+    chatByEmail.set(email, { chatId: route.chatId, telegramId: route.telegramId });
+  }
+
+  function rememberChat(telegramId: string, chatId: number): void {
+    if (!wm) return;
+    const cfg = wm.getFullWalletConfig(telegramId);
+    if (!cfg?.email) return;
+    chatByEmail.set(cfg.email, { chatId, telegramId });
+    // Persist only when the route is new or changed — rememberChatRoute
+    // returns false when the same triple is already on disk. Skip the
+    // synthetic @hawkeye.local emails; once the user runs /wallet with a
+    // real email, linkEmail re-keys the profile and the next middleware
+    // tick will record the real route. Persisting synthetics just leaves
+    // dead entries on disk.
+    if (cfg.email.endsWith("@hawkeye.local")) return;
+    rememberChatRoute(cfg.email, chatId, telegramId);
+  }
+
+  // Middleware: record the chat for every incoming update so notifications
+  // can find their user later. Always run, never short-circuit.
+  bot.use(async (ctx, next) => {
+    const tid = ctx.from?.id;
+    const cid = ctx.chat?.id;
+    if (typeof tid === "number" && typeof cid === "number") {
+      rememberChat(String(tid), cid);
+    }
+    await next();
+  });
 
   const llm = deps.llm !== undefined ? deps.llm : await tryInitLlm();
   const storage = tryInitStorage();
@@ -617,6 +655,35 @@ export async function startTelegramGateway(
   const POSITION_NOTIFY_INTERVAL_MS = 3_600_000; // 1 hour
   const SIGNIFICANT_PNL_CHANGE_PCT = 5; // alert on 5%+ PnL shift since last notification
 
+  const onWalletFunded = (payload: import("../shared/types").WalletFundedPayload): void => {
+    const route = chatByEmail.get(payload.userId);
+    if (!route) {
+      // User has never spoken to the bot from this process — nothing to do.
+      // The next interaction will rebuild the chat route.
+      return;
+    }
+    const chainName = getChainName(payload.chainId);
+    const symbol = payload.asset.kind === "native" ? payload.asset.symbol : payload.asset.symbol;
+    const explorer = getChainExplorer(payload.chainId);
+    const lines = [
+      `<b>Wallet funded</b>`,
+      ``,
+      `+${payload.amountDisplay} ${html(symbol)} on ${html(chainName)}`,
+      ``,
+      `<a href="${explorer}/address/${payload.walletAddress}">${codeAddr(payload.walletAddress)}</a>`,
+    ];
+    void bot.api
+      .sendMessage(route.chatId, lines.join("\n"), {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      })
+      .catch((err) => {
+        console.warn(
+          `[telegram] WALLET_FUNDED notify failed for ${payload.userId}: ${(err as Error).message}`,
+        );
+      });
+  };
+
   const onPositionUpdate = (update: PositionUpdate): void => {
     const owner = positionOwners.get(update.positionId);
     if (!owner) return;
@@ -643,6 +710,7 @@ export async function startTelegramGateway(
   bus.on("TRADE_EXECUTED", onExecuted);
   bus.on("STRATEGY_DECISION", onStrategy);
   bus.on("SAFETY_RESULT", onSafety);
+  bus.on("WALLET_FUNDED", onWalletFunded);
   bus.on("RESEARCH_RESULT", onResearchResult);
   bus.on("QUOTE_FAILED", onQuoteFailed);
   bus.on("POSITION_UPDATE", onPositionUpdate);
@@ -2713,6 +2781,7 @@ export async function startTelegramGateway(
       bus.off("RESEARCH_RESULT", onResearchResult);
       bus.off("QUOTE_FAILED", onQuoteFailed);
       bus.off("POSITION_UPDATE", onPositionUpdate);
+      bus.off("WALLET_FUNDED", onWalletFunded);
       bot.stop();
     },
   };

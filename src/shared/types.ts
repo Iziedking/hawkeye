@@ -378,6 +378,24 @@ export type LlmClient = {
   }): Promise<{ text: string }>;
 };
 
+// Emitted by the wallet-watcher when a user's wallet receives funds.
+// `userId` is the canonical email (matches JsonStore keys + walletMgr lookups).
+export type WalletFundedAsset =
+  | { kind: "native"; symbol: string }
+  | { kind: "erc20"; address: string; symbol: string; decimals: number };
+
+export type WalletFundedPayload = {
+  userId: string;
+  walletAddress: string;
+  chainId: ChainId;
+  asset: WalletFundedAsset;
+  amountRaw: string;
+  amountDisplay: string;
+  previousBalanceRaw: string;
+  newBalanceRaw: string;
+  detectedAt: number;
+};
+
 export type BusEvents = {
   TRADE_REQUEST: TradeIntent;
   SAFETY_RESULT: SafetyReport;
@@ -397,4 +415,5 @@ export type BusEvents = {
   ADD_WATCHED_WALLET: WatchedWallet;
   REMOVE_WATCHED_WALLET: string;
   USER_CONFIRMED: UserConfirmedPayload;
+  WALLET_FUNDED: WalletFundedPayload;
 };

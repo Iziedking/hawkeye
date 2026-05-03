@@ -310,7 +310,7 @@ const WELL_KNOWN_TOKENS: Record<string, WellKnownToken[]> = {
   ],
 };
 
-async function fetchTokenDecimals(chainId: string, tokenAddress: string): Promise<number> {
+export async function fetchTokenDecimals(chainId: string, tokenAddress: string): Promise<number> {
   const rpcs = [getChainRpc(chainId), getChainFallbackRpc(chainId)];
   for (const rpc of rpcs) {
     try {
