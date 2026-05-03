@@ -430,16 +430,105 @@ over `{ foo: value ?? undefined }` — the latter fails the strict check.
 
 ## On-chain deployments
 
+### 0G Mainnet (production)
+
+| Field        | Value                                                                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Contract** | [`0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F`](https://chainscan.0g.ai/address/0x3beAE6d896Fe7B9d0694fcce2A482Bf8e9E50F2F)                      |
+| **Chain ID** | `16661`                                                                                                                                        |
+| **Network**  | 0G Mainnet (`https://evmrpc.0g.ai`)                                                                                                            |
+| **Deploy tx**| [`0xc85dbc81bd9f9c0ae0642829aca0fe0984591832a1a611298f56605c9fd1851d`](https://chainscan.0g.ai/tx/0xc85dbc81bd9f9c0ae0642829aca0fe0984591832a1a611298f56605c9fd1851d) |
+| **Explorer** | https://chainscan.0g.ai                                                                                                                        |
+
+All seven agents are registered on-chain in a single deploy: Safety, Quote,
+Strategy, Execution, Research, Monitor, Copy Trade. Every trade intent and
+execution decision is logged to this contract via `storeIntent()` and
+`logTrade()`, and every payload is also pinned to 0G Storage for the audit
+trail.
+
+### Other networks
+
 | Network            | Contract                                     | Chain ID |
 | ------------------ | -------------------------------------------- | -------- |
 | 0G Galileo Testnet | `0x42602be460373479c74AfE461F6f356d0bbE3475` | 16602    |
-| 0G Mainnet         | _Pending mainnet wallet funding_             | 16661    |
 
-Deploy with:
+Deploy:
 
 ```bash
-npx tsx scripts/deploy-registry.ts
+npx tsx scripts/deploy-registry.ts            # mainnet (default)
+npx tsx scripts/deploy-registry.ts --testnet  # Galileo testnet
 ```
+
+---
+
+## Partner integrations
+
+HAWKEYE applies partner technologies as load-bearing infrastructure, not
+checkbox items. This section maps each partner's tools to where they show up
+in the codebase and what they actually do for the swarm.
+
+### 0G — sealed inference, persistent memory, on-chain registry
+
+| 0G primitive   | What HAWKEYE does with it                                                                                                                                                | Path                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| **0G Compute** | Primary LLM brain for the router, strategy, and research agents. Sealed inference via `OgComputeClient`; falls back to OpenRouter / Claude only when 0G is unreachable.  | `src/integrations/0g/compute.ts`, `src/integrations/claude/index.ts`          |
+| **0G Storage** | Persistent audit trail. Six lifecycle write points: intent, safety report, strategy decision, execution receipt, research result, alpha discovery — each returns a verifiable rootHash that's pinned in Telegram replies and on the contract. | `src/integrations/0g/storage.ts`, `src/integrations/0g/audit-trail.ts`        |
+| **0G Chain**   | `HawkeyeRegistry` Solidity contract on 0G mainnet (above). 7 agents registered on-chain at deploy; every trade fires `storeIntent()` and `logTrade()` for verifiable swarm provenance. | `contracts/HawkeyeRegistry.sol`, `src/integrations/0g/registry-client.ts`, `scripts/deploy-registry.ts` |
+
+The same `HAWKEYE_EVM_PRIVATE_KEY` funds Compute, Storage, and Chain — boot
+prints a balance warning if it's low. The boot banner shows live status of
+each 0G primitive (`0G Compute [ON/OFF]`, `0G Storage [ON]`, `0G Chain [ON]`).
+
+### Uniswap — agent execution layer
+
+The Execution agent is built directly on the **Uniswap Trading API**:
+
+- 3-step flow per swap: `POST /check_approval` → `POST /quote` → `POST /swap`
+- Permit2-aware: classic CLASSIC routes use the on-chain ERC20 approve path;
+  UniswapX (DUTCH_V2 / DUTCH_V3 / PRIORITY) routes attach the Permit2 signature.
+- Routing-aware error humanization (`humanizeQuoteError`) translates 4xx/5xx
+  into user-facing messages like "Token may not be tradeable on this chain"
+  vs "Wallet doesn't hold this token to sell".
+- Pre-flight on-chain balance check via `fetchTokenBalance` blocks an obvious
+  class of revert (selling tokens you don't hold).
+- 17+ EVM chains, chain ID resolution via DexScreener (no hardcoded chain hints
+  trusted from the LLM — see Anti-hallucination below).
+
+See `FEEDBACK.md` for the full builder-experience write-up required by the
+Uniswap track.
+
+Path: `src/agents/execution/index.ts`, `.agents/skills/swap-integration/`,
+`.agents/skills/swap-planner/`.
+
+### KeeperHub — MEV-protected execution + reliability
+
+| Feature                       | How HAWKEYE uses it                                                                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **MEV-protected swap submit** | Every mainnet trade is routed through KeeperHub. Solana uses Jito; EVM mainnet (Ethereum, Base, Arbitrum, BSC, Polygon) uses KeeperHub keepers. |
+| **Circuit breaker**           | `KeeperHubClient.circuitOpen` flag flips on transient failures, allowing fall-through to the wallet manager without aborting the user trade.   |
+| **Connectivity probe at boot**| Boot prints `[execution] KeeperHub reachable — all mainnet swaps will be MEV-protected` so the operator knows MEV protection is live.          |
+| **MCP server**                | Wired into `.mcp.json` for use by agent skills.                                                                                                |
+
+See `KEEPERHUB-FEEDBACK.md` for the builder-feedback bounty submission.
+
+Paths: `src/integrations/keeperhub/`, `src/integrations/keeperhub/dual-wallet.ts`.
+
+### Gensyn AXL — P2P swarm transport
+
+The local `EventBus` and `AxlEventBus` implement the same interface; agents
+never know which is active. When `AXL_API_URL` is set, the bus bridge in
+`initAxlBus()` mirrors a configured set of `BusEvents` over Gensyn AXL P2P
+transport with a `forwarding` flag to break re-emit loops between local and P2P.
+
+Paths: `src/shared/axl-bus.ts`, `src/tools/gensyn-axl-mcp/` (local MCP server
+wrapping AXL topology + messaging).
+
+### Privy — per-user agent wallets
+
+Email-only login provisions an EVM agent wallet per user. External-wallet
+linking (RainbowKit + SIWE-style nonce) attaches user-controlled wallets to the
+same email-rooted profile so external-wallet trades require explicit signing
+while agent-wallet trades stay one-tap. See `src/integrations/privy/index.ts`.
 
 ---
 

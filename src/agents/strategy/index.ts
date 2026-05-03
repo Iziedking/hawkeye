@@ -8,6 +8,8 @@ import type {
   UserConfirmedPayload,
   QuoteFailedPayload,
 } from "../../shared/types";
+import { composeSkillsPrompt } from "../../shared/skills";
+import { getUserSkillOverrides } from "../../shared/user-skills";
 
 type PendingTrade = {
   intent: TradeIntent;
@@ -157,6 +159,33 @@ async function tryDecide(entry: PendingTrade): Promise<void> {
       reason: "No trading pair found on any DEX",
       rejectedAt: Date.now(),
     });
+    return;
+  }
+
+  // Sells short-circuit: never block an exit on chain-mismatch / liquidity gates.
+  // If the user holds the token, they must always be able to attempt to sell —
+  // blocking traps their funds. Mode-logic still emits warnings via the reason.
+  if (intent.side === "sell") {
+    const decision = applyModeLogic(intent, safety, quote);
+    if (agentLlm) {
+      const enhanced = await enhanceReason(decision, intent, safety, quote);
+      if (enhanced) decision.reason = enhanced;
+    }
+    emitDecision(decision);
+    if (decision.decision === "EXECUTE") {
+      bus.emit("EXECUTE_TRADE", {
+        intentId: intent.intentId,
+        positionId: `pos-${intent.intentId}`,
+        userId: intent.userId,
+        address: intent.address,
+        chainId: quote.chainId,
+        filled: intent.amount,
+        entryPriceUsd: quote.priceUsd,
+        txHash: "",
+        remainingExits: intent.exits,
+        openedAt: Date.now(),
+      });
+    }
     return;
   }
 
@@ -365,8 +394,9 @@ async function enhanceReason(
       `Route: ${quote.route}`,
     ].join("\n");
 
+    const skillsExt = composeSkillsPrompt("strategy", getUserSkillOverrides(intent.userId));
     const resp = await agentLlm.infer({
-      system: STRATEGY_PROMPT,
+      system: STRATEGY_PROMPT + skillsExt,
       user: data,
       temperature: 0.3,
       maxTokens: 150,

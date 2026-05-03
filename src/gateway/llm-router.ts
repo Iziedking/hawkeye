@@ -312,8 +312,20 @@ async function routeViaLlm(input: RouterInput, deps: RouterDeps): Promise<Router
     return buildResult(input, "PORTFOLIO", 0.8, { query: input.text });
   }
 
+  // Anti-hallucination for SEND_TOKEN: the LLM must not invent the recipient.
+  // The address must appear verbatim in the user's message.
+  if (category === "SEND_TOKEN") {
+    const recipient = typeof data["recipient"] === "string" ? data["recipient"] : "";
+    if (!recipient || !input.text.toLowerCase().includes(recipient.toLowerCase())) {
+      return buildResult(input, "UNKNOWN", 0, {
+        rawIntent: input.text,
+        reason: "send recipient missing or not in message",
+      });
+    }
+  }
+
   if (category === "DEGEN_SNIPE" || category === "TRADE") {
-    const validated = validateTradeData(data);
+    const validated = validateTradeData(data, input.text);
     if (validated !== null) {
       return buildResult(input, category, confidence, validated);
     }
@@ -346,7 +358,7 @@ function validateCategory(raw: unknown): IntentCategory {
   return "UNKNOWN";
 }
 
-function validateTradeData(data: Record<string, unknown>): SnipeData | null {
+function validateTradeData(data: Record<string, unknown>, rawText: string): SnipeData | null {
   const address = typeof data["address"] === "string" ? data["address"].trim() : null;
   if (address === null || address.length === 0) return null;
 
@@ -355,6 +367,13 @@ function validateTradeData(data: Record<string, unknown>): SnipeData | null {
 
   if (chain === "evm" && !/^0x[a-fA-F0-9]{40}$/.test(address)) return null;
   if (chain === "solana" && !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) return null;
+
+  // Anti-hallucination: the LLM must NOT invent a contract address. If the
+  // address it returned is not present verbatim in the user's message, drop
+  // the trade — let the gateway fall back to a clarifying reply.
+  if (!rawText.toLowerCase().includes(address.toLowerCase())) {
+    return null;
+  }
 
   let amount: TradeAmount = { value: 0, unit: "NATIVE" };
   const amountRaw = data["amount"];
@@ -369,7 +388,11 @@ function validateTradeData(data: Record<string, unknown>): SnipeData | null {
   const urgency = data["urgency"];
   const mode: TradingMode = urgency === "INSTANT" || urgency === "CAREFUL" ? urgency : "NORMAL";
 
-  return { address, chain, amount, urgency: mode, side: "buy" };
+  // Preserve the side from the LLM (or keyword scan) — never silently force "buy".
+  const llmSide = data["side"];
+  const side: "buy" | "sell" = llmSide === "sell" || SELL_KEYWORDS.test(rawText) ? "sell" : "buy";
+
+  return { address, chain, amount, urgency: mode, side };
 }
 
 const SWAP_KW = /\b(swap|exchange|convert|trade)\b/i;

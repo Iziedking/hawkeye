@@ -39,6 +39,8 @@ import { getTradeHistory } from "../shared/trade-history";
 import { getWatchedWalletAddresses } from "../agents/copy-trade/index";
 import { searchPairs } from "../tools/dexscreener-mcp/client";
 import { loadSeenTokens, trackToken, getSeenTokens } from "../shared/seen-tokens";
+import { composeSkillsPrompt, listSkills } from "../shared/skills";
+import { getUserSkillOverrides, setUserSkillOverride } from "../shared/user-skills";
 
 loadEnvLocal();
 loadSeenTokens();
@@ -650,7 +652,11 @@ export async function startTelegramGateway(
 
       try {
         const resp = await llm.infer({
-          system: CONVERSATIONAL_PROMPT + "\n\nContext: " + context,
+          system:
+            CONVERSATIONAL_PROMPT +
+            composeSkillsPrompt("gateway", getUserSkillOverrides(userId)) +
+            "\n\nContext: " +
+            context,
           user: "User just opened the bot.",
           temperature: 0.8,
           maxTokens: 150,
@@ -1070,6 +1076,55 @@ export async function startTelegramGateway(
     await ctx.reply(`Mode: ${friendlyName}. ${MODE_DESC[mode]}`, { parse_mode: "HTML" });
   });
 
+  bot.command("skills", async (ctx) => {
+    const userId = String(ctx.from?.id ?? "unknown");
+    const arg = (ctx.match as string).trim().toLowerCase();
+    const overrides = getUserSkillOverrides(userId);
+    const all = listSkills();
+
+    if (!arg) {
+      const lines = [`<b>HAWKEYE Skills</b>`, ``];
+      for (const s of all) {
+        const effective = overrides[s.id] ?? s.enabled;
+        const dot = effective ? "🟢" : "⚪";
+        lines.push(`${dot} <code>${s.id}</code> · <i>p${s.priority}</i> — ${html(s.description)}`);
+      }
+      lines.push(
+        ``,
+        `<code>/skills on &lt;id&gt;</code>  enable a skill`,
+        `<code>/skills off &lt;id&gt;</code>  disable a skill`,
+      );
+      await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
+      return;
+    }
+
+    const m = arg.match(/^(on|off)\s+(\S+)$/);
+    if (!m) {
+      await ctx.reply(
+        "Usage: <code>/skills</code>, <code>/skills on rug-detector</code>, <code>/skills off degen-trader</code>",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    const enable = m[1] === "on";
+    const id = m[2]!;
+    const found = all.find((s) => s.id === id);
+    if (!found) {
+      await ctx.reply(
+        `Unknown skill: <code>${html(id)}</code>. Run <code>/skills</code> to list.`,
+        {
+          parse_mode: "HTML",
+        },
+      );
+      return;
+    }
+    setUserSkillOverride(userId, id, enable);
+    await ctx.reply(
+      `${enable ? "Enabled" : "Disabled"}: <b>${html(found.name)}</b> (priority ${found.priority})`,
+      { parse_mode: "HTML" },
+    );
+  });
+
   // /watch — add wallet to copy-trade watch list
   bot.command("watch", async (ctx) => {
     const args = (ctx.match as string).trim().split(/\s+/);
@@ -1458,7 +1513,7 @@ export async function startTelegramGateway(
     );
 
     console.log(
-      `[telegram] user=${userId} category=${result.category} confidence=${result.confidence.toFixed(2)} text="${text.slice(0, 50)}"`,
+      `[telegram] user=${userId} category=${result.category} confidence=${result.confidence.toFixed(2)} len=${text.length}`,
     );
 
     switch (result.category) {
@@ -1648,7 +1703,12 @@ export async function startTelegramGateway(
     try {
       const history = recentHistory(rctx.userId);
       const resp = await llm.infer({
-        system: CONVERSATIONAL_PROMPT + history + "\n\nContext for this reply: " + context,
+        system:
+          CONVERSATIONAL_PROMPT +
+          composeSkillsPrompt("gateway", getUserSkillOverrides(rctx.userId)) +
+          history +
+          "\n\nContext for this reply: " +
+          context,
         user: userMsg,
         temperature: 0.7,
         maxTokens: 300,
@@ -2461,7 +2521,11 @@ export async function startTelegramGateway(
         ? `\nUser has a wallet set up. ${positions.length} open positions.`
         : "\nNew user, no wallet yet.";
       const resp = await llmClient.infer({
-        system: CONVERSATIONAL_PROMPT + userContext + history,
+        system:
+          CONVERSATIONAL_PROMPT +
+          composeSkillsPrompt("gateway", getUserSkillOverrides(rctx.userId)) +
+          userContext +
+          history,
         user: result.rawText,
         temperature: 0.7,
         maxTokens: 300,

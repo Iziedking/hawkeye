@@ -20,6 +20,8 @@
 
 import { bus } from "../../shared/event-bus";
 import { log } from "../../shared/logger";
+import { composeSkillsPrompt } from "../../shared/skills";
+import { getUserSkillOverrides } from "../../shared/user-skills";
 import type {
   AlphaFoundPayload,
   ResearchRequest,
@@ -1644,11 +1646,16 @@ function getOgClient(): OgComputeClient {
   return _ogClient;
 }
 
-async function callLLM(prompt: string, llm?: LlmClient): Promise<string> {
+async function callLLM(prompt: string, llm?: LlmClient, userId?: string): Promise<string> {
+  const overrides = userId ? getUserSkillOverrides(userId) : {};
+  const baseSystem =
+    "You are a crypto research assistant. Give concise, direct verdicts on tokens." +
+    composeSkillsPrompt("research", overrides);
+
   if (llm) {
     try {
       const resp = await llm.infer({
-        system: "You are a crypto research assistant. Give concise, direct verdicts on tokens.",
+        system: baseSystem,
         user: prompt,
         maxTokens: 250,
       });
@@ -1664,7 +1671,7 @@ async function callLLM(prompt: string, llm?: LlmClient): Promise<string> {
   if (!process.env["HAWKEYE_EVM_PRIVATE_KEY"]) return "";
   try {
     const resp = await getOgClient().infer({
-      system: "You are a crypto research assistant. Give concise, direct verdicts on tokens.",
+      system: baseSystem,
       user: prompt,
       maxTokens: 250,
     });
@@ -2172,7 +2179,7 @@ async function handleMarketOverviewRequest(req: ResearchRequest, llm?: LlmClient
 
   const contextStr = lines.join("\n");
   const prompt = `Market data:\n${contextStr}\n\nUser question: ${req.question}\n\nFocus: Cover BTC/ETH prices, 24h changes, fear & greed index, and top movers. 3-4 sentences.\n\nONLY use numbers and facts from the data above. Never invent statistics.`;
-  let summary = await callLLM(prompt, llm);
+  let summary = await callLLM(prompt, llm, req.userId);
   if (!summary) summary = `Fear & Greed: ${fg}/100. Market overview data:\n${lines.join("; ")}`;
 
   bus.emit("RESEARCH_RESULT", {
@@ -2223,7 +2230,7 @@ async function handleWalletRequest(
   const contextStr = lines.join("\n") || "No Arkham data found for this address.";
   const prompt = `Wallet: ${req.address}\n${contextStr}\n\nQuestion: ${req.question ?? "Who is this wallet and what have they been doing?"}\n\nFocus: ${"Identify the wallet entity/label if known, summarise recent token flows, and flag any notable activity. 3-4 sentences."}\n\nONLY use numbers and facts from the provided data.`;
 
-  let summary = await callLLM(prompt, llm);
+  let summary = await callLLM(prompt, llm, req.userId);
   if (!summary) summary = contextStr || "No wallet data available.";
 
   bus.emit("RESEARCH_RESULT", {
@@ -2683,7 +2690,7 @@ async function handleResearchRequest(
     subIntent,
   };
 
-  let summary = await callLLM(buildResearchPrompt(data), llm);
+  let summary = await callLLM(buildResearchPrompt(data), llm, req.userId);
   if (!summary) summary = buildTemplateSummary(data);
 
   bus.emit("RESEARCH_RESULT", {
