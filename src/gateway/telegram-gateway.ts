@@ -160,6 +160,33 @@ function tokenAmountToRaw(amount: number, decimals: number): bigint {
   return BigInt(whole) * scale + BigInt(frac || "0");
 }
 
+// Per-chain gas reserve for native sends (wei). The cushion is the *upper
+// bound* a 21k transfer should ever cost; any wallet that can't cover its
+// `amount + reserve` won't be able to mine the tx. Mainnet uses 0.0015 ETH
+// (~50 gwei * 21k * 1.5 safety). L2 transfers cost ~0.0000001 ETH so we use
+// 0.00005 — large enough for gas spikes, small enough that a $9.30 wallet
+// can still send $9 (which the old uniform 0.0015 reserve refused).
+function nativeGasReserveWei(chainName: string): bigint {
+  switch (chainName) {
+    case "ethereum":
+      return 1_500_000_000_000_000n; // 0.0015 ETH
+    case "base":
+    case "arbitrum":
+    case "optimism":
+      return 50_000_000_000_000n; // 0.00005 ETH
+    case "bsc":
+      return 300_000_000_000_000n; // 0.0003 BNB
+    case "polygon":
+      return 10_000_000_000_000_000n; // 0.01 MATIC
+    case "avalanche":
+      return 500_000_000_000_000n; // 0.0005 AVAX
+    case "sepolia":
+      return 100_000_000_000_000n; // 0.0001 ETH (testnet)
+    default:
+      return 1_500_000_000_000_000n;
+  }
+}
+
 // ERC-20 transfer(address,uint256) calldata. Selector 0xa9059cbb followed by
 // two 32-byte params: address (left-padded) and amount.
 function encodeErc20Transfer(to: string, amount: bigint): string {
@@ -1725,19 +1752,38 @@ export async function startTelegramGateway(
 
     const amountRaw = d["amount"] as Record<string, unknown> | null | undefined;
     let amount = 0;
+    let amountUnit: "NATIVE" | "USD" | "TOKEN" | "PERCENT" = "NATIVE";
     if (amountRaw && typeof amountRaw === "object") {
       const v = typeof amountRaw["value"] === "number" ? amountRaw["value"] : 0;
       amount = Number.isFinite(v) && v > 0 ? v : 0;
+      const u = amountRaw["unit"];
+      if (u === "USD" || u === "TOKEN" || u === "PERCENT") amountUnit = u;
     }
     if (amount <= 0) {
       const raw = result.rawText;
+      // "9.2$" (dollar suffix) → USD; "$9.2" (prefix) is already caught by the
+      // LLM router's regex but the suffix form isn't, so check it here too.
+      const usdSuffix = raw.match(/([\d.]+)\s*\$/);
       const ethMatch = raw.match(/([\d.]+)\s*(?:\w+\s+)?(?:ETH|eth|ether)/i);
       const plainNum = raw.match(/([\d.]+)/);
-      if (ethMatch) {
+      if (usdSuffix) {
+        amount = parseFloat(usdSuffix[1]!);
+        amountUnit = "USD";
+      } else if (ethMatch) {
         amount = parseFloat(ethMatch[1]!);
       } else if (plainNum) {
         amount = parseFloat(plainNum[1]!);
       }
+    }
+    // Even after the LLM has answered, override unit to USD when the user's
+    // raw text has a dollar sign next to a number. The LLM frequently returns
+    // unit: "NATIVE" for "9.2$ ETH" — it locks onto the "ETH" symbol and
+    // discards the "$" — but the user's literal "$" is the reliable signal.
+    if (amountUnit === "NATIVE" && /(?:\$\s*\d|\d\s*\$)/.test(result.rawText)) {
+      console.log(
+        `[telegram] send: USD override fired (LLM returned NATIVE but text has $) — value=${amount}`,
+      );
+      amountUnit = "USD";
     }
     if (amount <= 0) {
       void llmReply(
@@ -1766,6 +1812,70 @@ export async function startTelegramGateway(
     if (!asset) {
       const tickerMatch = result.rawText.match(/\b(usdc|usdt|dai|udsc)\b/i);
       if (tickerMatch) asset = tickerMatch[1]!.toLowerCase() === "udsc" ? "USDC" : tickerMatch[1]!;
+    }
+
+    // Heuristic: when the LLM says NATIVE but the amount is wildly more than
+    // the wallet can hold AND fits within the wallet as a USD figure, infer
+    // USD intent. Patrick's "send 9.2 base ETH" with a $9.32 wallet means
+    // $9.2, not 9.2 ETH (~$21k) — colloquial usage where users type the
+    // dollar value next to the asset name without a $ sign.
+    const STABLE_ASSETS = new Set(["USDC", "USDT", "DAI", "BUSD"]);
+    const upperAssetEarly = asset?.toUpperCase() ?? null;
+    const isErc20Early =
+      upperAssetEarly !== null && !["ETH", "BNB", "MATIC", "AVAX", "POL"].includes(upperAssetEarly);
+    if (amountUnit === "NATIVE" && !isErc20Early && walletMgr.walletAddress(userId)) {
+      const walletAddr = walletMgr.walletAddress(userId)!;
+      const { balance: nativeBal, error: balErr } = await fetchNativeBalance(
+        chain.name,
+        walletAddr,
+        5_000,
+      );
+      if (!balErr) {
+        const nativeCcy = EVM_CHAIN_CONFIG[chain.name]?.nativeCurrency ?? "ETH";
+        const price = await fetchNativePrice(nativeCcy);
+        if (price > 0) {
+          const balanceNative = Number(nativeBal) / 1e18;
+          const balanceUsd = balanceNative * price;
+          const wantUsdIfNative = amount * price;
+          // Trigger when (a) interpreting amount as native costs >3× the wallet's
+          // USD value (impossible) AND (b) interpreting it as USD fits within
+          // 1.1× the wallet (plausible). The 3× margin avoids false positives
+          // on close-to-balance native sends.
+          if (wantUsdIfNative > balanceUsd * 3 && amount <= balanceUsd * 1.1) {
+            console.log(
+              `[telegram] send: NATIVE→USD inferred — amount=${amount} ${nativeCcy} would cost $${wantUsdIfNative.toFixed(2)} but wallet has $${balanceUsd.toFixed(2)}; treating as $${amount}`,
+            );
+            amountUnit = "USD";
+          }
+        }
+      }
+    }
+
+    // Convert USD → native amount. "$9.2 of ETH" needs the live ETH price;
+    // "$5 of USDC/USDT/DAI" is ~1:1 against USD. For non-stable ERC-20s we
+    // don't have a generic price source on the gateway side, so we punt with
+    // a helpful message rather than guessing.
+    if (amountUnit === "USD") {
+      if (isErc20Early && upperAssetEarly && STABLE_ASSETS.has(upperAssetEarly)) {
+        // $9 USDC → 9 USDC, near enough for stables.
+      } else if (!isErc20Early) {
+        const nativeCcy = EVM_CHAIN_CONFIG[chain.name]?.nativeCurrency ?? "ETH";
+        const price = await fetchNativePrice(nativeCcy);
+        if (price <= 0) {
+          void reply(
+            rctx,
+            `Couldn't fetch ${html(nativeCcy)} price right now. Specify the amount in ${html(nativeCcy)} directly: <code>/send 0.01 0xABC... ${html(chain.name)}</code>`,
+          );
+          return;
+        }
+        amount = amount / price;
+      } else {
+        void reply(
+          rctx,
+          `Sending dollar amounts of ${html(upperAssetEarly!)} isn't supported yet. Specify the token amount instead.`,
+        );
+        return;
+      }
     }
 
     await executeSend(rctx, userId, recipient, amount, chain.name, chain.id, asset);
@@ -1826,6 +1936,54 @@ export async function startTelegramGateway(
           `Couldn't find ${html(upperAsset!)} on ${html(chainName)}. Paste the token address or pick a different chain.`,
         );
         return;
+      }
+    }
+
+    // Pre-flight balance check. The bot was previously submitting transactions
+    // even when the wallet held zero on the target chain — Privy still returned
+    // a hash that the user saw as success, but the tx would never confirm.
+    // Reject up front with a clear "have X, want Y" message instead.
+    const walletAddress = wm.walletAddress(userId);
+    if (walletAddress) {
+      if (isErc20Send) {
+        const { balance, error } = await fetchTokenBalance(
+          chainName,
+          tokenContract!,
+          walletAddress,
+          5_000,
+        );
+        if (!error) {
+          const wantRaw = tokenAmountToRaw(amount, tokenDecimals);
+          if (balance < wantRaw) {
+            const haveDisplay = Number(balance) / 10 ** tokenDecimals;
+            void reply(
+              rctx,
+              `Not enough ${html(tokenSymbol)} on ${html(chainName)}: balance ${haveDisplay.toFixed(4)}, want ${amount}.`,
+            );
+            return;
+          }
+        }
+      } else {
+        const { balance, error } = await fetchNativeBalance(chainName, walletAddress, 5_000);
+        if (!error) {
+          // Gas reserve is chain-specific. Mainnet 21k transfer at 50 gwei is
+          // ~0.0011 ETH so 0.0015 gives a safety margin. L2 transfers are
+          // ~0.0000001 ETH; a 0.0015 reserve there would refuse legit sends
+          // that fit the wallet (this was Patrick's Base $9 of $9.30 case).
+          const GAS_RESERVE_WEI = nativeGasReserveWei(chainName);
+          const wantWei = BigInt(nativeToWei(amount));
+          if (balance < wantWei + GAS_RESERVE_WEI) {
+            const haveNative = Number(balance) / 1e18;
+            const reserveNative = Number(GAS_RESERVE_WEI) / 1e18;
+            const maxSendable = Math.max(0, haveNative - reserveNative);
+            const nativeCcy = EVM_CHAIN_CONFIG[chainName]?.nativeCurrency ?? "ETH";
+            void reply(
+              rctx,
+              `Not enough ${html(nativeCcy)} on ${html(chainName)}: balance ${haveNative.toFixed(6)}, need ${amount} + ${reserveNative.toFixed(6)} gas. Max sendable: ${maxSendable.toFixed(6)} ${html(nativeCcy)}.`,
+            );
+            return;
+          }
+        }
       }
     }
 
